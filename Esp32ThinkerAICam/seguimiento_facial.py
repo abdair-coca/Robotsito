@@ -23,8 +23,11 @@ URL_STREAM  = f'http://{IP_ESPCAM}:81/stream'
 # --- Control proporcional ---
 # Grados de servo por pixel de error. Mas alto = reacciona rapido
 # pero oscila; mas bajo = suave pero lento.
-GANANCIA_PAN  = 0.045
-GANANCIA_TILT = 0.045
+# Bajos a proposito: la camara va SOBRE los servos, asi que mover
+# el servo cambia la imagen -> ganancias altas hacen que se pase
+# del centro y oscile ("se vuelve loco").
+GANANCIA_PAN  = 0.018
+GANANCIA_TILT = 0.018
 
 # --- Direccion del servo segun su montaje ---
 # Si al detectar la cara el robot mira al lado contrario,
@@ -34,18 +37,19 @@ SIGNO_TILT = +1   # tilt: imagen->abajo (error_y>0) debe inclinar camara hacia a
 
 # --- Zona muerta (pixeles) ---
 # Dentro de esta franja alrededor del centro NO se mueve el servo.
-# Evita micro-oscilaciones cuando ya esta casi centrado.
-ZONA_MUERTA_X = 18
-ZONA_MUERTA_Y = 18
+# Amplia: si la cara ya esta "cerca" del centro, se queda quieto en
+# vez de perseguir el pixel exacto (que es imposible y causa temblor).
+ZONA_MUERTA_X = 40
+ZONA_MUERTA_Y = 35
 
 # --- Suavizado exponencial del objetivo del servo ---
-# 0 = sin suavizado, 0.9 = muy suave. 0.6-0.75 va bien.
-SUAVIZADO = 0.70
+# 0 = sin suavizado, 0.9 = muy suave. Alto = movimiento lento y estable.
+SUAVIZADO = 0.85
 
 # --- Limite de movimiento por ciclo (grados) ---
-# Evita saltos bruscos del servo.
-MAX_PASO_PAN  = 4
-MAX_PASO_TILT = 4
+# Tope duro de velocidad del servo. Bajo = se mueve despacio y no se pasa.
+MAX_PASO_PAN  = 1.5
+MAX_PASO_TILT = 1.5
 
 # --- Limites mecanicos del servo ---
 PAN_MIN,  PAN_MAX  = 20,  160
@@ -54,6 +58,12 @@ TILT_MIN, TILT_MAX = 50,  130
 # --- Posicion inicial / reposo ---
 PAN_HOME  = 90
 TILT_HOME = 90
+
+# --- Anti-windup ---
+# El objetivo no puede adelantarse mas de esto (grados) respecto a la
+# posicion real del servo. Evita que la latencia del stream acumule
+# error y el servo se pase de largo del centro.
+ADELANTO_MAX = 6
 
 # --- Tiempos ---
 INTERVALO_SERIAL  = 0.05   # 20 Hz max al ESP32
@@ -228,6 +238,13 @@ try:
 
             pan_objetivo  = clamp(pan_objetivo  + d_pan,  PAN_MIN,  PAN_MAX)
             tilt_objetivo = clamp(tilt_objetivo + d_tilt, TILT_MIN, TILT_MAX)
+
+            # Anti-windup: el objetivo no puede irse mas de ADELANTO_MAX
+            # grados por delante de donde esta el servo realmente.
+            pan_objetivo  = clamp(pan_objetivo,
+                                  pan_actual  - ADELANTO_MAX, pan_actual  + ADELANTO_MAX)
+            tilt_objetivo = clamp(tilt_objetivo,
+                                  tilt_actual - ADELANTO_MAX, tilt_actual + ADELANTO_MAX)
 
             # Dibujo
             x, y, w, h = bb.origin_x, bb.origin_y, bb.width, bb.height

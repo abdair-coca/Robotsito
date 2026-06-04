@@ -26,7 +26,7 @@ LERP          = 0.12
 
 # Zona muerta central (px) — el creeper no se mueve si el rostro
 # está cerca del centro (evita temblor)
-ZONA_MUERTA   = 25
+ZONA_MUERTA   = 50
 
 # Predicción: cuánto anticipar el movimiento del rostro
 # 0 = sin predicción, 0.3 = anticipa un poco la dirección
