@@ -1,9 +1,7 @@
 # wifi_connect.py  — guardar en el ESP32 DevKit
 import network
 import time
-
-SSID     = 'Familia Coca Carlo -5'      # Cambia por tu red
-PASSWORD = 'FamiliaCoca321'    # Cambia por tu contraseña
+from config import SSID, PASSWORD   # credenciales fuera del repo (config.py gitignored)
 
 def conectar():
     wlan = network.WLAN(network.STA_IF)

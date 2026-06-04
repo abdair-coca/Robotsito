@@ -2,7 +2,7 @@
 from machine import DAC, Pin
 import utime, math
 
-dac = DAC(Pin(25))
+dac = DAC(Pin(25))	
 
 def tono(frecuencia=440, duracion=2, volumen=100):
     MUESTRAS   = 32                          # puntos por ciclo de la senoidal

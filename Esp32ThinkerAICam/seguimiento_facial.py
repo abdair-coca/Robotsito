@@ -183,12 +183,16 @@ def clamp(v, lo, hi):
 def enviar_comando(pan, tilt):
     if esp32 is None:
         return
-    pan_i  = int(clamp(pan,  PAN_MIN,  PAN_MAX))
+
+    pan_i = int(clamp(pan, PAN_MIN, PAN_MAX))
     tilt_i = int(clamp(tilt, TILT_MIN, TILT_MAX))
+
+    comando = f'H:{pan_i},V:{tilt_i}'
+
     try:
-        esp32.write(f'H:{pan_i},V:{tilt_i}\n'.encode())
-    except Exception:
-        pass
+        esp32.write((comando + '\n').encode())
+    except Exception as e:
+        print(e)
 
 def rostro_mas_grande(detections):
     """Elige la deteccion con mayor area (rostro mas cercano/dominante)."""
@@ -268,6 +272,7 @@ try:
         dtilt = clamp(tilt_suave - tilt_actual, -MAX_PASO_TILT, MAX_PASO_TILT)
         pan_actual  = clamp(pan_actual  + dpan,  PAN_MIN,  PAN_MAX)
         tilt_actual = clamp(tilt_actual + dtilt, TILT_MIN, TILT_MAX)
+        
 
         # --- Envio al ESP32 con cadencia controlada ---
         if ahora - ultimo_envio >= INTERVALO_SERIAL:

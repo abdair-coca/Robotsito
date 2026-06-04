@@ -6,8 +6,7 @@ import network
 import socket
 import time
 
-SSID     = 'Familia Coca Carlo -5'   # <-- Cambia esto
-PASSWORD = 'FamiliaCoca123'     # <-- Cambia esto
+from config import SSID, PASSWORD   # credenciales fuera del repo (config.py gitignored)
 
 # Inicializar cámara
 camera.init(0,
