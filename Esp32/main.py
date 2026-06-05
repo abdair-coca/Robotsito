@@ -1,28 +1,128 @@
+# main.py — ESP32 DevKit COMPLETO
+# Integra: Audio streaming half-duplex (con barge-in soportado), servos pan/tilt,
+# OLED de ojos, y comandos serial desde la laptop.
+#
+# Hilo 1 (_thread): hilo_audio  — state machine LISTEN ↔ PLAY a 8 kHz
+# Hilo 2 (_thread): hilo_oled   — renderiza el estado emocional a ~12 fps
+# Loop principal:                comandos Serial (H:XX,V:XX | ESTADO:XX | SIGUIENDO:dx,dy)
+#
+# Protocolo de audio (debe coincidir con scripts/VoiceChat/audio_io.py):
+#   PORT_MIC (ESP32 -> laptop): stream uint8 8 kHz crudo, sin headers.
+#   PORT_SPK (laptop -> ESP32): | 4 bytes BE length | N bytes |
+#       length > 0  normal  -> audio uint8 a reproducir
+#       length == 0xFFFFFFFE -> KEEPALIVE (no-op)
+#       length == 0xFFFFFFFF -> STOP (descartado en half-duplex)
 
-# audio_server_esp32.py — guardar en el ESP32 DevKit como main.py
-# Ejecutar desde Thonny con F5
+from machine import ADC, DAC, Pin, PWM
+import network, usocket, utime, struct, gc, sys, select
+import _thread
+from config import SSID, PASSWORD
 
-from machine import ADC, DAC, Pin
-import network, usocket, utime, struct, gc
-from config import SSID, PASSWORD   # credenciales fuera del repo (config.py gitignored)
+# OLED — opcional: si el módulo no está, se omite el hilo OLED
+try:
+    from oled_ojos import (ojos_normal, ojos_abiertos, ojos_pensando,
+                            ojos_hablando, ojos_feliz, ojos_curioso,
+                            ojos_siguiendo, parpadear)
+    OLED_DISPONIBLE = True
+except Exception as _e_oled:
+    OLED_DISPONIBLE = False
+    print('OLED no disponible:', _e_oled)
 
-# ── Configuración ─────────
-PORT_MIC    = 5005       # Puerto TCP para enviar audio del micrófono
-PORT_SPK    = 5006       # Puerto TCP para recibir audio del speaker
-SAMPLE_RATE = 8000       # Hz — calidad telefónica: cubre toda la voz humana (~3.4 kHz).
-                         # 8000 Hz = 125 µs/muestra, el máximo práctico del loop Python.
-                         # DEBE coincidir con SAMPLE_RATE en audio_laptop.py.
-INTERVALO   = 1_000_000 // SAMPLE_RATE  # microsegundos entre muestras = 125µs
-SEGUNDOS    = 3          # Duración de captura por turno
 
-# ── Hardware ──────────────────────────────────────────────────────
-adc = ADC(Pin(34))           # GPIO34 = ADC1_CH6 (funciona con WiFi activo)
-adc.atten(ADC.ATTN_11DB)    # Rango completo 0 – 3.3V
-adc.width(ADC.WIDTH_12BIT)  # 12 bits de resolución (0 – 4095)
+# ══════════════════════════════════════════════════════════════════
+# CONFIGURACIÓN
+# ══════════════════════════════════════════════════════════════════
 
-dac = DAC(Pin(25))           # GPIO25 = DAC1
+PORT_MIC    = 5005
+PORT_SPK    = 5006
+SAMPLE_RATE = 8000
+INTERVAL_US = 1_000_000 // SAMPLE_RATE   # 125 µs por muestra
 
-# ── WiFi ──────────────────────────────────────────────────────────
+MIC_CHUNK_SIZE  = 256                    # bytes por paquete TCP de mic (32 ms)
+SPK_RECV_SIZE   = 1024                   # bytes pedidos por refill del DAC
+SPK_CHECK_EVERY = 32                     # samples entre peeks del socket spk
+
+EAGAIN = 11
+
+# Límites de los servos
+PAN_MIN,  PAN_MAX  =   0, 180
+TILT_MIN, TILT_MAX =  40, 140
+
+
+# ══════════════════════════════════════════════════════════════════
+# HARDWARE
+# ══════════════════════════════════════════════════════════════════
+
+# Micrófono MAX9814 sobre ADC1 (GPIO34)
+adc = ADC(Pin(34))
+adc.atten(ADC.ATTN_11DB)
+adc.width(ADC.WIDTH_12BIT)
+
+# Speaker (PAM8403) por el DAC interno (GPIO25)
+dac = DAC(Pin(25))
+dac.write(128)
+
+# Servos pan/tilt
+pan  = PWM(Pin(13), freq=50)
+tilt = PWM(Pin(12), freq=50)
+
+# Cachés: acceso a un local es ~3x más rápido que resolver el atributo
+_adc_read   = adc.read
+_dac_write  = dac.write
+_ticks_us   = utime.ticks_us
+_ticks_diff = utime.ticks_diff
+
+
+# ══════════════════════════════════════════════════════════════════
+# ESTADO GLOBAL (compartido entre hilos)
+# ══════════════════════════════════════════════════════════════════
+# Las escrituras simples de int/float/string son atómicas en MicroPython,
+# así que no necesitamos locks. Lo único que puede pelearse es estado_robot:
+# el hilo de audio lo pone en ESCUCHANDO/HABLANDO/ESPERANDO según su modo,
+# y la laptop puede sobrescribirlo por serial (ESTADO:FELIZ, etc.).
+
+estado_robot = 'ESPERANDO'   # ESPERANDO | ESCUCHANDO | PENSANDO | HABLANDO
+                              # | FELIZ | CURIOSO | SIGUIENDO
+sig_dx       = 0.0            # -1..1 — coord X del rostro (seguimiento)
+sig_dy       = 0.0            # -1..1
+frame_habla  = 0              # contador para animar la boca/ojos al hablar
+reproduciendo = False         # True mientras el DAC reproduce audio
+
+
+# ══════════════════════════════════════════════════════════════════
+# SERVOS
+# ══════════════════════════════════════════════════════════════════
+
+def angulo_duty(grados):
+    """Grados (0-180) -> duty cycle PWM."""
+    pulso = 0.5 + (grados / 180.0) * 2.0    # 0.5–2.5 ms
+    return int((pulso / 20.0) * 1023)
+
+def mover_servos(pan_g, tilt_g):
+    pan_g  = max(PAN_MIN,  min(PAN_MAX,  pan_g))
+    tilt_g = max(TILT_MIN, min(TILT_MAX, tilt_g))
+    pan.duty(angulo_duty(pan_g))
+    tilt.duty(angulo_duty(tilt_g))
+
+def parsear_servo(cmd):
+    """Parsea 'H:90,V:45'. Devuelve (h, v) o (None, None)."""
+    try:
+        partes = cmd.strip().split(',')
+        h = int(partes[0].split(':')[1])
+        v = int(partes[1].split(':')[1])
+        return h, v
+    except Exception:
+        return None, None
+
+# Inicializar al centro
+mover_servos(90, 90)
+print('Servos inicializados en centro (90, 90)')
+
+
+# ══════════════════════════════════════════════════════════════════
+# WIFI
+# ══════════════════════════════════════════════════════════════════
+
 def conectar_wifi():
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
@@ -32,7 +132,7 @@ def conectar_wifi():
         return ip
     print('Conectando al WiFi...')
     wlan.connect(SSID, PASSWORD)
-    for _ in range(30):           # espera hasta 15 segundos
+    for _ in range(30):
         if wlan.isconnected():
             ip = wlan.ifconfig()[0]
             print('Conectado! IP del ESP32:', ip)
@@ -41,181 +141,274 @@ def conectar_wifi():
         print('.', end='')
     raise RuntimeError('No se pudo conectar al WiFi')
 
-# ── Detección de voz por energía ──────────────────────────────────
-def hay_voz():
-    """
-    Detección robusta por MÚLTIPLES ráfagas para distinguir voz real
-    del ruido eléctrico del ESP32.
 
-    El ruido eléctrico produce picos altos pero ESPORÁDICOS (1 ráfaga
-    aislada), mientras que la voz humana es SOSTENIDA (3-5 ráfagas).
-    Una sola ráfaga no basta: el ruido (~1687) supera incluso a la voz
-    (~492), así que medimos la persistencia, no solo el pico.
+# ══════════════════════════════════════════════════════════════════
+# AUDIO — state machine LISTEN ↔ PLAY (busy-wait determinista)
+# ══════════════════════════════════════════════════════════════════
+# Este firmware NO usa Timer ISR (los callbacks de MicroPython no sostienen
+# 8 kHz). En su lugar, cada muestra se garantiza con busy-wait sobre ticks_us.
 
-    Toma 5 ráfagas de 100 muestras con 20 ms de pausa entre ellas y
-    cuenta cuántas superan UMBRAL_VOZ. Devuelve True solo si al menos
-    3 de 5 lo superan.
+def listen_mode(conn_mic, conn_spk, mic_buf, header_buf, header_state):
     """
-    UMBRAL_VOZ = 400
-    activas = 0
-    for _ in range(5):
-        muestras = [adc.read() for _ in range(100)]
-        energia = max(muestras) - min(muestras)
-        if energia > UMBRAL_VOZ:
-            activas += 1
-        utime.sleep_ms(20)          # pausa entre ráfagas
-    return activas >= 3
+    LISTEN: muestrea el ADC a 8 kHz exacto y manda chunks de 32 ms al laptop.
+    Cada SPK_CHECK_EVERY samples (~4 ms) peek el socket spk; si llega un
+    header de audio con length>0, lo devuelve y el caller cambia a PLAY.
+    """
+    global estado_robot
+    estado_robot = 'ESCUCHANDO'
 
-# ── Captura de audio con timing controlado ────────────────────────
-def capturar_audio(segundos=SEGUNDOS):
-    """
-    Captura audio del ADC a SAMPLE_RATE Hz real.
-    Usa utime.ticks_us() para respetar el intervalo entre muestras.
-    Retorna bytes de audio 8-bit.
-    """
-    total = SAMPLE_RATE * segundos
-    datos = bytearray(total)
-    for i in range(total):
-        t0 = utime.ticks_us()
-        datos[i] = adc.read() >> 4           # 12-bit → 8-bit (0–255)
-        # Esperar el resto del intervalo para mantener la tasa de muestreo
-        while utime.ticks_diff(utime.ticks_us(), t0) < INTERVALO:
+    pos = 0
+    chk = 0
+    while True:
+        t0 = _ticks_us()
+
+        # ── 1) sample mic ────────────────────────────────────────
+        mic_buf[pos] = _adc_read() >> 4   # 12-bit -> 8-bit
+        pos += 1
+        if pos >= MIC_CHUNK_SIZE:
+            try:
+                conn_mic.send(mic_buf)
+            except OSError as e:
+                if not (e.args and e.args[0] == EAGAIN):
+                    raise e
+            pos = 0
+
+        # ── 2) peek del socket spk para ver si llegó algo ────────
+        chk += 1
+        if chk >= SPK_CHECK_EVERY:
+            chk = 0
+            try:
+                hp = header_state[0]
+                got = conn_spk.recv(4 - hp)
+                if got:
+                    n = len(got)
+                    for i in range(n):
+                        header_buf[hp + i] = got[i]
+                    hp += n
+                    header_state[0] = hp
+                    if hp >= 4:
+                        tam = struct.unpack('>I', header_buf)[0]
+                        header_state[0] = 0
+                        # ignorar códigos de control
+                        if tam > 0 and tam != 0xFFFFFFFF and tam != 0xFFFFFFFE:
+                            return tam
+            except OSError as e:
+                if not (e.args and e.args[0] == EAGAIN):
+                    raise e
+
+        # ── 3) busy-wait al siguiente sample (timing exacto) ─────
+        while _ticks_diff(_ticks_us(), t0) < INTERVAL_US:
             pass
-    return bytes(datos)
 
-# ── Reproducción de audio con timing controlado ───────────────────
-def reproducir_audio(datos):
-    """
-    Reproduce bytes de audio (8-bit) por el DAC a SAMPLE_RATE Hz.
-    Usa el mismo intervalo que la captura para reproducir a la
-    velocidad correcta.
-    """
-    for byte in datos:
-        t0 = utime.ticks_us()
-        dac.write(byte)
-        while utime.ticks_diff(utime.ticks_us(), t0) < INTERVALO:
-            pass
-    dac.write(128)   # punto medio = silencio al terminar
 
-# ── Recibir y reproducir en streaming (sin acumular en RAM) ───────
-def recibir_y_reproducir(conn, tam):
+def play_mode(conn_spk, total, recv_buf):
     """
-    Recibe 'tam' bytes de audio en chunks y los reproduce por el DAC al
-    vuelo, SIN acumular todo en RAM (evita MemoryError en el heap).
+    PLAY: drena 'total' bytes del socket spk y los escupe al DAC a 8 kHz.
+    El mic NO se muestrea: damos todo el CPU al DAC -> audio limpio.
+    """
+    global reproduciendo, estado_robot
+    estado_robot = 'HABLANDO'
+    reproduciendo = True
 
-    Para que la voz salga FLUIDA (sin micro-cortes):
-      - Buffer preasignado + readinto(): NO se asigna memoria dentro del
-        loop, así el recolector de basura no se dispara a media
-        reproducción (era la causa principal del entrecortado).
-      - gc.collect() una sola vez antes de empezar, con el heap limpio.
-    """
-    chunk_size = 512
-    buf = bytearray(chunk_size)
-    mv  = memoryview(buf)
-    gc.collect()                 # heap limpio antes de reproducir
-    recibidos = 0
-    while recibidos < tam:
-        pedir = tam - recibidos
-        if pedir > chunk_size:
-            pedir = chunk_size
-        n = conn.readinto(mv, pedir)   # llena 'buf' sin asignar memoria nueva
-        if not n:
-            break
-        recibidos += n
-        # Reproducir este chunk inmediatamente, muestra a muestra
-        for j in range(n):
-            t0 = utime.ticks_us()
-            dac.write(buf[j])
-            while utime.ticks_diff(utime.ticks_us(), t0) < INTERVALO:
+    received = 0
+    play_pos = 0
+    play_len = 0
+
+    # bloqueante con timeout para recibir el body con seguridad
+    conn_spk.setblocking(True)
+    conn_spk.settimeout(3.0)
+    mv = memoryview(recv_buf)
+
+    try:
+        while received < total or play_pos < play_len:
+            if play_pos >= play_len:
+                if received >= total:
+                    break
+                want = total - received
+                if want > SPK_RECV_SIZE:
+                    want = SPK_RECV_SIZE
+                n = conn_spk.readinto(mv, want)
+                if not n:
+                    return
+                received += n
+                play_len = n
+                play_pos = 0
+
+            t0 = _ticks_us()
+            _dac_write(recv_buf[play_pos])
+            play_pos += 1
+            while _ticks_diff(_ticks_us(), t0) < INTERVAL_US:
                 pass
-    dac.write(128)   # punto medio = silencio al terminar
+    finally:
+        conn_spk.setblocking(False)
+        _dac_write(128)
+        reproduciendo = False
+        estado_robot = 'ESPERANDO'
 
-# ── Recibir datos completos por TCP ───────────────────────────────
-def recibir_completo(conn, tam):
-    """
-    Recibe exactamente 'tam' bytes de la conexión TCP.
-    TCP puede fragmentar los datos — este loop garantiza que
-    se reciba todo antes de continuar.
-    """
-    datos = b''
-    while len(datos) < tam:
-        chunk = conn.recv(min(512, tam - len(datos)))
-        if not chunk:
-            break
-        datos += chunk
-    return datos
 
-# ── Bucle principal ───────────────────────────────────────────────
-def main():
-    ip = conectar_wifi()
-    print('ESP32 Audio Server listo en', ip)
-    print('SAMPLE_RATE:', SAMPLE_RATE, 'Hz | deteccion de voz: 3 de 5 rafagas')
-    print('Esperando conexion de la laptop...')
+# ══════════════════════════════════════════════════════════════════
+# HILO DE AUDIO
+# ══════════════════════════════════════════════════════════════════
 
-    # Servidor TCP — micrófono (ESP32 → laptop)
+def hilo_audio():
+    global estado_robot
+
     srv_mic = usocket.socket(usocket.AF_INET, usocket.SOCK_STREAM)
     srv_mic.setsockopt(usocket.SOL_SOCKET, usocket.SO_REUSEADDR, 1)
-    srv_mic.bind(('', PORT_MIC))   # '' = todas las interfaces
+    srv_mic.bind(('', PORT_MIC))
     srv_mic.listen(1)
 
-    # Servidor TCP — speaker (laptop → ESP32)
     srv_spk = usocket.socket(usocket.AF_INET, usocket.SOCK_STREAM)
     srv_spk.setsockopt(usocket.SOL_SOCKET, usocket.SO_REUSEADDR, 1)
     srv_spk.bind(('', PORT_SPK))
     srv_spk.listen(1)
 
-    print(f'Puertos: {PORT_MIC} (mic salida) | {PORT_SPK} (speaker entrada)')
+    print('[Audio] Puertos:', PORT_MIC, '(mic)', PORT_SPK, '(spk)')
 
-    # Bucle de reconexión: si la laptop se desconecta, volvemos a esperar
-    # una nueva conexión en lugar de morir (fix 5).
+    # Buffers pre-asignados (no asignar memoria en el hot loop)
+    mic_buf      = bytearray(MIC_CHUNK_SIZE)
+    recv_buf     = bytearray(SPK_RECV_SIZE)
+    header_buf   = bytearray(4)
+    header_state = bytearray(1)
+
     while True:
-        # Aceptar conexiones de la laptop (bloquea hasta que conecte)
-        print('Esperando conexion de la laptop...')
-        conn_mic, addr = srv_mic.accept()
-        print('Laptop conectada en mic:', addr)
-        conn_spk, addr = srv_spk.accept()
-        print('Laptop conectada en speaker:', addr)
-        print('Sistema listo. Habla al microfono.')
-
         try:
+            print('[Audio] Esperando laptop...')
+            conn_mic, addr_m = srv_mic.accept()
+            print('[Audio] mic conectado:', addr_m)
+            conn_spk, addr_s = srv_spk.accept()
+            print('[Audio] spk conectado:', addr_s)
+
+            # mic: bloqueante con timeout corto (para no colgar el ESP32)
+            conn_mic.setblocking(True)
+            conn_mic.settimeout(1.0)
+            # spk: no-bloqueante para el peek de headers en LISTEN
+            conn_spk.setblocking(False)
+
+            header_state[0] = 0
+            dac.write(128)
+            gc.collect()
+            print('[Audio] Sesión iniciada (half-duplex).')
+
             while True:
-                # 1. Monitorear micrófono — esperar voz
-                if not hay_voz():
-                    continue
-
-                # 2. Voz detectada — capturar audio
-                print('Voz detectada — capturando', SEGUNDOS, 'segundos...')
-                audio = capturar_audio(segundos=SEGUNDOS)
-                print('Capturados', len(audio), 'bytes')
-
-                # 3. Enviar al servidor Python en la laptop
-                #    Formato: 4 bytes de longitud (big-endian) + datos
-                longitud = struct.pack('>I', len(audio))
-                conn_mic.sendall(longitud + audio)
-                print('Enviados', len(audio), 'bytes a la laptop')
-
-                # 4-5. Recibir y reproducir la respuesta EN STREAMING.
-                #      Nunca se acumula todo el audio en RAM (evita MemoryError).
-                header = conn_spk.recv(4)
-                if not header or len(header) < 4:
-                    raise OSError('Conexion del speaker cerrada')
-                tam = struct.unpack('>I', header)[0]
-                print('Reproduciendo en streaming:', tam, 'bytes...')
-                recibir_y_reproducir(conn_spk, tam)
-                print('Listo. Esperando siguiente voz...')
+                tam = listen_mode(conn_mic, conn_spk, mic_buf, header_buf, header_state)
+                play_mode(conn_spk, tam, recv_buf)
+                # tras tocar, vuelve a LISTEN automáticamente
 
         except OSError as e:
-            # Conexión perdida: cerramos clientes y volvemos a accept()
-            print('Conexion perdida:', e, '- esperando reconexion...')
+            print('[Audio] Sesión cerrada:', e)
+        except Exception as e:
+            print('[Audio] Error:', e)
         finally:
+            estado_robot = 'ESPERANDO'
             try:
                 conn_mic.close()
-            except OSError:
+            except Exception:
                 pass
             try:
                 conn_spk.close()
-            except OSError:
+            except Exception:
                 pass
-            dac.write(128)   # dejar el speaker en silencio
+            dac.write(128)
+            gc.collect()
 
-main()
+
+# ══════════════════════════════════════════════════════════════════
+# HILO OLED — renderiza el estado emocional a ~12 fps
+# ══════════════════════════════════════════════════════════════════
+
+def hilo_oled():
+    global frame_habla
+    if not OLED_DISPONIBLE:
+        return
+
+    ultimo_parpadeo = utime.ticks_ms()
+    INTERVALO_PARPADEO = 4000   # parpadeo natural cada 4 s
+
+    try:
+        ojos_normal()
+    except Exception as e:
+        print('[OLED] error inicial:', e)
+        return
+
+    while True:
+        ahora = utime.ticks_ms()
+        estado = estado_robot   # snapshot atómico
+        try:
+            if estado == 'ESPERANDO':
+                if utime.ticks_diff(ahora, ultimo_parpadeo) > INTERVALO_PARPADEO:
+                    parpadear()
+                    ultimo_parpadeo = ahora
+                else:
+                    ojos_normal()
+            elif estado == 'ESCUCHANDO':
+                ojos_abiertos()
+            elif estado == 'PENSANDO':
+                ojos_pensando()
+            elif estado == 'HABLANDO':
+                ojos_hablando(frame_habla)
+                frame_habla += 1
+            elif estado == 'FELIZ':
+                ojos_feliz()
+            elif estado == 'CURIOSO':
+                ojos_curioso()
+            elif estado == 'SIGUIENDO':
+                ojos_siguiendo(sig_dx, sig_dy)
+        except Exception as e:
+            print('[OLED] err:', e)
+        utime.sleep_ms(80)   # ~12 fps
+
+
+# ══════════════════════════════════════════════════════════════════
+# ARRANQUE
+# ══════════════════════════════════════════════════════════════════
+
+conectar_wifi()
+
+_thread.start_new_thread(hilo_audio, ())
+print('Hilo de audio iniciado')
+
+if OLED_DISPONIBLE:
+    _thread.start_new_thread(hilo_oled, ())
+    print('Hilo OLED iniciado')
+
+
+# ══════════════════════════════════════════════════════════════════
+# LOOP PRINCIPAL — comandos Serial desde la laptop (USB)
+# ══════════════════════════════════════════════════════════════════
+# Formatos aceptados:
+#   H:90,V:45               -> mover servos
+#   ESTADO:FELIZ            -> sobrescribir el estado (afecta el OLED)
+#   SIGUIENDO:0.12,-0.34    -> coord normalizadas del rostro a seguir
+print('Loop de servos listo. Esperando comandos Serial...')
+
+while True:
+    listo, _, _ = select.select([sys.stdin], [], [], 0)
+    if listo:
+        try:
+            cmd = sys.stdin.readline().strip()
+            if not cmd:
+                pass
+            elif cmd.startswith('H:'):
+                h, v = parsear_servo(cmd)
+                if h is not None:
+                    mover_servos(h, v)
+                    sys.stdout.write('OK H:%d V:%d\n' % (h, v))
+                else:
+                    sys.stdout.write('ERR formato incorrecto\n')
+            elif cmd.startswith('ESTADO:'):
+                estado_robot = cmd.split(':', 1)[1]
+                sys.stdout.write('OK ESTADO:%s\n' % estado_robot)
+            elif cmd.startswith('SIGUIENDO:'):
+                partes = cmd.split(':', 1)[1].split(',')
+                sig_dx = float(partes[0])
+                sig_dy = float(partes[1])
+                estado_robot = 'SIGUIENDO'
+                sys.stdout.write('OK SIGUIENDO\n')
+            else:
+                sys.stdout.write('ERR comando desconocido\n')
+        except Exception as e:
+            sys.stdout.write('ERR %s\n' % e)
+
+    # No saturar el CPU. La laptop envía ~12 cmd/s en seguimiento facial.
+    utime.sleep_ms(20)
