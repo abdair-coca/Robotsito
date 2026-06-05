@@ -33,6 +33,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from audio_io import AudioIO
+from robot_serial import RobotSerial, is_happy
 from config import (
     GROQ_API_KEY,
     SAMPLE_RATE, FRAME_MS, FRAME_SIZE, MIC_CHUNK_BYTES,
@@ -42,6 +43,7 @@ from config import (
     WAKE_WORD_ENABLED, WAKE_WORDS, CONVERSATION_TIMEOUT_S,
     GROQ_LLM_MODEL, GROQ_STT_MODEL, TEMPERATURE, MAX_TOKENS, MAX_RETRIES,
     VOICE, TTS_FFMPEG_FILTERS, TTS_SEND_CHUNK_BYTES, SENTENCE_MIN_CHARS, TTS_TAIL_S,
+    SERIAL_PORT, SERIAL_BAUD,
     SYSTEM_PROMPT, EXIT_PHRASES,
 )
 
@@ -246,7 +248,29 @@ class Chat:
         self.conversation: List[Dict[str, str]] = []
         self.awake = not WAKE_WORD_ENABLED
         self.last_interaction = time.time()
+        # Serial al ESP32 para los comandos ESTADO (OLED). Si el puerto está
+        # ocupado o no existe, queda en no-op silencioso.
+        self.serial = RobotSerial(SERIAL_PORT, SERIAL_BAUD) if SERIAL_PORT else None
+        if self.serial and self.serial.connected:
+            console.print(f"[dim]Serial al ESP32 abierto en {SERIAL_PORT}[/]")
+        else:
+            console.print(f"[dim]Serial al ESP32 no disponible (OK, sigue sin OLED)[/]")
         self._warmup()
+
+    def _estado(self, estado: str) -> None:
+        """Atajo: manda ESTADO:XX al ESP32 si el serial está activo."""
+        if self.serial is not None:
+            self.serial.estado(estado)
+
+    def close(self) -> None:
+        """Libera recursos. Idempotente."""
+        if self.serial is not None:
+            try:
+                self.serial.estado("ESPERANDO")
+            except Exception:
+                pass
+            self.serial.close()
+            self.serial = None
 
     def _warmup(self) -> None:
         """Precalienta lo que tarda en la primera llamada:
@@ -535,7 +559,9 @@ class Chat:
                     continue
                 if cancel.is_set():
                     return
-                audio_q.put(audio)
+                # Pasamos también el texto para que el main loop pueda
+                # decidir el ESTADO emocional (HABLANDO vs FELIZ).
+                audio_q.put((sent, audio))
 
         def llm_worker():
             try:
@@ -558,11 +584,14 @@ class Chat:
         # Main: pulea audio en cuanto esté disponible
         try:
             while True:
-                audio = audio_q.get()
-                if audio is None:
+                item = audio_q.get()
+                if item is None:
                     break
                 if cancel.is_set():
                     break
+                sent_text, audio = item
+                # Cara según el contenido de la frase: si suena positiva => FELIZ
+                self._estado("FELIZ" if is_happy(sent_text) else "HABLANDO")
                 captured = self.speak(audio)
                 if captured is not None:
                     cancel.set()
@@ -582,6 +611,8 @@ class Chat:
                 pass
             llm_thread.join(timeout=2.0)
             tts_thread.join(timeout=2.0)
+            # volver a estado neutro
+            self._estado("ESPERANDO")
 
         return ("".join(full_text), captured)
 
@@ -617,9 +648,11 @@ class Chat:
                     pending_audio = None
                 elif not self.awake:
                     console.print("[dim]👂 Esperando 'Creeper'...[/]")
+                    self._estado("ESPERANDO")
                     audio = self.record_utterance(initial_timeout_s=None)
                 else:
                     console.print("[bold]🎤 Escuchando...[/]")
+                    self._estado("ESCUCHANDO")
                     audio = self.record_utterance(initial_timeout_s=CONVERSATION_TIMEOUT_S)
                     if audio is None and WAKE_WORD_ENABLED:
                         self.awake = False
@@ -628,7 +661,8 @@ class Chat:
                 if audio is None:
                     continue
 
-                # 2) Transcribir
+                # 2) Transcribir (PENSANDO: el OLED muestra cara de pensar)
+                self._estado("PENSANDO")
                 try:
                     with console.status("[cyan]Transcribiendo...[/]", spinner="dots"):
                         text = self.transcribe(audio)

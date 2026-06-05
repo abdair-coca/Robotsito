@@ -66,7 +66,8 @@ TILT_HOME = 90
 ADELANTO_MAX = 6
 
 # --- Tiempos ---
-INTERVALO_SERIAL  = 0.05   # 20 Hz max al ESP32
+INTERVALO_SERIAL  = 0.05   # 20 Hz max al ESP32 (comandos H:/V: de servos)
+INTERVALO_OLED    = 0.08   # ~12 Hz max para comandos al OLED
 TIMEOUT_ROSTRO    = 1.5    # s sin deteccion -> "buscando"
 
 # ══════════════════════════════════════════════════════
@@ -173,6 +174,8 @@ pan_objetivo  = pan_actual
 tilt_objetivo = tilt_actual
 ultimo_envio   = 0.0
 ultimo_rostro  = 0.0
+ultimo_estado_enviado = ''
+ultimo_envio_oled     = 0.0
 
 # ══════════════════════════════════════════════════════
 # FUNCIONES
@@ -193,6 +196,43 @@ def enviar_comando(pan, tilt):
         esp32.write((comando + '\n').encode())
     except Exception as e:
         print(e)
+
+def enviar_estado(estado):
+    """ESTADO:XX al ESP32. Debouncing: no repite el mismo estado por
+    1 s, evitando saturar el serial."""
+    global ultimo_estado_enviado, ultimo_envio_oled
+    if esp32 is None:
+        return
+    ahora = time.time()
+    if estado == ultimo_estado_enviado and ahora - ultimo_envio_oled < 1.0:
+        return
+    ultimo_estado_enviado = estado
+    ultimo_envio_oled = ahora
+    try:
+        esp32.write(f'ESTADO:{estado}\n'.encode())
+    except Exception:
+        pass
+
+def enviar_siguiendo(error_x, error_y, w_frame, h_frame):
+    """SIGUIENDO:dx,dy al ESP32 con throttling a ~12 Hz. El ESP32 pone
+    estado_robot = 'SIGUIENDO' al recibir esto, así que no hace falta
+    mandar ESTADO:SIGUIENDO por separado."""
+    global ultimo_estado_enviado, ultimo_envio_oled
+    if esp32 is None:
+        return
+    ahora = time.time()
+    if ahora - ultimo_envio_oled < INTERVALO_OLED:
+        return
+    ultimo_envio_oled = ahora
+    ultimo_estado_enviado = 'SIGUIENDO'
+    dx = error_x / (w_frame / 2)
+    dy = error_y / (h_frame / 2)
+    dx = max(-1.0, min(1.0, dx))
+    dy = max(-1.0, min(1.0, dy))
+    try:
+        esp32.write(f'SIGUIENDO:{dx:.2f},{dy:.2f}\n'.encode())
+    except Exception:
+        pass
 
 def rostro_mas_grande(detections):
     """Elige la deteccion con mayor area (rostro mas cercano/dominante)."""
@@ -236,6 +276,9 @@ try:
             error_x = cx - CX_CENTRO
             error_y = cy - CY_CENTRO
 
+            # Mover las pupilas del OLED hacia la cara detectada
+            enviar_siguiendo(error_x, error_y, W_FRAME, H_FRAME)
+
             # Solo corregimos fuera de la zona muerta
             d_pan  = SIGNO_PAN  * GANANCIA_PAN  * error_x if abs(error_x) > ZONA_MUERTA_X else 0
             d_tilt = SIGNO_TILT * GANANCIA_TILT * error_y if abs(error_y) > ZONA_MUERTA_Y else 0
@@ -258,10 +301,13 @@ try:
             cv2.putText(frame, f'Error X:{error_x:+d} Y:{error_y:+d}',
                         (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
         else:
-            # Sin rostro: si lleva mucho tiempo perdido, congelamos el objetivo
+            # Sin rostro: actualizar el estado del OLED según el tiempo perdido
             if ahora - ultimo_rostro > TIMEOUT_ROSTRO:
                 cv2.putText(frame, 'Buscando rostro...',
                             (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                enviar_estado('CURIOSO')      # busca activamente
+            else:
+                enviar_estado('ESPERANDO')    # recién perdió el rostro
 
         # --- Suavizado exponencial del valor enviado al servo ---
         pan_suave  = SUAVIZADO * pan_actual  + (1 - SUAVIZADO) * pan_objetivo

@@ -30,6 +30,7 @@ def main() -> None:
 
     while True:
         io = AudioIO()
+        chat = None
         try:
             console.print(f"[dim]Conectando al ESP32 {ESP32_IP}...[/]")
             io.connect()
@@ -49,6 +50,8 @@ def main() -> None:
             import traceback
             traceback.print_exc()
         finally:
+            if chat is not None:
+                chat.close()
             io.close()
 
         console.print(f"[dim]Reintentando en {RECONNECT_S}s...[/]")

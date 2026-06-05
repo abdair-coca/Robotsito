@@ -150,20 +150,26 @@ def conectar_wifi():
 
 def listen_mode(conn_mic, conn_spk, mic_buf, header_buf, header_state):
     """
-    LISTEN: muestrea el ADC a 8 kHz exacto y manda chunks de 32 ms al laptop.
-    Cada SPK_CHECK_EVERY samples (~4 ms) peek el socket spk; si llega un
-    header de audio con length>0, lo devuelve y el caller cambia a PLAY.
+    LISTEN con timing ABSOLUTO.
+
+    El reloj objetivo del sample N es `start + N*125µs`. Si una preempción
+    de FreeRTOS / WiFi atrasa nuestro busy-wait, los samples siguientes
+    se disparan SIN espera hasta alcanzar el reloj real → el ADC mantiene
+    la tasa media de 8000 Hz aunque haya jitter.
+    Cada ~12 s re-anclamos `start` para que sample_idx*INTERVAL_US no se
+    desborde el rango de ticks_us.
     """
     global estado_robot
     estado_robot = 'ESCUCHANDO'
 
     pos = 0
     chk = 0
-    while True:
-        t0 = _ticks_us()
+    start = _ticks_us()
+    sample_idx = 0
 
+    while True:
         # ── 1) sample mic ────────────────────────────────────────
-        mic_buf[pos] = _adc_read() >> 4   # 12-bit -> 8-bit
+        mic_buf[pos] = _adc_read() >> 4
         pos += 1
         if pos >= MIC_CHUNK_SIZE:
             try:
@@ -173,7 +179,7 @@ def listen_mode(conn_mic, conn_spk, mic_buf, header_buf, header_state):
                     raise e
             pos = 0
 
-        # ── 2) peek del socket spk para ver si llegó algo ────────
+        # ── 2) peek del socket spk para ver si llegó audio ───────
         chk += 1
         if chk >= SPK_CHECK_EVERY:
             chk = 0
@@ -189,22 +195,35 @@ def listen_mode(conn_mic, conn_spk, mic_buf, header_buf, header_state):
                     if hp >= 4:
                         tam = struct.unpack('>I', header_buf)[0]
                         header_state[0] = 0
-                        # ignorar códigos de control
                         if tam > 0 and tam != 0xFFFFFFFF and tam != 0xFFFFFFFE:
                             return tam
             except OSError as e:
                 if not (e.args and e.args[0] == EAGAIN):
                     raise e
 
-        # ── 3) busy-wait al siguiente sample (timing exacto) ─────
-        while _ticks_diff(_ticks_us(), t0) < INTERVAL_US:
+        # ── 3) busy-wait absoluto: target = start + idx*125µs ────
+        sample_idx += 1
+        target_us = sample_idx * INTERVAL_US
+        while _ticks_diff(_ticks_us(), start) < target_us:
             pass
+
+        # ── 4) re-anclar cada ~12 s para no overflow ticks_us ────
+        if sample_idx >= 100000:
+            start = _ticks_us()
+            sample_idx = 0
 
 
 def play_mode(conn_spk, total, recv_buf):
     """
-    PLAY: drena 'total' bytes del socket spk y los escupe al DAC a 8 kHz.
-    El mic NO se muestrea: damos todo el CPU al DAC -> audio limpio.
+    PLAY con timing ABSOLUTO.
+
+    Cada sample N debe escribirse al DAC en el tick `start + N*125µs`.
+    Si la lectura del socket o un context-switch nos atrasan, los
+    siguientes samples se disparan sin busy-wait hasta alcanzar el reloj
+    → el audio total dura exactamente lo que debe (mantiene 8 kHz medio).
+
+    Si nos atrasamos > 50 ms (network hiccup raro), re-anclamos para no
+    causar un "chipmunk" de catch-up demasiado largo.
     """
     global reproduciendo, estado_robot
     estado_robot = 'HABLANDO'
@@ -214,13 +233,16 @@ def play_mode(conn_spk, total, recv_buf):
     play_pos = 0
     play_len = 0
 
-    # bloqueante con timeout para recibir el body con seguridad
     conn_spk.setblocking(True)
     conn_spk.settimeout(3.0)
     mv = memoryview(recv_buf)
 
+    start = _ticks_us()
+    sample_idx = 0
+
     try:
         while received < total or play_pos < play_len:
+            # refill del buffer cuando se vacía
             if play_pos >= play_len:
                 if received >= total:
                     break
@@ -234,16 +256,30 @@ def play_mode(conn_spk, total, recv_buf):
                 play_len = n
                 play_pos = 0
 
-            t0 = _ticks_us()
+            # ── busy-wait absoluto al target del sample ─────────
+            target_us = sample_idx * INTERVAL_US
+            while _ticks_diff(_ticks_us(), start) < target_us:
+                pass
+
             _dac_write(recv_buf[play_pos])
             play_pos += 1
-            while _ticks_diff(_ticks_us(), t0) < INTERVAL_US:
-                pass
+            sample_idx += 1
+
+            # ── cap del catch-up: si atrasados > 50 ms, re-anclar ─
+            # (sin esto, tras un blocking de TCP largo el DAC dispara
+            # cientos de samples sin espera y suena tipo chipmunk)
+            if (sample_idx & 1023) == 0:
+                drift = _ticks_diff(_ticks_us(), start) - sample_idx * INTERVAL_US
+                if drift > 50000:
+                    start = _ticks_us()
+                    sample_idx = 0
     finally:
         conn_spk.setblocking(False)
         _dac_write(128)
-        reproduciendo = False
+        # IMPORTANTE: cambiar el estado ANTES de bajar reproduciendo
+        # para que el hilo OLED no dibuje 'HABLANDO' en el flanco final.
         estado_robot = 'ESPERANDO'
+        reproduciendo = False
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -314,49 +350,128 @@ def hilo_audio():
 
 
 # ══════════════════════════════════════════════════════════════════
-# HILO OLED — renderiza el estado emocional a ~12 fps
+# HILO OLED — renderiza el estado emocional con MÍNIMO impacto en audio
 # ══════════════════════════════════════════════════════════════════
+# El SH1106 por SoftI2C tarda ~25 ms en cada disp.show() — eso bloquea
+# todo el busy-wait del audio y produce voz lenta + mic pierde samples.
+# Estrategia:
+#   - DURANTE reproduciendo: 0 actualizaciones (excepto el flanco de
+#     entrada). Audio limpio.
+#   - Estados estáticos (ESCUCHANDO/PENSANDO/FELIZ/CURIOSO): 1 sola
+#     llamada a show() al CAMBIAR de estado, después idle.
+#   - HABLANDO/SIGUIENDO/parpadeo: animaciones a 12 fps cuando no hay
+#     audio compitiendo.
+#   - Sleep adaptativo: 80 ms cuando anima, 250 ms cuando está idle.
+
+OLED_FPS_MS_ACTIVE = 80       # ~12 fps cuando hay animación
+OLED_FPS_MS_IDLE   = 250      # ~4  fps cuando todo está estático
+OLED_FPS_MS_AUDIO  = 300      # casi dormido durante PLAY
+PARPADEO_MS        = 4000     # blink natural cada 4 s en ESPERANDO
+
+def _dibujar_estatico(estado):
+    """Dibuja un estado estático (no anima). Usado solo en flancos."""
+    if   estado == 'ESPERANDO':  ojos_normal()
+    elif estado == 'ESCUCHANDO': ojos_abiertos()
+    elif estado == 'PENSANDO':   ojos_pensando()
+    elif estado == 'HABLANDO':   ojos_hablando(0)
+    elif estado == 'FELIZ':      ojos_feliz()
+    elif estado == 'CURIOSO':    ojos_curioso()
 
 def hilo_oled():
     global frame_habla
+
     if not OLED_DISPONIBLE:
         return
 
-    ultimo_parpadeo = utime.ticks_ms()
-    INTERVALO_PARPADEO = 4000   # parpadeo natural cada 4 s
-
-    try:
-        ojos_normal()
-    except Exception as e:
-        print('[OLED] error inicial:', e)
-        return
-
+    # Bucle exterior: reinicia si el hilo crashea catastróficamente.
     while True:
-        ahora = utime.ticks_ms()
-        estado = estado_robot   # snapshot atómico
         try:
-            if estado == 'ESPERANDO':
-                if utime.ticks_diff(ahora, ultimo_parpadeo) > INTERVALO_PARPADEO:
-                    parpadear()
-                    ultimo_parpadeo = ahora
-                else:
-                    ojos_normal()
-            elif estado == 'ESCUCHANDO':
-                ojos_abiertos()
-            elif estado == 'PENSANDO':
-                ojos_pensando()
-            elif estado == 'HABLANDO':
-                ojos_hablando(frame_habla)
-                frame_habla += 1
-            elif estado == 'FELIZ':
-                ojos_feliz()
-            elif estado == 'CURIOSO':
-                ojos_curioso()
-            elif estado == 'SIGUIENDO':
-                ojos_siguiendo(sig_dx, sig_dy)
+            gc.collect()
+            ultimo_parpadeo = utime.ticks_ms()
+            last_state = ''            # fuerza el primer dibujo
+            last_dxq   = -999
+            last_dyq   = -999
+
+            try:
+                ojos_normal()
+                last_state = 'ESPERANDO'
+            except Exception as e:
+                print('[OLED] init err:', e)
+                utime.sleep(2)
+                continue
+
+            while True:
+                ahora  = utime.ticks_ms()
+                estado = estado_robot      # snapshot atómico
+                cambio = (estado != last_state)
+
+                # ── 1) AUDIO REPRODUCIENDO: prácticamente dormimos ──
+                if reproduciendo:
+                    if cambio:
+                        # único draw permitido durante PLAY: cuando el
+                        # laptop manda FELIZ/HABLANDO/etc. al entrar.
+                        try:
+                            _dibujar_estatico(estado)
+                            last_state = estado
+                        except Exception as e:
+                            print('[OLED] play err:', e)
+                    utime.sleep_ms(OLED_FPS_MS_AUDIO)
+                    continue
+
+                # ── 2) Estados estáticos: 1 draw por cambio ─────────
+                try:
+                    if estado in ('ESCUCHANDO', 'PENSANDO', 'FELIZ', 'CURIOSO'):
+                        if cambio:
+                            _dibujar_estatico(estado)
+                            last_state = estado
+                        utime.sleep_ms(OLED_FPS_MS_IDLE)
+                        continue
+
+                    # ── 3) ESPERANDO: estático + parpadeo cada 4 s ──
+                    if estado == 'ESPERANDO':
+                        if cambio:
+                            ojos_normal()
+                            last_state = estado
+                            ultimo_parpadeo = ahora
+                        elif utime.ticks_diff(ahora, ultimo_parpadeo) > PARPADEO_MS:
+                            parpadear()
+                            ojos_normal()
+                            ultimo_parpadeo = ahora
+                        utime.sleep_ms(OLED_FPS_MS_IDLE)
+                        continue
+
+                    # ── 4) HABLANDO sin reproducir (raro): anima ────
+                    if estado == 'HABLANDO':
+                        ojos_hablando(frame_habla)
+                        frame_habla += 1
+                        last_state = estado
+                        utime.sleep_ms(OLED_FPS_MS_ACTIVE)
+                        continue
+
+                    # ── 5) SIGUIENDO: redraw solo si las pupilas se mueven ─
+                    if estado == 'SIGUIENDO':
+                        # cuantizar dx/dy a pasos de 10% para evitar redraws
+                        # por ruido fino del tracker
+                        dxq = int(sig_dx * 10)
+                        dyq = int(sig_dy * 10)
+                        if cambio or dxq != last_dxq or dyq != last_dyq:
+                            ojos_siguiendo(sig_dx, sig_dy)
+                            last_state = estado
+                            last_dxq = dxq
+                            last_dyq = dyq
+                        utime.sleep_ms(OLED_FPS_MS_ACTIVE)
+                        continue
+
+                except Exception as e:
+                    print('[OLED] frame err:', e)
+
+                # estado desconocido: idle
+                utime.sleep_ms(OLED_FPS_MS_IDLE)
+
         except Exception as e:
-            print('[OLED] err:', e)
-        utime.sleep_ms(80)   # ~12 fps
+            # Hilo crasheó (ej. I2C colgado): reintentar después de 1 s
+            print('[OLED] hilo crash, reiniciando:', e)
+            utime.sleep(1)
 
 
 # ══════════════════════════════════════════════════════════════════
