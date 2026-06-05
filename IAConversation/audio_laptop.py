@@ -15,6 +15,7 @@ from scipy.signal import butter, sosfilt
 from groq import Groq
 from langdetect import detect, LangDetectException
 from config import GROQ_API_KEY
+from time import sleep
 
 # Binario de ffmpeg incluido en imageio-ffmpeg (no depende de un ffmpeg global)
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
@@ -39,8 +40,8 @@ RESET_MEMORIA_SEG = 60        # >60s sin hablar -> se olvida la charla (nuevo vi
 cliente_groq = Groq(api_key=GROQ_API_KEY)
 historial = []                # memoria de conversación: [{role, content}, ...]
 
-SYSTEM_PROMPT = """Eres un robot interactivo de feria universitaria.
-Creado por Abdair, estudiante de Ingeniería Informática, UATF, Bolivia.
+SYSTEM_PROMPT = """Eres un robot interactivo Con sentimientos y personalidad amable y divertido.
+Creado por Abdair, estudiante de Ingeniería Informática, UATF, Bolivia, tiene 20 años.
 Responde en máximo 2 oraciones. Sin markdown ni formato especial.
 Responde SIEMPRE en el mismo idioma de la pregunta."""
 
@@ -162,6 +163,7 @@ def procesar_sesion(sock_mic, sock_spk):
         #    lanzando socket.timeout; lo reintentamos para seguir esperando voz
         #    sin tratarlo como desconexión y permitir Ctrl+C en Windows.
         while True:
+            print('Esperando audio del ESP32...')
             try:
                 header = sock_mic.recv(4)
                 break
@@ -201,6 +203,7 @@ def procesar_sesion(sock_mic, sock_spk):
         audio_resp = tts_a_bytes(respuesta, idioma)
         sock_spk.sendall(struct.pack('>I', len(audio_resp)) + audio_resp)
         print(f'Respuesta enviada: {len(audio_resp)} bytes')
+        sleep(4)  # espera para evitar solapamiento si el usuario habla rápido
 
 # ── Loop principal con reconexión ─────────────────────────
 def main():
