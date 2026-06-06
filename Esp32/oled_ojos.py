@@ -1,53 +1,97 @@
-# oled_ojos.py — Expresiones animadas para Creeper en OLED SH1106 128x64.
+# oled_ojos.py — Expresiones RICAS para Creeper en OLED SH1106 128x64.
 #
-# Cada expresión se dibuja con ELIPSES matemáticas (ecuación x²/a² + y²/b² = 1)
-# rellenadas scanline por scanline. Sin librerías de gráficos externas, solo
-# math + framebuf.
+# Arquitectura:
+#   - Cada estado emocional es un DICT de parámetros animables:
+#       rx, ry          → tamaño del ojo
+#       eyelid_top      → 0..1 cuánto baja el párpado superior
+#       pupil_r         → radio de la pupila (0 = sin pupila, p.ej. FELIZ)
+#       pupil_dx, dy    → desplazamiento de la pupila
+#       brow_y          → offset vertical de la ceja
+#       brow_angle      → -1 (frunce) .. 0 (recta) .. 1 (arqueada hacia arriba)
+#       special         → modo especial ('half_bot' = solo mitad inferior ^^)
 #
-# API pública:
-#   ojos_normal()
-#   ojos_abiertos()
-#   ojos_pensando()
-#   ojos_hablando(frame)
-#   ojos_feliz()
-#   ojos_curioso()
-#   ojos_siguiendo(dx, dy)
-#   parpadear()
+#   - `tick(estado, ...)` interpola el config actual hacia el target del
+#     nuevo estado en `_morph_total` frames, agrega microsacadas y
+#     sleepy progresivo en idle largo, y dibuja UN frame.
 #
-# Demo: `python oled_ojos.py` en el ESP32 cicla por todas las expresiones.
+#   - `do_blink()` ejecuta una animación de parpadeo (~150 ms, 7 frames).
+#
+# Filosofía: máxima vivacidad. Cada llamada a tick() es un disp.show()
+# completo (~25 ms de I2C). El caller decide la cadencia.
 
 import math
 import time
+import random
 from machine import Pin, SoftI2C
 from sh1106 import SH1106_I2C
 
 
-# ── Inicialización del display ─────────────────────────────────
-# (al importar este módulo, el OLED queda listo en `disp`)
+# ── Display ────────────────────────────────────────────────────
 _i2c = SoftI2C(scl=Pin(22), sda=Pin(21), freq=400000)
 disp = SH1106_I2C(128, 64, _i2c, Pin(16), addr=0x3C)
 
 
-# ── Geometría base ─────────────────────────────────────────────
-OJO_IZQ_X = 32      # centro horizontal del ojo izquierdo
-OJO_DER_X = 96      # centro horizontal del ojo derecho
-OJO_Y     = 32      # centro vertical de ambos ojos
-
-OJO_RX    = 14      # radio horizontal — ancho ≈ 28 px
-OJO_RY    = 11      # radio vertical   — alto  ≈ 22 px
-
-PUPILA_R          = 4    # radio de la pupila negra interior
-PUPILA_MAX_DESP   = 5    # tope (px) de desplazamiento en ojos_siguiendo
+# ── Geometría ──────────────────────────────────────────────────
+OJO_IZQ_X = 32
+OJO_DER_X = 96
+OJO_Y     = 32
+MOUTH_CX  = 64
+MOUTH_CY  = 55
+PUPILA_MAX_DESP = 6
 
 
-# ══════════════════════════════════════════════════════════════════
-# HELPERS DE DIBUJO — todos operan directamente sobre `disp`
-# ══════════════════════════════════════════════════════════════════
+# ── Configuraciones por estado ─────────────────────────────────
+# Notar los detalles:
+#   ESCUCHANDO: ojos más abiertos + cejas levemente arqueadas (atento)
+#   PENSANDO:   un ojo entrecerrado por arriba + pupila arriba-derecha
+#               + cejas fruncidas (focalizado)
+#   FELIZ:      solo mitad inferior (^^) + cejas onduladas
+#   CURIOSO:    ojos más grandes + cejas muy arqueadas
+#   HABLANDO:   ojos normales (la boca anima por separado)
+_STATES = {
+    'ESPERANDO':  {'rx':14, 'ry':11, 'pupil_r':4, 'pupil_dx':0, 'pupil_dy':0,
+                   'eyelid_top':0.0, 'brow_y':-19, 'brow_angle':0.0,
+                   'special':None},
+    'ESCUCHANDO': {'rx':15, 'ry':13, 'pupil_r':4, 'pupil_dx':0, 'pupil_dy':0,
+                   'eyelid_top':0.0, 'brow_y':-22, 'brow_angle':0.4,
+                   'special':None},
+    'PENSANDO':   {'rx':14, 'ry':11, 'pupil_r':3, 'pupil_dx':4, 'pupil_dy':-3,
+                   'eyelid_top':0.35,'brow_y':-17, 'brow_angle':-0.6,
+                   'special':None},
+    'HABLANDO':   {'rx':14, 'ry':11, 'pupil_r':4, 'pupil_dx':0, 'pupil_dy':0,
+                   'eyelid_top':0.0, 'brow_y':-19, 'brow_angle':0.2,
+                   'special':None},
+    'FELIZ':      {'rx':15, 'ry':10, 'pupil_r':0, 'pupil_dx':0, 'pupil_dy':0,
+                   'eyelid_top':0.0, 'brow_y':-19, 'brow_angle':0.5,
+                   'special':'half_bot'},
+    'CURIOSO':    {'rx':17, 'ry':14, 'pupil_r':5, 'pupil_dx':0, 'pupil_dy':0,
+                   'eyelid_top':0.0, 'brow_y':-23, 'brow_angle':0.8,
+                   'special':None},
+    'SIGUIENDO':  {'rx':14, 'ry':11, 'pupil_r':4, 'pupil_dx':0, 'pupil_dy':0,
+                   'eyelid_top':0.0, 'brow_y':-19, 'brow_angle':0.1,
+                   'special':None},
+}
+
+# Buffers de estado interno (sin allocs en runtime)
+_current      = dict(_STATES['ESPERANDO'])
+_target       = dict(_STATES['ESPERANDO'])
+_morph_total  = 5
+_morph_left   = 0
+_last_state   = 'ESPERANDO'
+
+# Microsacadas
+_micro_dx     = 0
+_micro_dy     = 0
+_micro_tick   = 0
+_MICRO_PERIOD = 25     # frames entre nuevos targets (~2.5 s @ 10 fps)
+
+
+# ── Helpers geométricos ────────────────────────────────────────
 
 def _fill_ellipse(cx, cy, rx, ry, color):
-    """Elipse rellena usando x²/rx² + y²/ry² = 1, scanline por scanline.
-    Para cada fila y, calcula x_max = rx·sqrt(1 - y²/ry²) y dibuja
-    una hline horizontal centrada. Sin alocaciones de listas/strings."""
+    """Elipse rellena scanline-por-scanline."""
+    rx = int(rx)
+    ry = int(ry)
     if rx <= 0 or ry <= 0:
         return
     ry2 = ry * ry
@@ -59,9 +103,10 @@ def _fill_ellipse(cx, cy, rx, ry, color):
         x = int(math.sqrt(val) / ry)
         disp.hline(cx - x, cy + dy, 2 * x + 1, color)
 
-
 def _fill_ellipse_inferior(cx, cy, rx, ry, color):
-    """Solo la mitad inferior de una elipse (para los ojos felices ^^)."""
+    """Solo la mitad inferior (para ojos felices ^^)."""
+    rx = int(rx)
+    ry = int(ry)
     if rx <= 0 or ry <= 0:
         return
     ry2 = ry * ry
@@ -74,143 +119,293 @@ def _fill_ellipse_inferior(cx, cy, rx, ry, color):
         disp.hline(cx - x, cy + dy, 2 * x + 1, color)
 
 
-def _ojo(cx, cy, rx, ry, pup_dx=0, pup_dy=0):
-    """Dibuja un ojo completo: globo blanco + pupila negra + brillo blanco.
-    pup_dx/dy: desplazamiento de la pupila respecto al centro del ojo."""
-    # globo ocular (blanco)
+# ── Lerp de configs (para transiciones suaves) ─────────────────
+def _lerp_to(t):
+    """Interpola _current → _target con factor t, devuelve dict en RAM.
+    Bools (special) se cambian al cruzar el 50%."""
+    out = {}
+    for k, av in _current.items():
+        bv = _target[k]
+        if isinstance(av, bool) or isinstance(av, str) or av is None or isinstance(bv, str) or bv is None:
+            out[k] = bv if t >= 0.5 else av
+        else:
+            out[k] = av + (bv - av) * t
+    return out
+
+
+# ── Primitivas de dibujo ───────────────────────────────────────
+
+def _draw_eye(cx, cy, c, mdx=0, mdy=0):
+    """Dibuja UN ojo según el dict c. mdx/mdy son microsacadas."""
+    if c.get('special') == 'half_bot':
+        _fill_ellipse_inferior(cx, cy - 2, c['rx'], c['ry'] * 2, 1)
+        return
+
+    rx = max(1, int(c['rx']))
+    ry = max(1, int(c['ry']))
+
+    # Globo blanco
     _fill_ellipse(cx, cy, rx, ry, 1)
-    # pupila (negra)
-    pup_x = cx + pup_dx
-    pup_y = cy + pup_dy
-    _fill_ellipse(pup_x, pup_y, PUPILA_R, PUPILA_R, 0)
-    # brillo: 2 px blancos en la esquina superior-izquierda de la pupila
-    disp.pixel(pup_x - 1, pup_y - 1, 1)
-    disp.pixel(pup_x - 2, pup_y - 2, 1)
+
+    # Párpado superior (rectángulo negro que cubre la parte de arriba)
+    elt = c['eyelid_top']
+    if elt > 0.02:
+        h_clip = int(ry * 2 * elt)
+        if h_clip > 0:
+            disp.fill_rect(cx - rx - 1, cy - ry - 1, 2 * rx + 3, h_clip, 0)
+
+    # Pupila (no dibujar si el párpado la cubre o si pupil_r == 0)
+    pr = max(0, int(c['pupil_r']))
+    if pr > 0 and elt < 0.85:
+        px = cx + int(c['pupil_dx']) + mdx
+        py = cy + int(c['pupil_dy']) + mdy
+        # Mantener pupila dentro del ojo
+        if px < cx - rx + pr: px = cx - rx + pr
+        if px > cx + rx - pr: px = cx + rx - pr
+        if py < cy - ry + pr: py = cy - ry + pr
+        if py > cy + ry - pr: py = cy + ry - pr
+        _fill_ellipse(px, py, pr, pr, 0)
+        # Brillo de 2 px en la esquina sup-izq de la pupila
+        disp.pixel(px - 1, py - 1, 1)
+        disp.pixel(px - 2, py - 1, 1)
+
+def _draw_brow(cx, cy_base, brow_y, angle):
+    """Ceja como línea de 2 px de grosor. cx = centro X del ojo.
+    angle: -1 frunce ( /\\ ), 0 recta, 1 arqueada ( \\/ ).
+    Para el ojo IZQ el extremo externo es a la IZQUIERDA del cx.
+    Para el DER, a la derecha."""
+    y_center = cy_base + int(brow_y)
+    if y_center < 1:
+        return
+    half_w = 12
+    dy = int(angle * 4)
+    if cx < 64:    # ojo izquierdo: outer = lado izq
+        x1, y1 = cx - half_w, y_center - dy
+        x2, y2 = cx + half_w, y_center + dy
+    else:          # ojo derecho: outer = lado der
+        x1, y1 = cx - half_w, y_center + dy
+        x2, y2 = cx + half_w, y_center - dy
+    disp.line(x1, y1, x2, y2, 1)
+    disp.line(x1, y1 + 1, x2, y2 + 1, 1)
+
+def _draw_mouth(open_amount):
+    """Boca centrada en MOUTH_CX, MOUTH_CY. open_amount in [0, 1]."""
+    if open_amount < 0.05:
+        disp.line(MOUTH_CX - 5, MOUTH_CY, MOUTH_CX + 5, MOUTH_CY, 1)
+    else:
+        h = int(1 + open_amount * 4)
+        _fill_ellipse(MOUTH_CX, MOUTH_CY, 6, h, 1)
+        if h >= 3:
+            _fill_ellipse(MOUTH_CX, MOUTH_CY, 4, h - 2, 0)
+
+def _draw_zzz():
+    """Tres Z's pequeñas en la esquina sup-derecha para sleepy."""
+    disp.text('z', 92, 6, 1)
+    disp.text('Z', 103, 1, 1)
 
 
-# ══════════════════════════════════════════════════════════════════
-# EXPRESIONES
-# ══════════════════════════════════════════════════════════════════
+# ── API PÚBLICA ────────────────────────────────────────────────
 
-def ojos_normal():
-    """Reposo: ojos mirando al frente, tamaño normal."""
+def reset_state():
+    """Resetea el estado interno (útil al reconectarse)."""
+    global _current, _target, _morph_left, _last_state
+    global _micro_dx, _micro_dy, _micro_tick
+    _current = dict(_STATES['ESPERANDO'])
+    _target  = dict(_STATES['ESPERANDO'])
+    _morph_left = 0
+    _last_state = 'ESPERANDO'
+    _micro_dx = 0
+    _micro_dy = 0
+    _micro_tick = 0
+
+
+def tick(estado='ESPERANDO', sig_dx=0.0, sig_dy=0.0,
+         idle_ms=0, mouth_amp=0.0):
+    """
+    Renderiza UN frame con todos los adornos:
+      - Transición lerp si el estado cambió (5 frames)
+      - Microsacadas en estados 'alerta' (ESPERANDO, ESCUCHANDO, PENSANDO)
+      - Sleepy progresivo en ESPERANDO si idle_ms > 15 s
+      - Pupila siguiendo en SIGUIENDO
+      - Boca animada en HABLANDO según mouth_amp [0, 1]
+    Devuelve True si dibujó, False si saltó por estado desconocido.
+    """
+    global _current, _target, _morph_left, _last_state
+    global _micro_dx, _micro_dy, _micro_tick
+
+    # Cambio de estado → iniciar morph
+    if estado != _last_state:
+        if estado in _STATES:
+            _target = dict(_STATES[estado])
+        else:
+            _target = dict(_STATES['ESPERANDO'])
+        _morph_left = _morph_total
+        _last_state = estado
+
+    # Aplicar paso de morph
+    if _morph_left > 0:
+        t = 1.0 - (_morph_left - 1) / _morph_total
+        rendering = _lerp_to(t)
+        _morph_left -= 1
+        if _morph_left == 0:
+            # Snap final
+            for k in _current:
+                _current[k] = _target[k]
+    else:
+        rendering = dict(_current)
+
+    # Microsacadas (solo en estados conscientes, no SIGUIENDO ni FELIZ)
+    if estado in ('ESPERANDO', 'ESCUCHANDO', 'PENSANDO'):
+        _micro_tick += 1
+        if _micro_tick >= _MICRO_PERIOD:
+            _micro_tick = 0
+            _micro_dx = random.randint(-2, 2)
+            _micro_dy = random.randint(-1, 1)
+    else:
+        _micro_dx = 0
+        _micro_dy = 0
+
+    # SIGUIENDO: override de pupila desde rostro detectado
+    if estado == 'SIGUIENDO':
+        if sig_dx >  1.0: sig_dx =  1.0
+        elif sig_dx < -1.0: sig_dx = -1.0
+        if sig_dy >  1.0: sig_dy =  1.0
+        elif sig_dy < -1.0: sig_dy = -1.0
+        rendering['pupil_dx'] = sig_dx * PUPILA_MAX_DESP
+        rendering['pupil_dy'] = sig_dy * PUPILA_MAX_DESP
+
+    # SLEEPY: párpado baja progresivamente en ESPERANDO largo
+    show_zzz = False
+    if estado == 'ESPERANDO':
+        if idle_ms > 15000:
+            sleep_factor = (idle_ms - 15000) / 15000.0
+            if sleep_factor > 1.0:
+                sleep_factor = 1.0
+            target_lid = sleep_factor * 0.65
+            if target_lid > rendering['eyelid_top']:
+                rendering['eyelid_top'] = target_lid
+        if idle_ms > 30000:
+            rendering['eyelid_top'] = 0.95     # casi cerrados
+            if (idle_ms // 1500) & 1 == 0:
+                show_zzz = True
+
+    # DRAW
     disp.fill(0)
-    _ojo(OJO_IZQ_X, OJO_Y, OJO_RX, OJO_RY)
-    _ojo(OJO_DER_X, OJO_Y, OJO_RX, OJO_RY)
+    _draw_eye(OJO_IZQ_X, OJO_Y, rendering, _micro_dx, _micro_dy)
+    _draw_eye(OJO_DER_X, OJO_Y, rendering, _micro_dx, _micro_dy)
+
+    # Cejas: solo si los ojos están razonablemente abiertos
+    if rendering['eyelid_top'] < 0.8 and rendering.get('special') != 'half_bot':
+        _draw_brow(OJO_IZQ_X, OJO_Y, rendering['brow_y'], rendering['brow_angle'])
+        _draw_brow(OJO_DER_X, OJO_Y, rendering['brow_y'], rendering['brow_angle'])
+    elif rendering.get('special') == 'half_bot':
+        # Cejas extra arqueadas para FELIZ
+        _draw_brow(OJO_IZQ_X, OJO_Y, rendering['brow_y'], rendering['brow_angle'])
+        _draw_brow(OJO_DER_X, OJO_Y, rendering['brow_y'], rendering['brow_angle'])
+
+    # Boca durante HABLANDO
+    if estado == 'HABLANDO' or mouth_amp > 0:
+        _draw_mouth(mouth_amp)
+
+    if show_zzz:
+        _draw_zzz()
+
     disp.show()
+    return True
 
 
-def ojos_abiertos():
-    """Escuchando: ojos más grandes y abiertos."""
-    disp.fill(0)
-    _ojo(OJO_IZQ_X, OJO_Y, OJO_RX + 2, OJO_RY + 3)
-    _ojo(OJO_DER_X, OJO_Y, OJO_RX + 2, OJO_RY + 3)
-    disp.show()
-
-
-def ojos_pensando():
-    """Pensando: ojo izq entrecerrado (línea fina), ojo der mira arriba."""
-    disp.fill(0)
-    # izquierdo entrecerrado — línea horizontal gruesa
-    _fill_ellipse(OJO_IZQ_X, OJO_Y, OJO_RX, 3, 1)
-    # derecho normal con pupila apuntando arriba
-    _ojo(OJO_DER_X, OJO_Y, OJO_RX, OJO_RY, 0, -4)
-    disp.show()
-
-
-def ojos_hablando(frame):
-    """Boca/ojos en movimiento al hablar: parpadeo alterno (4 fases)."""
-    disp.fill(0)
-    fase = frame & 3   # 0,1,2,3
-    if fase == 0 or fase == 2:
-        # ambos abiertos
-        _ojo(OJO_IZQ_X, OJO_Y, OJO_RX, OJO_RY)
-        _ojo(OJO_DER_X, OJO_Y, OJO_RX, OJO_RY)
-    elif fase == 1:
-        # izq abierto, der entrecerrado
-        _ojo(OJO_IZQ_X, OJO_Y, OJO_RX, OJO_RY)
-        _fill_ellipse(OJO_DER_X, OJO_Y, OJO_RX, 5, 1)
-    else:   # fase == 3
-        _fill_ellipse(OJO_IZQ_X, OJO_Y, OJO_RX, 5, 1)
-        _ojo(OJO_DER_X, OJO_Y, OJO_RX, OJO_RY)
-    disp.show()
-
-
-def ojos_feliz():
-    """Ojos curvados hacia arriba (^_^): solo la mitad inferior."""
-    disp.fill(0)
-    _fill_ellipse_inferior(OJO_IZQ_X, OJO_Y - 2, OJO_RX, OJO_RY, 1)
-    _fill_ellipse_inferior(OJO_DER_X, OJO_Y - 2, OJO_RX, OJO_RY, 1)
-    disp.show()
-
-
-def ojos_curioso():
-    """Curioso: ojo izq agrandado, ojo der entrecerrado."""
-    disp.fill(0)
-    _ojo(OJO_IZQ_X, OJO_Y, OJO_RX + 4, OJO_RY + 4)
-    _ojo(OJO_DER_X, OJO_Y, OJO_RX - 2, OJO_RY - 3)
-    disp.show()
-
-
-def ojos_siguiendo(dx, dy):
-    """Pupilas siguen el rostro: dx, dy normalizados a [-1, 1].
-    Desplazamiento máximo de pupila: PUPILA_MAX_DESP px."""
-    disp.fill(0)
-    # clamp manual (sin allocs)
-    if dx >  1.0: dx =  1.0
-    elif dx < -1.0: dx = -1.0
-    if dy >  1.0: dy =  1.0
-    elif dy < -1.0: dy = -1.0
-    px = int(dx * PUPILA_MAX_DESP)
-    py = int(dy * PUPILA_MAX_DESP)
-    _ojo(OJO_IZQ_X, OJO_Y, OJO_RX, OJO_RY, px, py)
-    _ojo(OJO_DER_X, OJO_Y, OJO_RX, OJO_RY, px, py)
-    disp.show()
-
-
-# Fases del parpadeo: altura vertical de la elipse en cada cuadro
-# (de abierto -> cerrado -> abierto). Tupla const => sin allocs por llamada.
-_PARPADEO_FASES = (OJO_RY, 8, 4, 2, 4, 8, OJO_RY)
-
-def parpadear():
-    """Cierre y apertura suave de ambos ojos. ~140 ms total."""
-    for ry in _PARPADEO_FASES:
+def do_blink():
+    """Parpadeo: cierre + apertura suave en ~150 ms (7 frames)."""
+    # Usar el config actual como base
+    fases = (1.0, 0.4, 0.0, 0.0, 0.4, 0.8, 1.0)   # multiplicador de ry
+    for f in fases:
+        cfg = dict(_current)
+        cfg['ry'] = max(1, int(_current['ry'] * f))
+        cfg['eyelid_top'] = 0
         disp.fill(0)
-        _fill_ellipse(OJO_IZQ_X, OJO_Y, OJO_RX, ry, 1)
-        _fill_ellipse(OJO_DER_X, OJO_Y, OJO_RX, ry, 1)
-        # pupila + brillo solo cuando el ojo está suficientemente abierto
-        if ry >= OJO_RY - 2:
-            _fill_ellipse(OJO_IZQ_X, OJO_Y, PUPILA_R, PUPILA_R, 0)
-            _fill_ellipse(OJO_DER_X, OJO_Y, PUPILA_R, PUPILA_R, 0)
-            disp.pixel(OJO_IZQ_X - 1, OJO_Y - 1, 1)
-            disp.pixel(OJO_DER_X - 1, OJO_Y - 1, 1)
+        _draw_eye(OJO_IZQ_X, OJO_Y, cfg, _micro_dx, _micro_dy)
+        _draw_eye(OJO_DER_X, OJO_Y, cfg, _micro_dx, _micro_dy)
+        if f > 0.5 and cfg.get('special') != 'half_bot':
+            _draw_brow(OJO_IZQ_X, OJO_Y, cfg['brow_y'], cfg['brow_angle'])
+            _draw_brow(OJO_DER_X, OJO_Y, cfg['brow_y'], cfg['brow_angle'])
         disp.show()
         time.sleep_ms(20)
 
 
-# ══════════════════════════════════════════════════════════════════
-# DEMO — recorre todas las expresiones en bucle
-# ══════════════════════════════════════════════════════════════════
+def do_wink(eye='left'):
+    """Guiño asimétrico: cierra UN solo ojo brevemente."""
+    fases = (1.0, 0.3, 0.0, 0.3, 1.0)
+    for f in fases:
+        cfg_open  = dict(_current)
+        cfg_close = dict(_current)
+        cfg_close['ry'] = max(1, int(_current['ry'] * f))
+        cfg_close['eyelid_top'] = 0
+        disp.fill(0)
+        if eye == 'left':
+            _draw_eye(OJO_IZQ_X, OJO_Y, cfg_close)
+            _draw_eye(OJO_DER_X, OJO_Y, cfg_open)
+        else:
+            _draw_eye(OJO_IZQ_X, OJO_Y, cfg_open)
+            _draw_eye(OJO_DER_X, OJO_Y, cfg_close)
+        if cfg_open.get('special') != 'half_bot':
+            _draw_brow(OJO_IZQ_X, OJO_Y, cfg_open['brow_y'], cfg_open['brow_angle'])
+            _draw_brow(OJO_DER_X, OJO_Y, cfg_open['brow_y'], cfg_open['brow_angle'])
+        disp.show()
+        time.sleep_ms(35)
 
+
+# ── API legacy (back-compat con código previo) ─────────────────
+
+def ojos_normal():     tick('ESPERANDO')
+def ojos_abiertos():   tick('ESCUCHANDO')
+def ojos_pensando():   tick('PENSANDO')
+def ojos_feliz():      tick('FELIZ')
+def ojos_curioso():    tick('CURIOSO')
+def ojos_siguiendo(dx, dy): tick('SIGUIENDO', sig_dx=dx, sig_dy=dy)
+def parpadear():       do_blink()
+
+def ojos_hablando(frame):
+    # Convertimos el contador a una amplitud tipo seno
+    amp = abs(math.sin(frame * 0.4)) * 0.85
+    tick('HABLANDO', mouth_amp=amp)
+
+
+# ══════════════════════════════════════════════════════════════
+# DEMO
+# ══════════════════════════════════════════════════════════════
 if __name__ == '__main__':
-    print('Demo oled_ojos — Ctrl+C para salir')
+    print('Demo oled_ojos (rich edition)')
+    estados = ['ESPERANDO', 'ESCUCHANDO', 'PENSANDO',
+               'HABLANDO', 'FELIZ', 'CURIOSO']
     try:
         while True:
-            print(' normal');    ojos_normal();    time.sleep_ms(1500)
-            print(' parpadea');  parpadear();      time.sleep_ms(300)
-            print(' abiertos');  ojos_abiertos();  time.sleep_ms(1500)
-            print(' pensando');  ojos_pensando();  time.sleep_ms(1500)
-            print(' hablando')
-            for i in range(16):
-                ojos_hablando(i)
-                time.sleep_ms(120)
-            print(' feliz');     ojos_feliz();     time.sleep_ms(1500)
-            print(' curioso');   ojos_curioso();   time.sleep_ms(1500)
-            print(' siguiendo (circular)')
+            for s in estados:
+                print(' ->', s)
+                for i in range(30):
+                    if s == 'HABLANDO':
+                        amp = abs(math.sin(i * 0.4)) * 0.85
+                        tick(s, mouth_amp=amp)
+                    else:
+                        tick(s, idle_ms=i * 100)
+                    time.sleep_ms(100)
+                if s == 'ESPERANDO':
+                    print('   parpadeo')
+                    do_blink()
+                if s == 'FELIZ':
+                    print('   guiño')
+                    do_wink('left')
+            # Probar SIGUIENDO
+            print(' -> SIGUIENDO (círculo)')
             for ang in range(0, 360, 12):
-                rad = ang * 0.01745329   # grados -> rad
-                ojos_siguiendo(math.cos(rad), math.sin(rad))
-                time.sleep_ms(45)
+                rad = ang * 0.01745
+                tick('SIGUIENDO', sig_dx=math.cos(rad), sig_dy=math.sin(rad))
+                time.sleep_ms(80)
+            # Probar SLEEPY
+            print(' -> Sleepy (40 s de ESPERANDO)')
+            for i in range(400):
+                tick('ESPERANDO', idle_ms=i * 100)
+                time.sleep_ms(100)
     except KeyboardInterrupt:
-        ojos_normal()
+        reset_state()
+        tick('ESPERANDO')
         print('demo terminada')

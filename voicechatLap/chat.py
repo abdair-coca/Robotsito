@@ -27,6 +27,7 @@ import numpy as np
 import webrtcvad
 import edge_tts
 import imageio_ffmpeg
+import sounddevice as sd
 from scipy.signal import butter, sosfilt
 from groq import Groq
 from rich.console import Console
@@ -36,16 +37,21 @@ from audio_io import AudioIO
 from robot_serial import RobotSerial, is_happy
 from config import (
     GROQ_API_KEY,
+    USE_ROBOT_SPEAKER,
+    USE_ROBOT_MIC,
     SAMPLE_RATE, FRAME_MS, FRAME_SIZE, MIC_CHUNK_BYTES,
     VAD_AGGRESSIVENESS, SILENCE_END_MS, MAX_RECORDING_S, MIN_SPEECH_S, PREROLL_FRAMES,
     NOISE_FLOOR_INIT, NOISE_FLOOR_MARGIN, NOISE_FLOOR_MIN, SPEECH_START_FRAMES,
     BARGE_IN_ENABLED, BARGE_IN_SUSTAINED_MS, BARGE_IN_SETTLE_MS, BARGE_IN_RMS_U8,
     WAKE_WORD_ENABLED, WAKE_WORDS, CONVERSATION_TIMEOUT_S,
+    WAKE_CANONICAL, WAKE_PREFIXES, WAKE_MIN_CONF, WAKE_FUZZY_THR,
+    WAKE_COOLDOWN_S, WAKE_MAX_UTTR_CHARS,
     GROQ_LLM_MODEL, GROQ_STT_MODEL, TEMPERATURE, MAX_TOKENS, MAX_RETRIES,
     VOICE, TTS_FFMPEG_FILTERS, TTS_SEND_CHUNK_BYTES, SENTENCE_MIN_CHARS, TTS_TAIL_S,
     SERIAL_PORT, SERIAL_BAUD,
     SYSTEM_PROMPT, EXIT_PHRASES,
 )
+from wake_word import WakeWordDetector
 
 
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
@@ -194,21 +200,28 @@ def synthesize_to_u8(text: str) -> bytes:
 
 
 # =========================
-# Wake word helpers
+# Wake word helpers — DEPRECATED
 # =========================
+# Se mantienen como wrappers para no romper código que los importe directamente,
+# pero internamente usan el nuevo WakeWordDetector. Usá `self.wake_detector`
+# en código nuevo.
+
+_WAKE_LEGACY_DETECTOR = WakeWordDetector(
+    wake_word=WAKE_CANONICAL,
+    prefixes=WAKE_PREFIXES,
+    min_confidence=WAKE_MIN_CONF,
+    fuzzy_threshold=WAKE_FUZZY_THR,
+    cooldown_s=0.0,                 # legacy helpers no manejan cooldown
+    max_utterance_chars=WAKE_MAX_UTTR_CHARS,
+)
 
 def contains_wake_word(text: str) -> bool:
-    low = text.lower()
-    return any(w in low for w in WAKE_WORDS)
+    return _WAKE_LEGACY_DETECTOR.detect(text).detected
 
 
 def strip_wake_word(text: str) -> str:
-    low = text.lower()
-    for w in sorted(WAKE_WORDS, key=len, reverse=True):
-        idx = low.find(w)
-        if idx >= 0:
-            return (text[:idx] + text[idx + len(w):]).strip(" ,.:;-¿?¡!")
-    return text
+    r = _WAKE_LEGACY_DETECTOR.detect(text)
+    return r.payload if r.detected else text
 
 
 def is_exit(text: str) -> bool:
@@ -251,6 +264,15 @@ class Chat:
         self.conversation: List[Dict[str, str]] = []
         self.awake = not WAKE_WORD_ENABLED
         self.last_interaction = time.time()
+        # Detector con cooldown stateful — propio de esta sesión
+        self.wake_detector = WakeWordDetector(
+            wake_word=WAKE_CANONICAL,
+            prefixes=WAKE_PREFIXES,
+            min_confidence=WAKE_MIN_CONF,
+            fuzzy_threshold=WAKE_FUZZY_THR,
+            cooldown_s=WAKE_COOLDOWN_S,
+            max_utterance_chars=WAKE_MAX_UTTR_CHARS,
+        )
         # Serial al ESP32 para los comandos ESTADO (OLED). Si el puerto está
         # ocupado o no existe, queda en no-op silencioso.
         self.serial = RobotSerial(SERIAL_PORT, SERIAL_BAUD) if SERIAL_PORT else None
@@ -258,6 +280,17 @@ class Chat:
             console.print(f"[dim]Serial al ESP32 abierto en {SERIAL_PORT}[/]")
         else:
             console.print(f"[dim]Serial al ESP32 no disponible (OK, sigue sin OLED)[/]")
+        
+        # Inicializar Pygame mixer si usamos altavoz local
+        if not USE_ROBOT_SPEAKER:
+            import pygame
+            try:
+                if not pygame.mixer.get_init():
+                    pygame.mixer.init(frequency=24000, size=-16, channels=1, buffer=512)
+                console.print("[dim]Pygame mixer inicializado para reproducción local.[/]")
+            except Exception as e:
+                console.print(f"[red]✗ Error al inicializar pygame mixer: {e}[/]")
+                
         self._warmup()
 
     def _estado(self, estado: str) -> None:
@@ -301,99 +334,178 @@ class Chat:
         threading.Thread(target=warm_ffmpeg, daemon=True).start()
 
     # ----- record (VAD endpointing) -----
-
+ 
     def record_utterance(self, initial_timeout_s: Optional[float]) -> Optional[bytes]:
         """
-        Endpointing con gate adaptativo de ruido:
-          - webrtcvad da spectral matching (es voz humana?)
-          - RMS gate sobre un piso de ruido auto-aprendido descarta el ruido
-            ambiente de fondo (gente lejos, ventilador, click esporádico)
-          - Arranca solo tras SPEECH_START_FRAMES consecutivos => sin falsos
-            disparos por un solo click
-          - Termina tras SILENCE_END_MS sin voz real => no espera por ruido
+        Graba audio. Si USE_ROBOT_MIC es True, graba del robot (ESP32 uint8).
+        Si es False, graba del micrófono local de la laptop (sounddevice float32).
         """
-        self.reader.drain()
+        if USE_ROBOT_MIC:
+            # Grabar desde el micrófono del robot (ESP32)
+            self.reader.drain()
 
-        silence_frames_needed = SILENCE_END_MS // FRAME_MS
-        max_frames = (MAX_RECORDING_S * 1000) // FRAME_MS
+            silence_frames_needed = SILENCE_END_MS // FRAME_MS
+            max_frames = (MAX_RECORDING_S * 1000) // FRAME_MS
 
-        preroll: deque[bytes] = deque(maxlen=PREROLL_FRAMES)
-        recorded: List[bytes] = []
-        speech_started = False
-        silence_streak = 0
-        waited_ms = 0
-        speech_ms = 0
+            preroll: deque[bytes] = deque(maxlen=PREROLL_FRAMES)
+            recorded: List[bytes] = []
+            speech_started = False
+            silence_streak = 0
+            waited_ms = 0
+            speech_ms = 0
 
-        # Gate adaptativo
-        noise_floor = NOISE_FLOOR_INIT
-        speech_run = 0           # frames consecutivos clasificados como voz real
+            # Gate adaptativo
+            noise_floor = NOISE_FLOOR_INIT
+            speech_run = 0           # frames consecutivos clasificados como voz real
 
-        while True:
-            frame = self.reader.next_frame(timeout=1.0)
-            if frame is None:
-                if (
-                    not speech_started
-                    and initial_timeout_s is not None
-                    and waited_ms / 1000.0 >= initial_timeout_s
-                ):
-                    return None
-                if not self.io.connected:
-                    return None
-                continue
-
-            is_vad = self.vad.is_speech(uint8_to_int16_bytes(frame), SAMPLE_RATE)
-            level = rms_uint8(frame)
-            # Voz real = VAD positivo Y nivel claramente sobre el piso
-            speech_threshold = max(noise_floor * NOISE_FLOOR_MARGIN, NOISE_FLOOR_MIN)
-            is_real_speech = is_vad and level > speech_threshold
-
-            if not speech_started:
-                preroll.append(frame)
-                # Aprender el piso de ruido solo con frames que NO son voz
-                if not is_vad:
-                    noise_floor = 0.92 * noise_floor + 0.08 * level
-
-                if is_real_speech:
-                    speech_run += 1
-                    if speech_run >= SPEECH_START_FRAMES:
-                        # arrancamos: el preroll ya contiene el primer audio
-                        speech_started = True
-                        recorded.extend(preroll)
-                        speech_ms = FRAME_MS * len(preroll)
-                else:
-                    speech_run = 0
-                    waited_ms += FRAME_MS
+            while True:
+                frame = self.reader.next_frame(timeout=1.0)
+                if frame is None:
                     if (
-                        initial_timeout_s is not None
+                        not speech_started
+                        and initial_timeout_s is not None
                         and waited_ms / 1000.0 >= initial_timeout_s
                     ):
                         return None
-            else:
-                recorded.append(frame)
-                speech_ms += FRAME_MS
-                if is_real_speech:
-                    silence_streak = 0
-                else:
-                    silence_streak += 1
-                    # mientras estemos en "silencio aparente", el piso puede
-                    # seguir subiendo si el ambiente se puso ruidoso
-                    if not is_vad:
-                        noise_floor = 0.95 * noise_floor + 0.05 * level
-                    if silence_streak >= silence_frames_needed:
-                        break
-                if len(recorded) >= max_frames:
-                    break
+                    if not self.io.connected:
+                        return None
+                    continue
 
-        if not speech_started or speech_ms / 1000.0 < MIN_SPEECH_S:
-            return None
-        if silence_streak > 0:
-            recorded = recorded[:-silence_streak]
-        return b"".join(recorded)
+                is_vad = self.vad.is_speech(uint8_to_int16_bytes(frame), SAMPLE_RATE)
+                level = rms_uint8(frame)
+                # Voz real = VAD positivo Y nivel claramente sobre el piso
+                speech_threshold = max(noise_floor * NOISE_FLOOR_MARGIN, NOISE_FLOOR_MIN)
+                is_real_speech = is_vad and level > speech_threshold
+
+                if not speech_started:
+                    preroll.append(frame)
+                    # Aprender el piso de ruido solo con frames que NO son voz
+                    if not is_vad:
+                        noise_floor = 0.92 * noise_floor + 0.08 * level
+
+                    if is_real_speech:
+                        speech_run += 1
+                        if speech_run >= SPEECH_START_FRAMES:
+                            # arrancamos: el preroll ya contiene el primer audio
+                            speech_started = True
+                            recorded.extend(preroll)
+                            speech_ms = FRAME_MS * len(preroll)
+                    else:
+                        speech_run = 0
+                        waited_ms += FRAME_MS
+                        if (
+                            initial_timeout_s is not None
+                            and waited_ms / 1000.0 >= initial_timeout_s
+                        ):
+                            return None
+                else:
+                    recorded.append(frame)
+                    speech_ms += FRAME_MS
+                    if is_real_speech:
+                        silence_streak = 0
+                    else:
+                        silence_streak += 1
+                        # mientras estemos en "silencio aparente", el piso puede seguir subiendo
+                        if not is_vad:
+                            noise_floor = 0.95 * noise_floor + 0.05 * level
+                        if silence_streak >= silence_frames_needed:
+                            break
+                    if len(recorded) >= max_frames:
+                        break
+
+            if not speech_started or speech_ms / 1000.0 < MIN_SPEECH_S:
+                return None
+            if silence_streak > 0:
+                recorded = recorded[:-silence_streak]
+            return b"".join(recorded)
+
+        else:
+            # Grabar desde el micrófono local de la laptop (sounddevice float32)
+            LAP_SAMPLE_RATE = 16000
+            LAP_FRAME_MS = 30
+            LAP_FRAME_SIZE = int(LAP_SAMPLE_RATE * LAP_FRAME_MS / 1000)  # 480 muestras
+
+            vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
+            silence_frames_needed = SILENCE_END_MS // LAP_FRAME_MS
+            max_frames = (MAX_RECORDING_S * 1000) // LAP_FRAME_MS
+
+            preroll_lap: deque[bytes] = deque(maxlen=PREROLL_FRAMES)
+            recorded_lap: List[bytes] = []
+            speech_started = False
+            silence_streak = 0
+            waited_ms = 0
+            speech_ms = 0
+            q: queue.Queue = queue.Queue()
+
+            def cb(indata, frames, time_info, status):
+                q.put(indata.copy())
+
+            try:
+                with sd.InputStream(
+                    samplerate=LAP_SAMPLE_RATE,
+                    channels=1,
+                    dtype="float32",
+                    blocksize=LAP_FRAME_SIZE,
+                    callback=cb,
+                ):
+                    while True:
+                        try:
+                            frame = q.get(timeout=1.0).flatten()
+                        except queue.Empty:
+                            continue
+
+                        # Convertir float32 a PCM 16-bit
+                        pcm16 = (np.clip(frame, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
+                        is_speech = vad.is_speech(pcm16, LAP_SAMPLE_RATE)
+
+                        if not speech_started:
+                            preroll_lap.append(pcm16)
+                            if is_speech:
+                                speech_started = True
+                                recorded_lap.extend(preroll_lap)
+                                speech_ms = LAP_FRAME_MS * len(preroll_lap)
+                            else:
+                                waited_ms += LAP_FRAME_MS
+                                if initial_timeout_s is not None and waited_ms / 1000.0 >= initial_timeout_s:
+                                    return None
+                        else:
+                            recorded_lap.append(pcm16)
+                            speech_ms += LAP_FRAME_MS
+                            if is_speech:
+                                silence_streak = 0
+                            else:
+                                silence_streak += 1
+                                if silence_streak >= silence_frames_needed:
+                                    break
+                            if len(recorded_lap) >= max_frames:
+                                break
+            except Exception as e:
+                console.print(f"[red]✗ No se pudo acceder al micrófono de la laptop: {e}[/]")
+                return None
+
+            if not speech_started or speech_ms / 1000.0 < MIN_SPEECH_S:
+                return None
+
+            if silence_streak > 0:
+                recorded_lap = recorded_lap[:-silence_streak]
+
+            # Convertir a bytes WAV de 16 kHz mono
+            buf = _io.BytesIO()
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(LAP_SAMPLE_RATE)
+                wf.writeframes(b"".join(recorded_lap))
+            return buf.getvalue()
 
     # ----- STT -----
+ 
+    def transcribe(self, audio_bytes: bytes) -> str:
+        if USE_ROBOT_MIC:
+            wav_bytes = uint8_frames_to_wav_bytes(audio_bytes)
+        else:
+            wav_bytes = audio_bytes
 
-    def transcribe(self, uint8_audio: bytes) -> str:
-        wav_bytes = uint8_frames_to_wav_bytes(uint8_audio)
         last_exc: Optional[Exception] = None
         for attempt in range(MAX_RETRIES + 1):
             try:
@@ -464,60 +576,239 @@ class Chat:
                 # no hubo respuesta: revertir el user
                 self.conversation.pop()
 
-    # ----- speak (HALF-DUPLEX, sin barge-in) -----
+    # ----- barge-in listener -----
 
-    def speak(self, audio_u8: bytes) -> Optional[bytes]:
+    def _barge_in_listener(
+        self,
+        captured: list[Optional[bytes]],
+        stop_playback_event: threading.Event,
+        is_busy_cb: callable,
+        stop_cb: callable
+    ):
         """
-        Half-duplex: mandamos UN solo mensaje (header con el length total)
-        y luego el body en chunks paciendo a tasa real-time. El ESP32 lo
-        toca de corrido sin volver a LISTEN entre chunks => audio fluido.
-
-        Devuelve None siempre (compat con la cola de streaming).
+        Escucha el mic de la laptop mientras el robot o la laptop habla.
+        Si detecta interrupción:
+          1. Activa stop_playback_event y llama a stop_cb().
+          2. Sigue grabando hasta silencio.
+          3. Guarda el WAV resultante en captured[0].
         """
-        if not audio_u8:
+        LAP_SAMPLE_RATE = 16000
+        LAP_FRAME_MS = 30
+        LAP_FRAME_SIZE = int(LAP_SAMPLE_RATE * LAP_FRAME_MS / 1000)  # 480 muestras
+
+        vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
+        sustained_needed = max(1, BARGE_IN_SUSTAINED_MS // LAP_FRAME_MS)
+        silence_frames_needed = SILENCE_END_MS // LAP_FRAME_MS
+        settle_frames = BARGE_IN_SETTLE_MS // LAP_FRAME_MS
+        max_frames = (MAX_RECORDING_S * 1000) // LAP_FRAME_MS
+
+        sustained = 0
+        frames_seen = 0
+        speech_started = False
+        silence_streak = 0
+        speech_ms = 0
+        preroll: deque[bytes] = deque(maxlen=PREROLL_FRAMES)
+        recorded: list[bytes] = []
+
+        q: queue.Queue = queue.Queue()
+
+        def cb(indata, frames, time_info, status):
+            q.put(indata.copy())
+
+        try:
+            with sd.InputStream(
+                samplerate=LAP_SAMPLE_RATE,
+                channels=1,
+                dtype="float32",
+                blocksize=LAP_FRAME_SIZE,
+                callback=cb,
+            ):
+                while True:
+                    # Si el playback ya no está ocupado y no ha empezado la voz del usuario, terminamos
+                    if not speech_started and not is_busy_cb():
+                        return
+                    if speech_started and len(recorded) >= max_frames:
+                        break
+
+                    try:
+                        frame = q.get(timeout=0.1).flatten()
+                    except queue.Empty:
+                        continue
+
+                    frames_seen += 1
+                    # Convertir float32 a PCM 16-bit
+                    pcm16 = (np.clip(frame, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
+
+                    # ignoramos el arranque del TTS para evitar eco
+                    if is_busy_cb() and frames_seen < settle_frames:
+                        continue
+
+                    is_vad = vad.is_speech(pcm16, LAP_SAMPLE_RATE)
+                    # Medimos el RMS del float32 para el gate de nivel
+                    level = float(np.sqrt(np.mean(np.square(frame, dtype=np.float64)))) if frame.size > 0 else 0.0
+
+                    if not speech_started:
+                        preroll.append(pcm16)
+                        # Mientras suene la voz, exigimos VAD Y RMS;
+                        # si ya terminó, basta con VAD
+                        if is_busy_cb():
+                            BARGE_IN_RMS = 0.02
+                            looks_like_speech = is_vad and level > BARGE_IN_RMS
+                        else:
+                            looks_like_speech = is_vad
+
+                        if looks_like_speech:
+                            sustained += 1
+                            if sustained >= sustained_needed:
+                                speech_started = True
+                                recorded.extend(preroll)
+                                speech_ms = LAP_FRAME_MS * len(preroll)
+                                stop_playback_event.set()
+                                stop_cb()
+                        else:
+                            sustained = max(0, sustained - 1)
+                    else:
+                        recorded.append(pcm16)
+                        speech_ms += LAP_FRAME_MS
+                        if is_vad:
+                            silence_streak = 0
+                        else:
+                            silence_streak += 1
+                            if silence_streak >= silence_frames_needed:
+                                break
+        except Exception as e:
+            # Si el mic no se puede abrir, simplemente salimos sin activar barge-in
+            console.print(f"[dim]Barge-in: no se pudo abrir el mic de la laptop: {e}[/]")
+            return
+
+        if speech_started and speech_ms / 1000.0 >= MIN_SPEECH_S:
+            if silence_streak > 0:
+                recorded = recorded[:-silence_streak]
+            
+            buf = _io.BytesIO()
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(LAP_SAMPLE_RATE)
+                wf.writeframes(b"".join(recorded))
+            captured[0] = buf.getvalue()
+
+    # ----- speak -----
+
+    def speak(self, audio: bytes) -> Optional[bytes]:
+        """
+        Reproduce audio. Si USE_ROBOT_SPEAKER es True, lo transmite al robot (u8).
+        Si es False, lo reproduce localmente vía pygame mixer (MP3).
+        """
+        if not audio:
             return None
 
-        total = len(audio_u8)
-        playback_rate = SAMPLE_RATE
-        send_rate = int(SAMPLE_RATE * 1.15)     # Pacing de envío 15% más rápido para mantener lleno el buffer del ESP32 y evitar microcortes
-        chunk_size = TTS_SEND_CHUNK_BYTES
+        # Configurar eventos para control del barge-in
+        stop_playback_event = threading.Event()
+        captured: list[Optional[bytes]] = [None]
+        watcher: Optional[threading.Thread] = None
 
-        # 1) Abrir el mensaje grande con un único header (4 bytes BE)
-        if not self.io.send_audio_header(total):
-            return None
+        if USE_ROBOT_SPEAKER:
+            total = len(audio)
+            playback_rate = SAMPLE_RATE
+            send_rate = int(SAMPLE_RATE * 1.15)
+            chunk_size = TTS_SEND_CHUNK_BYTES
 
-        # 2) Pre-fill: mandamos el primer colchón sin pacing para que el
-        #    ESP32 arranque de inmediato y su TCP buffer se llene.
-        prefill = min(4096, total)
-        if not self.io.send_audio_body(audio_u8[:prefill]):
-            return None
-        sent = prefill
-        start = time.monotonic()
+            # 1) Abrir el mensaje grande
+            if not self.io.send_audio_header(total):
+                return None
 
-        # 3) Pacing de envío: mantenemos al ESP32 alimentado con margen seguro
-        while sent < total:
-            elapsed = time.monotonic() - start
-            target = int(elapsed * send_rate) + chunk_size
-            if sent < target:
-                end = min(sent + chunk_size, total)
-                if not self.io.send_audio_body(audio_u8[sent:end]):
-                    return None
-                sent = end
-            else:
-                time.sleep(0.01)
+            # 2) Pre-fill
+            prefill = min(4096, total)
+            if not self.io.send_audio_body(audio[:prefill]):
+                return None
+            sent = prefill
+            start = time.monotonic()
 
-        # 4) Esperar a que el ESP32 termine de reproducir usando la tasa de playback real
-        expected_duration = total / playback_rate
-        elapsed = time.monotonic() - start
-        if elapsed < expected_duration + TTS_TAIL_S:
-            time.sleep(expected_duration + TTS_TAIL_S - elapsed)
+            # Definir callbacks de control para el watcher
+            is_busy = lambda: (sent < total or (time.monotonic() - start) < (total / playback_rate) + TTS_TAIL_S) and not stop_playback_event.is_set()
+            stop_cb = lambda: self.io.send_stop()
 
-        return None
+            # Arrancar watcher de barge-in sólo si usamos el mic de la laptop y está habilitado el barge-in
+            if not USE_ROBOT_MIC and BARGE_IN_ENABLED:
+                watcher = threading.Thread(
+                    target=self._barge_in_listener,
+                    args=(captured, stop_playback_event, is_busy, stop_cb),
+                    daemon=True
+                )
+                watcher.start()
+
+            # 3) Pacing de envío
+            while sent < total and not stop_playback_event.is_set():
+                elapsed = time.monotonic() - start
+                target = int(elapsed * send_rate) + chunk_size
+                if sent < target:
+                    end = min(sent + chunk_size, total)
+                    if not self.io.send_audio_body(audio[sent:end]):
+                        break
+                    sent = end
+                else:
+                    time.sleep(0.01)
+
+            # 4) Esperar a que el ESP32 termine de reproducir si no fue cancelado
+            if not stop_playback_event.is_set():
+                expected_duration = total / playback_rate
+                elapsed = time.monotonic() - start
+                while elapsed < expected_duration + TTS_TAIL_S and not stop_playback_event.is_set():
+                    time.sleep(0.01)
+                    elapsed = time.monotonic() - start
+
+            if watcher is not None:
+                watcher.join(timeout=MAX_RECORDING_S + 1.0)
+
+            return captured[0]
+        else:
+            # Reproducción local vía pygame (MP3 bytes)
+            import pygame
+            f = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+            temp_path = f.name
+            try:
+                f.write(audio)
+                f.close()
+                pygame.mixer.music.load(temp_path)
+                pygame.mixer.music.play()
+
+                is_busy = lambda: pygame.mixer.music.get_busy()
+                stop_cb = lambda: pygame.mixer.music.stop()
+
+                # Arrancar watcher de barge-in sólo si usamos el mic de la laptop y está habilitado el barge-in
+                if not USE_ROBOT_MIC and BARGE_IN_ENABLED:
+                    watcher = threading.Thread(
+                        target=self._barge_in_listener,
+                        args=(captured, stop_playback_event, is_busy, stop_cb),
+                        daemon=True
+                    )
+                    watcher.start()
+
+                while pygame.mixer.music.get_busy() and not stop_playback_event.is_set():
+                    time.sleep(0.02)
+            finally:
+                try:
+                    pygame.mixer.music.unload()
+                except Exception:
+                    pass
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+
+            if watcher is not None:
+                watcher.join(timeout=MAX_RECORDING_S + 1.0)
+
+            return captured[0]
 
     def say(self, text: str) -> Optional[bytes]:
-        """Atajo: sintetiza un texto y lo reproduce con barge-in."""
+        """Atajo: sintetiza un texto y lo reproduce."""
         try:
-            audio = synthesize_to_u8(text)
+            if USE_ROBOT_SPEAKER:
+                audio = synthesize_to_u8(text)
+            else:
+                audio = asyncio.run(_edge_tts_to_bytes(text))
         except Exception:
             traceback.print_exc()
             return None
@@ -556,7 +847,10 @@ class Chat:
                 if cancel.is_set():
                     return
                 try:
-                    audio = synthesize_to_u8(sent)
+                    if USE_ROBOT_SPEAKER:
+                        audio = synthesize_to_u8(sent)
+                    else:
+                        audio = asyncio.run(_edge_tts_to_bytes(sent))
                 except Exception:
                     traceback.print_exc()
                     continue
@@ -625,8 +919,10 @@ class Chat:
         console.print(Panel.fit(
             f"[bold green]🤖 Creeper conectado al ESP32[/]\n"
             f"Voz: [cyan]{VOICE}[/]  •  "
+            f"Micrófono: [cyan]{'Robot' if USE_ROBOT_MIC else 'Laptop'}[/]  •  "
+            f"Altavoz: [cyan]{'Robot' if USE_ROBOT_SPEAKER else 'Laptop'}[/]\n"
             f"Wake word: [cyan]{'ON' if WAKE_WORD_ENABLED else 'OFF'}[/]  •  "
-            f"Barge-in: [cyan]{'ON' if BARGE_IN_ENABLED else 'OFF'}[/]\n"
+            f"Barge-in: [cyan]{'ON' if (BARGE_IN_ENABLED and not USE_ROBOT_MIC) else 'OFF'}[/]\n"
             f"[dim]Di 'adiós' para salir. Ctrl+C también funciona.[/]",
             title="Creeper", border_style="green",
         ))
@@ -644,6 +940,8 @@ class Chat:
                     console.print("[dim]💤 Volviendo a modo wake word...[/]")
                     self.awake = False
                     self.reader.drain()
+                    # liberar el cooldown para que la próxima frase pueda disparar
+                    self.wake_detector.reset_cooldown()
 
                 # 1) Obtener audio del usuario
                 if pending_audio is not None:
@@ -677,15 +975,22 @@ class Chat:
                 if not text:
                     continue
 
-                # 3) Gate wake word
+                # 3) Gate wake word — usa el detector con confidence + cooldown
                 if not self.awake:
-                    if not contains_wake_word(text):
-                        console.print(f"[dim]…ignorado: {text!r}[/]")
+                    wake_res = self.wake_detector.detect(text)
+                    if not wake_res.detected:
+                        console.print(
+                            f"[dim]…ignorado:[/] {text!r} "
+                            f"[dim](conf={wake_res.confidence:.2f}, {wake_res.reason})[/]"
+                        )
                         continue
                     self.awake = True
                     self.last_interaction = time.time()
-                    payload = strip_wake_word(text)
-                    console.print(f"[bold cyan]🧑 Tú:[/] {text}")
+                    payload = wake_res.payload
+                    console.print(
+                        f"[bold cyan]🧑 Tú:[/] {text} "
+                        f"[dim](wake conf={wake_res.confidence:.2f}, {wake_res.reason})[/]"
+                    )
                     if not payload:
                         self.say("¿Sí?")
                         continue

@@ -18,15 +18,17 @@ import network, usocket, utime, struct, gc, sys, select
 import _thread
 from config import SSID, PASSWORD
 
-# OLED — opcional: si el módulo no está, se omite el hilo OLED
+# OLED — opcional: si el módulo no está, se omite el hilo OLED.
+# Usamos el nuevo API tick() / do_blink() / do_wink() del módulo.
 try:
-    from oled_ojos import (ojos_normal, ojos_abiertos, ojos_pensando,
-                            ojos_hablando, ojos_feliz, ojos_curioso,
-                            ojos_siguiendo, parpadear)
+    import oled_ojos
     OLED_DISPONIBLE = True
 except Exception as _e_oled:
     OLED_DISPONIBLE = False
     print('OLED no disponible:', _e_oled)
+
+import math
+import urandom
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -36,7 +38,7 @@ except Exception as _e_oled:
 PORT_MIC    = 5005
 PORT_SPK    = 5006
 SAMPLE_RATE = 8000
-INTERVAL_US = 1_000_000 // SAMPLE_RATE   # 125 µs por muestra
+INTERVAL_US = 1_000_000 // SAMPLE_RATE   # 166.67 µs por muestra
 
 MIC_CHUNK_SIZE  = 256                    # bytes por paquete TCP de mic (32 ms)
 SPK_RECV_SIZE   = 1024                   # bytes pedidos por refill del DAC
@@ -233,6 +235,7 @@ def play_mode(conn_spk, total, recv_buf):
     play_pos = 0
     play_len = 0
 
+
     conn_spk.setblocking(True)
     conn_spk.settimeout(3.0)
     mv = memoryview(recv_buf)
@@ -255,8 +258,11 @@ def play_mode(conn_spk, total, recv_buf):
                 received += n
                 play_len = n
                 play_pos = 0
+                # Re-anclamos la base de tiempo para evitar desfases acumulados por la recarga del socket
+                start = _ticks_us()
+                sample_idx = 0
 
-            # ── busy-wait absoluto al target del sample ─────────
+            # ── busy-wait absoluto sobre el target del sample (evita lentitud) ──
             target_us = sample_idx * INTERVAL_US
             while _ticks_diff(_ticks_us(), start) < target_us:
                 pass
@@ -264,15 +270,6 @@ def play_mode(conn_spk, total, recv_buf):
             _dac_write(recv_buf[play_pos])
             play_pos += 1
             sample_idx += 1
-
-            # ── cap del catch-up: si atrasados > 50 ms, re-anclar ─
-            # (sin esto, tras un blocking de TCP largo el DAC dispara
-            # cientos de samples sin espera y suena tipo chipmunk)
-            if (sample_idx & 1023) == 0:
-                drift = _ticks_diff(_ticks_us(), start) - sample_idx * INTERVAL_US
-                if drift > 50000:
-                    start = _ticks_us()
-                    sample_idx = 0
     finally:
         conn_spk.setblocking(False)
         _dac_write(128)
@@ -280,6 +277,8 @@ def play_mode(conn_spk, total, recv_buf):
         # para que el hilo OLED no dibuje 'HABLANDO' en el flanco final.
         estado_robot = 'ESPERANDO'
         reproduciendo = False
+        gc.enable()
+        gc.collect()
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -350,126 +349,91 @@ def hilo_audio():
 
 
 # ══════════════════════════════════════════════════════════════════
-# HILO OLED — renderiza el estado emocional con MÍNIMO impacto en audio
+# HILO OLED — animación CONTINUA con máxima vivacidad
 # ══════════════════════════════════════════════════════════════════
-# El SH1106 por SoftI2C tarda ~25 ms en cada disp.show() — eso bloquea
-# todo el busy-wait del audio y produce voz lenta + mic pierde samples.
-# Estrategia:
-#   - DURANTE reproduciendo: 0 actualizaciones (excepto el flanco de
-#     entrada). Audio limpio.
-#   - Estados estáticos (ESCUCHANDO/PENSANDO/FELIZ/CURIOSO): 1 sola
-#     llamada a show() al CAMBIAR de estado, después idle.
-#   - HABLANDO/SIGUIENDO/parpadeo: animaciones a 12 fps cuando no hay
-#     audio compitiendo.
-#   - Sleep adaptativo: 80 ms cuando anima, 250 ms cuando está idle.
+# El módulo oled_ojos.tick() hace TODO el trabajo emocional:
+#   - Transición lerp entre estados (5 frames)
+#   - Microsacadas en estados conscientes
+#   - Sleepy progresivo después de 15 s en ESPERANDO
+#   - Pupilas siguiendo en SIGUIENDO
+#   - Boca animada en HABLANDO según mouth_amp
+# El hilo solo:
+#   - Calcula idle_ms desde el último cambio de estado
+#   - Calcula mouth_amp para HABLANDO (oscilación tipo seno)
+#   - Dispara parpadeos aleatorios cada 3-7 s en estados despiertos
+#   - Reduce la cadencia durante reproduciendo para no destrozar el DAC
 
-OLED_FPS_MS_ACTIVE = 80       # ~12 fps cuando hay animación
-OLED_FPS_MS_IDLE   = 250      # ~4  fps cuando todo está estático
-OLED_FPS_MS_AUDIO  = 300      # casi dormido durante PLAY
-PARPADEO_MS        = 4000     # blink natural cada 4 s en ESPERANDO
-
-def _dibujar_estatico(estado):
-    """Dibuja un estado estático (no anima). Usado solo en flancos."""
-    if   estado == 'ESPERANDO':  ojos_normal()
-    elif estado == 'ESCUCHANDO': ojos_abiertos()
-    elif estado == 'PENSANDO':   ojos_pensando()
-    elif estado == 'HABLANDO':   ojos_hablando(0)
-    elif estado == 'FELIZ':      ojos_feliz()
-    elif estado == 'CURIOSO':    ojos_curioso()
+OLED_FPS_MS_NORMAL   = 100     # ~10 fps en estados sin audio competiendo
+OLED_FPS_MS_AUDIO    = 220     # ~4.5 fps cuando reproduce (audio prioritario)
+OLED_BLINK_MIN_MS    = 3000    # parpadeo aleatorio cada [3..7] s
+OLED_BLINK_MAX_MS    = 7000
 
 def hilo_oled():
-    global frame_habla
-
     if not OLED_DISPONIBLE:
         return
 
-    # Bucle exterior: reinicia si el hilo crashea catastróficamente.
     while True:
         try:
             gc.collect()
-            ultimo_parpadeo = utime.ticks_ms()
-            last_state = ''            # fuerza el primer dibujo
-            last_dxq   = -999
-            last_dyq   = -999
+            oled_ojos.reset_state()
 
-            try:
-                ojos_normal()
-                last_state = 'ESPERANDO'
-            except Exception as e:
-                print('[OLED] init err:', e)
-                utime.sleep(2)
-                continue
+            state_started_at = utime.ticks_ms()
+            last_state       = ''
+            next_blink_at    = utime.ticks_ms() + urandom.getrandbits(12) + OLED_BLINK_MIN_MS
+            frame_n          = 0
 
             while True:
                 ahora  = utime.ticks_ms()
-                estado = estado_robot      # snapshot atómico
-                cambio = (estado != last_state)
+                estado = estado_robot
 
-                # ── 1) AUDIO REPRODUCIENDO: prácticamente dormimos ──
-                if reproduciendo:
-                    if cambio:
-                        # único draw permitido durante PLAY: cuando el
-                        # laptop manda FELIZ/HABLANDO/etc. al entrar.
-                        try:
-                            _dibujar_estatico(estado)
-                            last_state = estado
-                        except Exception as e:
-                            print('[OLED] play err:', e)
-                    utime.sleep_ms(OLED_FPS_MS_AUDIO)
-                    continue
+                # Cambio de estado: reset timers
+                if estado != last_state:
+                    state_started_at = ahora
+                    last_state = estado
+                    frame_n = 0
+                    next_blink_at = ahora + OLED_BLINK_MIN_MS + (urandom.getrandbits(12) % (OLED_BLINK_MAX_MS - OLED_BLINK_MIN_MS))
 
-                # ── 2) Estados estáticos: 1 draw por cambio ─────────
+                idle_ms = utime.ticks_diff(ahora, state_started_at)
+
+                # Boca animada en HABLANDO (oscilación tipo seno)
+                mouth = 0.0
+                if estado == 'HABLANDO':
+                    mouth = abs(math.sin(frame_n * 0.45)) * 0.85
+                    frame_n += 1
+
+                # Parpadeo aleatorio: solo en estados despiertos, no
+                # durante el sueño profundo (idle_ms > 30 s en ESPERANDO).
+                blink_ok = (
+                    not reproduciendo                # no parpadear durante PLAY
+                    and estado in ('ESPERANDO', 'ESCUCHANDO', 'HABLANDO', 'CURIOSO')
+                    and not (estado == 'ESPERANDO' and idle_ms > 30000)
+                )
+                if blink_ok and ahora >= next_blink_at:
+                    try:
+                        if urandom.getrandbits(3) == 0:    # 1/8 de los blinks = guiño
+                            oled_ojos.do_wink('left' if urandom.getrandbits(1) else 'right')
+                        else:
+                            oled_ojos.do_blink()
+                    except Exception as e:
+                        print('[OLED] blink err:', e)
+                    next_blink_at = ahora + OLED_BLINK_MIN_MS + (urandom.getrandbits(12) % (OLED_BLINK_MAX_MS - OLED_BLINK_MIN_MS))
+
+                # Frame normal
                 try:
-                    if estado in ('ESCUCHANDO', 'PENSANDO', 'FELIZ', 'CURIOSO'):
-                        if cambio:
-                            _dibujar_estatico(estado)
-                            last_state = estado
-                        utime.sleep_ms(OLED_FPS_MS_IDLE)
-                        continue
-
-                    # ── 3) ESPERANDO: estático + parpadeo cada 4 s ──
-                    if estado == 'ESPERANDO':
-                        if cambio:
-                            ojos_normal()
-                            last_state = estado
-                            ultimo_parpadeo = ahora
-                        elif utime.ticks_diff(ahora, ultimo_parpadeo) > PARPADEO_MS:
-                            parpadear()
-                            ojos_normal()
-                            ultimo_parpadeo = ahora
-                        utime.sleep_ms(OLED_FPS_MS_IDLE)
-                        continue
-
-                    # ── 4) HABLANDO sin reproducir (raro): anima ────
-                    if estado == 'HABLANDO':
-                        ojos_hablando(frame_habla)
-                        frame_habla += 1
-                        last_state = estado
-                        utime.sleep_ms(OLED_FPS_MS_ACTIVE)
-                        continue
-
-                    # ── 5) SIGUIENDO: redraw solo si las pupilas se mueven ─
-                    if estado == 'SIGUIENDO':
-                        # cuantizar dx/dy a pasos de 10% para evitar redraws
-                        # por ruido fino del tracker
-                        dxq = int(sig_dx * 10)
-                        dyq = int(sig_dy * 10)
-                        if cambio or dxq != last_dxq or dyq != last_dyq:
-                            ojos_siguiendo(sig_dx, sig_dy)
-                            last_state = estado
-                            last_dxq = dxq
-                            last_dyq = dyq
-                        utime.sleep_ms(OLED_FPS_MS_ACTIVE)
-                        continue
-
+                    oled_ojos.tick(estado,
+                                   sig_dx=sig_dx, sig_dy=sig_dy,
+                                   idle_ms=idle_ms,
+                                   mouth_amp=mouth)
                 except Exception as e:
                     print('[OLED] frame err:', e)
 
-                # estado desconocido: idle
-                utime.sleep_ms(OLED_FPS_MS_IDLE)
+                # Sleep adaptativo según si el audio está activo
+                if reproduciendo:
+                    utime.sleep_ms(OLED_FPS_MS_AUDIO)
+                else:
+                    utime.sleep_ms(OLED_FPS_MS_NORMAL)
 
         except Exception as e:
-            # Hilo crasheó (ej. I2C colgado): reintentar después de 1 s
             print('[OLED] hilo crash, reiniciando:', e)
             utime.sleep(1)
 
