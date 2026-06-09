@@ -49,7 +49,7 @@ from config import (
     GROQ_LLM_MODEL, GROQ_STT_MODEL, TEMPERATURE, MAX_TOKENS, MAX_RETRIES,
     VOICE, TTS_FFMPEG_FILTERS, TTS_SEND_CHUNK_BYTES, SENTENCE_MIN_CHARS, TTS_TAIL_S,
     SERIAL_PORT, SERIAL_BAUD,
-    SYSTEM_PROMPT, EXIT_PHRASES,
+    SYSTEM_PROMPT, EXIT_PHRASES, GOODBYE_PHRASES,
 )
 from wake_word import WakeWordDetector
 
@@ -229,6 +229,11 @@ def is_exit(text: str) -> bool:
     return cleaned in EXIT_PHRASES
 
 
+def is_goodbye(text: str) -> bool:
+    cleaned = text.lower().strip(" .,!?¿¡")
+    return cleaned in GOODBYE_PHRASES
+
+
 # =========================
 # Sentence splitter (para streaming TTS)
 # =========================
@@ -264,6 +269,7 @@ class Chat:
         self.conversation: List[Dict[str, str]] = []
         self.awake = not WAKE_WORD_ENABLED
         self.last_interaction = time.time()
+        self.last_user_text: str = ""
         # Detector con cooldown stateful — propio de esta sesión
         self.wake_detector = WakeWordDetector(
             wake_word=WAKE_CANONICAL,
@@ -597,13 +603,15 @@ class Chat:
         LAP_FRAME_SIZE = int(LAP_SAMPLE_RATE * LAP_FRAME_MS / 1000)  # 480 muestras
 
         vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
-        sustained_needed = max(1, BARGE_IN_SUSTAINED_MS // LAP_FRAME_MS)
+        sustained_needed = max(1, 150 // LAP_FRAME_MS)
         silence_frames_needed = SILENCE_END_MS // LAP_FRAME_MS
-        settle_frames = BARGE_IN_SETTLE_MS // LAP_FRAME_MS
+        settle_frames = min(BARGE_IN_SETTLE_MS, 200) // LAP_FRAME_MS
         max_frames = (MAX_RECORDING_S * 1000) // LAP_FRAME_MS
+        grace_frames_needed = 10  # ~300ms post-playback antes de salir
 
         sustained = 0
         frames_seen = 0
+        grace_frames = 0
         speech_started = False
         silence_streak = 0
         speech_ms = 0
@@ -624,9 +632,10 @@ class Chat:
                 callback=cb,
             ):
                 while True:
-                    # Si el playback ya no está ocupado y no ha empezado la voz del usuario, terminamos
                     if not speech_started and not is_busy_cb():
-                        return
+                        grace_frames += 1
+                        if grace_frames >= grace_frames_needed:
+                            return
                     if speech_started and len(recorded) >= max_frames:
                         break
 
@@ -652,8 +661,7 @@ class Chat:
                         # Mientras suene la voz, exigimos VAD Y RMS;
                         # si ya terminó, basta con VAD
                         if is_busy_cb():
-                            BARGE_IN_RMS = 0.02
-                            looks_like_speech = is_vad and level > BARGE_IN_RMS
+                            looks_like_speech = is_vad and level > 0.010
                         else:
                             looks_like_speech = is_vad
 
@@ -1000,10 +1008,26 @@ class Chat:
 
                 self.last_interaction = time.time()
 
-                # 4) Salida
+                # 4) Salida / despedida / palabra repetida
                 if is_exit(payload):
                     self.say("Hasta luego.")
                     return
+
+                if is_goodbye(payload):
+                    self.say("¡Hasta luego! Llámame si me necesitas.")
+                    self.awake = False
+                    self.reader.drain()
+                    self.last_user_text = ""
+                    continue
+
+                normalized = payload.lower().strip(" .,!?¿¡")
+                if normalized and normalized == self.last_user_text:
+                    self.say("¡Hasta pronto!")
+                    self.awake = False
+                    self.reader.drain()
+                    self.last_user_text = ""
+                    continue
+                self.last_user_text = normalized
 
                 # 5+6) LLM streaming + TTS por frase + reproducción con barge-in
                 try:
@@ -1018,6 +1042,7 @@ class Chat:
                     pending_audio = captured
                     self.awake = True
                 self.last_interaction = time.time()
+                self.last_user_text = ""
 
             except KeyboardInterrupt:
                 raise

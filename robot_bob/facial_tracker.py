@@ -1,0 +1,359 @@
+"""
+facial_tracker.py — Seguimiento facial encapsulado para el robot Bob.
+
+Reutiliza LectorStream y DetectorFacial de seguimiento_facial.py, pero
+delega todos los envíos al ESP32 a SerialManager (nunca toca el serial directamente).
+
+API pública:
+  FacialTracker.frame_actual  → BGR frame más reciente (o None)
+  FacialTracker.ultimo_det    → (cx, cy, x, y, w, h) o None
+  FacialTracker.stream_ok     → bool
+  FacialTracker.cerrar()
+"""
+
+import os
+os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "quiet"
+os.environ["FFREPORT"] = "disable"
+
+import cv2
+import numpy as np
+import mediapipe as mp
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision
+import socket
+import threading
+import time
+from urllib.parse import urlparse
+
+# ── Configuración ──────────────────────────────────────────────────────────────
+STREAM_TIMEOUT_S  = 2.0
+STREAM_READ_BYTES = 32768
+DET_W, DET_H      = 320, 240
+DET_INTERVAL_S    = 0.07   # ~14 Hz
+
+# Límites y parámetros de servo
+PAN_MIN,  PAN_MAX  = 20,  160
+TILT_MIN, TILT_MAX = 50,  130
+PAN_HOME  = 90
+TILT_HOME = 90
+
+GANANCIA_PAN  = 0.018
+GANANCIA_TILT = 0.018
+SIGNO_PAN     = -1
+SIGNO_TILT    = +1
+ZONA_MUERTA_X = 40
+ZONA_MUERTA_Y = 35
+ADELANTO_MAX  = 6
+
+
+# ── LectorStream (socket TCP crudo — evita crash FFmpeg) ──────────────────────
+
+class LectorStream:
+    def __init__(self, url: str, timeout: float = STREAM_TIMEOUT_S):
+        u = urlparse(url)
+        self.host    = u.hostname
+        self.port    = u.port or 80
+        self.path    = u.path or '/'
+        if u.query:
+            self.path += '?' + u.query
+        self.timeout = timeout
+        self._lock   = threading.Lock()
+        self._frame  = None
+        self.ok      = False
+        self._detener = False
+        self._hilo = threading.Thread(target=self._loop, daemon=True, name='stream-reader')
+        self._hilo.start()
+
+    def _conectar(self) -> socket.socket:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(self.timeout)
+        s.connect((self.host, self.port))
+        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
+        except OSError:
+            pass
+        req = (f'GET {self.path} HTTP/1.1\r\n'
+               f'Host: {self.host}\r\n'
+               f'User-Agent: robot-bob\r\n'
+               f'Accept: */*\r\n'
+               f'Connection: keep-alive\r\n\r\n')
+        s.sendall(req.encode())
+        return s
+
+    def _loop(self):
+        while not self._detener:
+            try:
+                sock = self._conectar()
+            except Exception as e:
+                self.ok = False
+                if not self._detener:
+                    print(f'[stream] No conecta ({e}). Reintento en 1s...')
+                    time.sleep(1)
+                continue
+
+            buf = bytearray()
+            try:
+                while b'\r\n\r\n' not in buf:
+                    chunk = sock.recv(STREAM_READ_BYTES)
+                    if not chunk:
+                        raise ConnectionError('sin cabecera')
+                    buf.extend(chunk)
+                del buf[:buf.find(b'\r\n\r\n') + 4]
+
+                print('[stream] Conectado.')
+                self.ok = True
+
+                while not self._detener:
+                    chunk = sock.recv(STREAM_READ_BYTES)
+                    if not chunk:
+                        raise ConnectionError('stream cerrado')
+                    buf.extend(chunk)
+
+                    img = self._extraer_ultimo_jpeg(buf)
+                    if img is not None:
+                        with self._lock:
+                            self._frame = img
+
+                    if len(buf) > 2_000_000:
+                        del buf[:-100_000]
+            except Exception as e:
+                self.ok = False
+                if not self._detener:
+                    print(f'[stream] Reconectando ({e})...')
+            finally:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+                if not self._detener:
+                    time.sleep(0.2)
+
+    @staticmethod
+    def _extraer_ultimo_jpeg(buf: bytearray):
+        fin = buf.rfind(b'\xff\xd9')
+        if fin == -1:
+            return None
+        ini = buf.rfind(b'\xff\xd8', 0, fin)
+        if ini == -1:
+            return None
+        jpg = bytes(buf[ini:fin + 2])
+        del buf[:fin + 2]
+        try:
+            return cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
+        except Exception:
+            return None
+
+    def leer(self):
+        with self._lock:
+            return None if self._frame is None else self._frame.copy()
+
+    def cerrar(self):
+        self._detener = True
+        time.sleep(0.1)
+
+
+# ── DetectorFacial (MediaPipe en hilo background) ─────────────────────────────
+
+class DetectorFacial:
+    def __init__(self, detector_mp, w_orig: int, h_orig: int):
+        self._detector  = detector_mp
+        self._escala_x  = w_orig / DET_W
+        self._escala_y  = h_orig / DET_H
+        self._lf        = threading.Lock()
+        self._lr        = threading.Lock()
+        self._frame_pend = None
+        self._ocupado    = False
+        self._resultado  = None
+        self._detener    = threading.Event()
+        self._nuevo      = threading.Event()
+        self._hilo = threading.Thread(target=self._loop, daemon=True, name='detector-facial')
+        self._hilo.start()
+
+    def enviar_frame(self, frame) -> None:
+        with self._lf:
+            if self._ocupado:
+                return
+            self._frame_pend = frame
+        self._nuevo.set()
+
+    @property
+    def ultimo_resultado(self):
+        with self._lr:
+            return self._resultado
+
+    def cerrar(self):
+        self._detener.set()
+        self._nuevo.set()
+        self._hilo.join(timeout=2.0)
+
+    def _loop(self):
+        while not self._detener.is_set():
+            self._nuevo.wait(timeout=0.5)
+            self._nuevo.clear()
+            if self._detener.is_set():
+                break
+
+            with self._lf:
+                frame = self._frame_pend
+                self._frame_pend = None
+                if frame is None:
+                    continue
+                self._ocupado = True
+
+            try:
+                resultado = self._detectar(frame)
+            except Exception:
+                resultado = None
+            finally:
+                with self._lf:
+                    self._ocupado = False
+
+            with self._lr:
+                self._resultado = resultado
+
+            self._detener.wait(DET_INTERVAL_S)
+
+    def _detectar(self, frame):
+        small    = cv2.resize(frame, (DET_W, DET_H), interpolation=cv2.INTER_LINEAR)
+        rgb      = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        res = self._detector.detect(mp_image)
+
+        if not res.detections:
+            return None
+
+        det = max(res.detections, key=lambda d: d.bounding_box.width * d.bounding_box.height)
+        bb  = det.bounding_box
+        x   = int(bb.origin_x * self._escala_x)
+        y   = int(bb.origin_y * self._escala_y)
+        w   = int(bb.width    * self._escala_x)
+        h   = int(bb.height   * self._escala_y)
+        return (x + w // 2, y + h // 2, x, y, w, h)
+
+
+# ── FacialTracker — clase principal ───────────────────────────────────────────
+
+class FacialTracker:
+    """
+    Parámetros de suavizado del servo se inyectan para que BehaviorEngine
+    pueda cambiarlos en tiempo de ejecución según el estado del robot.
+    """
+
+    def __init__(self, url_stream: str, modelo_tflite: str, serial_mgr, state_machine):
+        self._serial  = serial_mgr
+        self._sm      = state_machine
+
+        self._stream  = LectorStream(url_stream)
+
+        # Esperar primer frame (máx 10 s)
+        self.w = self.h = None
+        self.cx_centro = self.cy_centro = None
+        self._camera_ready = threading.Event()
+        threading.Thread(target=self._esperar_camara, daemon=True).start()
+
+        # El detector se inicializa después de conocer la resolución
+        self._detector_mp = None
+        self._detector    = None
+        self._modelo      = modelo_tflite
+
+        # Estado de servo (actualizado por BehaviorEngine o por el tracker)
+        self.pan_actual   = float(PAN_HOME)
+        self.tilt_actual  = float(TILT_HOME)
+        self.pan_obj      = float(PAN_HOME)
+        self.tilt_obj     = float(TILT_HOME)
+
+    # ── API pública ────────────────────────────────────────────────────────────
+
+    @property
+    def stream_ok(self) -> bool:
+        return self._stream.ok
+
+    @property
+    def camera_ready(self) -> threading.Event:
+        return self._camera_ready
+
+    @property
+    def ultimo_det(self):
+        if self._detector is None:
+            return None
+        return self._detector.ultimo_resultado
+
+    def leer_frame(self):
+        return self._stream.leer()
+
+    def enviar_frame(self, frame) -> None:
+        if self._detector:
+            self._detector.enviar_frame(frame)
+
+    def actualizar_servo(self, det, suavizado: float = 0.85,
+                         max_paso_pan: float = 1.5, max_paso_tilt: float = 1.5) -> None:
+        """
+        Calcula y envía posición de servo basada en la detección actual.
+        BehaviorEngine llama esto con parámetros ajustados al estado.
+        """
+        if det is not None:
+            cx, cy, *_ = det
+            error_x = cx - self.cx_centro
+            error_y = cy - self.cy_centro
+
+            d_pan  = SIGNO_PAN  * GANANCIA_PAN  * error_x if abs(error_x) > ZONA_MUERTA_X else 0
+            d_tilt = SIGNO_TILT * GANANCIA_TILT * error_y if abs(error_y) > ZONA_MUERTA_Y else 0
+
+            self.pan_obj  = _clamp(self.pan_obj  + d_pan,  PAN_MIN,  PAN_MAX)
+            self.tilt_obj = _clamp(self.tilt_obj + d_tilt, TILT_MIN, TILT_MAX)
+
+            self.pan_obj  = _clamp(self.pan_obj,  self.pan_actual  - ADELANTO_MAX, self.pan_actual  + ADELANTO_MAX)
+            self.tilt_obj = _clamp(self.tilt_obj, self.tilt_actual - ADELANTO_MAX, self.tilt_actual + ADELANTO_MAX)
+
+        # Suavizado exponencial + slew rate
+        pan_s  = suavizado * self.pan_actual  + (1 - suavizado) * self.pan_obj
+        tilt_s = suavizado * self.tilt_actual + (1 - suavizado) * self.tilt_obj
+
+        dpan   = _clamp(pan_s  - self.pan_actual,  -max_paso_pan,  max_paso_pan)
+        dtilt  = _clamp(tilt_s - self.tilt_actual, -max_paso_tilt, max_paso_tilt)
+
+        self.pan_actual  = _clamp(self.pan_actual  + dpan,  PAN_MIN, PAN_MAX)
+        self.tilt_actual = _clamp(self.tilt_actual + dtilt, TILT_MIN, TILT_MAX)
+
+        self._serial.cmd_servo(self.pan_actual, self.tilt_actual)
+
+    def set_objetivo(self, pan: float, tilt: float) -> None:
+        """BehaviorEngine inyecta objetivo para movimiento idle."""
+        self.pan_obj  = _clamp(pan,  PAN_MIN, PAN_MAX)
+        self.tilt_obj = _clamp(tilt, TILT_MIN, TILT_MAX)
+
+    def cerrar(self) -> None:
+        if self._detector:
+            self._detector.cerrar()
+        self._stream.cerrar()
+
+    # ── Interno ────────────────────────────────────────────────────────────────
+
+    def _esperar_camara(self):
+        t0 = time.time()
+        while time.time() - t0 < 15.0:
+            frame = self._stream.leer()
+            if frame is not None:
+                self.h, self.w = frame.shape[:2]
+                self.cx_centro = self.w // 2
+                self.cy_centro = self.h // 2
+                print(f'[tracker] Cámara lista: {self.w}x{self.h}')
+                self._iniciar_detector()
+                self._camera_ready.set()
+                return
+            time.sleep(0.05)
+        print('[tracker] ERROR: No llegan frames de la cámara.')
+
+    def _iniciar_detector(self):
+        base_options = mp_python.BaseOptions(model_asset_path=self._modelo)
+        options      = vision.FaceDetectorOptions(
+            base_options=base_options,
+            min_detection_confidence=0.6,
+        )
+        self._detector_mp = vision.FaceDetector.create_from_options(options)
+        self._detector    = DetectorFacial(self._detector_mp, self.w, self.h)
+
+
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return lo if v < lo else hi if v > hi else v
