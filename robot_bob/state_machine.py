@@ -69,6 +69,12 @@ class StateMachine:
         self._t_cara_perdida  = 0.0   # última vez que se perdió la cara
         self._t_ultima_conv   = 0.0   # última vez que se inició conversación
         self._t_ultimo_turno  = 0.0   # último turno de conversación (para CONVERSATION_IDLE)
+        self._t_sin_presencia = time.monotonic()  # cuándo entramos al estado IDLE actual
+        self._startle_hasta   = 0.0   # hasta cuándo está activo el gesto de "doble toma"
+
+        # Umbral para gatillar la "doble toma" (cara nueva tras N segundos sin presencia)
+        self.STARTLE_THR_S    = 30.0
+        self.STARTLE_DUR_S    = 0.6
 
         # Eventos para sincronización de hilos
         self.ev_escuchando  = threading.Event()  # VoicePipeline: empieza a grabar
@@ -96,6 +102,10 @@ class StateMachine:
                 RobotState.SPEAKING,
                 RobotState.CONVERSATION_IDLE,
             )
+
+    def startle_active(self) -> bool:
+        """True si está corriendo el gesto de 'doble toma' (sorpresa)."""
+        return time.monotonic() < self._startle_hasta
 
     # ── Transiciones (llamadas desde cualquier hilo) ───────────────────────────
 
@@ -181,8 +191,19 @@ class StateMachine:
     def _transicionar_locked(self, nuevo: RobotState) -> None:
         if self._estado == nuevo:
             return
+        anterior = self._estado
         self._estado   = nuevo
         self._t_cambio = time.monotonic()
+
+        # "Doble toma": si pasamos de IDLE a PRESENCE tras >STARTLE_THR_S sin presencia,
+        # activamos un gesto de sorpresa por STARTLE_DUR_S.
+        if anterior == RobotState.IDLE and nuevo == RobotState.PRESENCE:
+            ausencia = self._t_cambio - self._t_sin_presencia
+            if ausencia > self.STARTLE_THR_S:
+                self._startle_hasta = self._t_cambio + self.STARTLE_DUR_S
+        # Marcar inicio de ausencia cuando entramos a IDLE
+        if nuevo == RobotState.IDLE:
+            self._t_sin_presencia = self._t_cambio
 
         # Notificar OLED (no durante PRESENCE — FacialTracker manda SIGUIENDO)
         if nuevo != RobotState.PRESENCE:

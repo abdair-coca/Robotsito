@@ -1,0 +1,29 @@
+# Robot Bob — dependencias Python 3.11
+# Instalar con: pip install -r requirements.txt
+
+# Vision y detección facial
+opencv-python>=4.9,<5.0
+mediapipe>=0.10.9,<0.11.0
+numpy>=1.26,<2.0
+
+# Serial
+pyserial>=3.5
+
+# Audio / VAD
+# webrtcvad no tiene wheels para Python 3.11 en Windows — usar la variante precompilada
+webrtcvad-wheels>=2.0.14
+sounddevice>=0.4.6
+scipy>=1.12
+
+# TTS + procesamiento de audio
+edge-tts>=6.1.10
+imageio-ffmpeg>=0.4.9
+
+# LLM / STT (Groq API)
+groq>=0.9.0
+
+# Reproducción local
+pygame>=2.5
+
+# UI terminal
+rich>=13.7

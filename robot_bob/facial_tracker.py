@@ -26,7 +26,7 @@ import time
 from urllib.parse import urlparse
 
 # ── Configuración ──────────────────────────────────────────────────────────────
-STREAM_TIMEOUT_S  = 2.0
+STREAM_TIMEOUT_S  = 5.0    # tolerante a hipos del ESP32-CAM bajo carga
 STREAM_READ_BYTES = 32768
 DET_W, DET_H      = 320, 240
 DET_INTERVAL_S    = 0.07   # ~14 Hz
@@ -37,13 +37,13 @@ TILT_MIN, TILT_MAX = 50,  130
 PAN_HOME  = 90
 TILT_HOME = 90
 
-GANANCIA_PAN  = 0.018
-GANANCIA_TILT = 0.018
+GANANCIA_PAN  = 0.025   # más reactivo (era 0.018, calibrado para 60 Hz)
+GANANCIA_TILT = 0.025
 SIGNO_PAN     = -1
 SIGNO_TILT    = +1
-ZONA_MUERTA_X = 40
-ZONA_MUERTA_Y = 35
-ADELANTO_MAX  = 6
+ZONA_MUERTA_X = 35      # un poco más chico → seguimiento más fino
+ZONA_MUERTA_Y = 30
+ADELANTO_MAX  = 12      # deja más margen entre objetivo y actual (más fluido)
 
 
 # ── LectorStream (socket TCP crudo — evita crash FFmpeg) ──────────────────────
@@ -156,6 +156,12 @@ class LectorStream:
 # ── DetectorFacial (MediaPipe en hilo background) ─────────────────────────────
 
 class DetectorFacial:
+    # Predictor de velocidad: proyecta la cara LOOKAHEAD_S hacia adelante
+    # para compensar el lag detección + serial + servo.
+    LOOKAHEAD_S = 0.10
+    MAX_PRED_PX = 35
+    VEL_SMOOTH  = 0.6   # 0..1, más alto = más smoothing (más lag pero menos jitter)
+
     def __init__(self, detector_mp, w_orig: int, h_orig: int):
         self._detector  = detector_mp
         self._escala_x  = w_orig / DET_W
@@ -167,6 +173,12 @@ class DetectorFacial:
         self._resultado  = None
         self._detener    = threading.Event()
         self._nuevo      = threading.Event()
+        # Predictor state
+        self._last_cx = None
+        self._last_cy = None
+        self._last_t  = None
+        self._vx      = 0.0
+        self._vy      = 0.0
         self._hilo = threading.Thread(target=self._loop, daemon=True, name='detector-facial')
         self._hilo.start()
 
@@ -229,7 +241,37 @@ class DetectorFacial:
         y   = int(bb.origin_y * self._escala_y)
         w   = int(bb.width    * self._escala_x)
         h   = int(bb.height   * self._escala_y)
-        return (x + w // 2, y + h // 2, x, y, w, h)
+
+        # Mejora: usar keypoint nariz (índice 2 en BlazeFace) en vez de bbox center.
+        # El bbox center cae cerca del cuello; la nariz cae entre los ojos → más natural.
+        cx = x + w // 2
+        cy = y + h // 2
+        kps = getattr(det, 'keypoints', None)
+        if kps and len(kps) >= 3:
+            nose = kps[2]
+            cx = int(nose.x * DET_W * self._escala_x)
+            cy = int(nose.y * DET_H * self._escala_y)
+
+        # Predictor de velocidad: actualiza estimación y proyecta LOOKAHEAD_S adelante.
+        now = time.monotonic()
+        if self._last_t is not None:
+            dt = now - self._last_t
+            if 0.01 < dt < 0.3:
+                vx = (cx - self._last_cx) / dt
+                vy = (cy - self._last_cy) / dt
+                self._vx = self.VEL_SMOOTH * self._vx + (1 - self.VEL_SMOOTH) * vx
+                self._vy = self.VEL_SMOOTH * self._vy + (1 - self.VEL_SMOOTH) * vy
+            else:
+                # Hueco grande → reset (no proyectar hacia un futuro estancado)
+                self._vx = self._vy = 0.0
+        self._last_cx, self._last_cy, self._last_t = cx, cy, now
+
+        dx_pred = max(-self.MAX_PRED_PX, min(self.MAX_PRED_PX, self._vx * self.LOOKAHEAD_S))
+        dy_pred = max(-self.MAX_PRED_PX, min(self.MAX_PRED_PX, self._vy * self.LOOKAHEAD_S))
+        cx_proy = cx + int(dx_pred)
+        cy_proy = cy + int(dy_pred)
+
+        return (cx_proy, cy_proy, x, y, w, h)
 
 
 # ── FacialTracker — clase principal ───────────────────────────────────────────
@@ -306,9 +348,23 @@ class FacialTracker:
             self.pan_obj  = _clamp(self.pan_obj,  self.pan_actual  - ADELANTO_MAX, self.pan_actual  + ADELANTO_MAX)
             self.tilt_obj = _clamp(self.tilt_obj, self.tilt_actual - ADELANTO_MAX, self.tilt_actual + ADELANTO_MAX)
 
-        # Suavizado exponencial + slew rate
-        pan_s  = suavizado * self.pan_actual  + (1 - suavizado) * self.pan_obj
-        tilt_s = suavizado * self.tilt_actual + (1 - suavizado) * self.tilt_obj
+        # Easing cúbico (smoothstep) sobre el factor de avance:
+        # cuando estamos lejos del objetivo, el alpha efectivo es alto (rápido);
+        # cuando estamos cerca, el alpha efectivo cae a 0 → aterrizaje suave.
+        EASE_SCALE = 12.0  # grados a partir de los cuales avanza a velocidad máxima
+        alpha_base = 1.0 - suavizado
+
+        d_pan_full = self.pan_obj  - self.pan_actual
+        d_tilt_full = self.tilt_obj - self.tilt_actual
+
+        t_pan  = min(1.0, abs(d_pan_full)  / EASE_SCALE)
+        t_tilt = min(1.0, abs(d_tilt_full) / EASE_SCALE)
+        # smoothstep: 3t² - 2t³ — derivada nula en t=0 y t=1
+        e_pan  = t_pan  * t_pan  * (3.0 - 2.0 * t_pan)
+        e_tilt = t_tilt * t_tilt * (3.0 - 2.0 * t_tilt)
+
+        pan_s  = self.pan_actual  + alpha_base * e_pan  * d_pan_full
+        tilt_s = self.tilt_actual + alpha_base * e_tilt * d_tilt_full
 
         dpan   = _clamp(pan_s  - self.pan_actual,  -max_paso_pan,  max_paso_pan)
         dtilt  = _clamp(tilt_s - self.tilt_actual, -max_paso_tilt, max_paso_tilt)

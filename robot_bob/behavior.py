@@ -39,7 +39,11 @@ TILT_MIN, TILT_MAX = 50,  130
 PAN_HOME  = 90
 TILT_HOME = 90
 
-TICK_S = 0.10  # 10 Hz
+TICK_S = 0.05  # 20 Hz — más suave para los servos sin saturar CPU
+
+# Offset vertical: la cámara apunta al centro del bbox (cuello/boca).
+# La gente espera contacto visual a los ojos → subimos la mirada N grados.
+EYE_CONTACT_OFFSET_TILT = -8.0  # tilt negativo = mirar más arriba
 
 
 class BehaviorEngine:
@@ -111,6 +115,17 @@ class BehaviorEngine:
         alpha    = self.alpha.get(estado, 0.08)
         max_paso = self.max_paso.get(estado, 1.0)
 
+        # "Doble toma": retroceso breve cuando aparece una cara tras larga ausencia.
+        # Levantamos tilt 12° respecto a la posición actual durante STARTLE_DUR_S.
+        if estado == RobotState.PRESENCE and self._sm.startle_active():
+            self._pan_obj  = self._tracker.pan_actual
+            self._tilt_obj = _clamp(self._tracker.tilt_actual - 12.0,
+                                    TILT_MIN, TILT_MAX)
+            self._tracker.set_objetivo(self._pan_obj, self._tilt_obj)
+            self._tracker.actualizar_servo(None, suavizado=0.80,
+                                           max_paso_pan=3.0, max_paso_tilt=3.0)
+            return
+
         if estado in (RobotState.IDLE, RobotState.PRESENCE) and det is None:
             self._tick_idle(ahora)
 
@@ -141,32 +156,24 @@ class BehaviorEngine:
     # ── Sub-comportamientos ────────────────────────────────────────────────────
 
     def _tick_idle(self, ahora: float) -> None:
-        """Movimiento 'aburrido': waypoints aleatorios con pausas."""
+        """Movimiento 'aburrido': waypoints aleatorios amplios con pausas largas."""
         if self._en_pausa:
             if ahora < self._wp_hasta:
-                # Permanecer en waypoint actual (objetivo ya seteado)
                 self._pan_obj  = self._wp_pan
                 self._tilt_obj = self._wp_tilt
                 return
+            # Pausa terminó → elegir waypoint NUEVO amplio (no microvariación)
             self._en_pausa = False
-
-        # Llegamos al waypoint o es el inicio — elegir uno nuevo
-        dist = math.hypot(self._tracker.pan_actual - self._wp_pan,
-                          self._tracker.tilt_actual - self._wp_tilt)
-        if dist < 2.0:
-            # Cerca del waypoint: pausar
-            pausa = random.uniform(0.5, 3.0)
-            self._wp_hasta = ahora + pausa
-            self._en_pausa = True
-            # Pequeña variación casual de posición (microsacada de 1-3°)
-            self._wp_pan  = _clamp(self._wp_pan  + random.gauss(0, 1.5), PAN_MIN,  PAN_MAX)
-            self._wp_tilt = _clamp(self._wp_tilt + random.gauss(0, 1.0), TILT_MIN, TILT_MAX)
-
-        # Calcular waypoint nuevo aleatorio (zona central con preferencia)
-        if not self._en_pausa:
-            # Distribución normal centrada en PAN_HOME/TILT_HOME con ±35/±25 de sigma
             self._wp_pan  = _clamp(random.gauss(PAN_HOME,  35), PAN_MIN  + 10, PAN_MAX  - 10)
             self._wp_tilt = _clamp(random.gauss(TILT_HOME, 25), TILT_MIN + 5,  TILT_MAX - 5)
+        else:
+            # En tránsito hacia waypoint — chequear si llegamos
+            dist = math.hypot(self._tracker.pan_actual - self._wp_pan,
+                              self._tracker.tilt_actual - self._wp_tilt)
+            if dist < 3.0:
+                # Llegamos → pausa larga (mirando "algo")
+                self._wp_hasta = ahora + random.uniform(1.5, 4.0)
+                self._en_pausa = True
 
         self._pan_obj  = self._wp_pan
         self._tilt_obj = self._wp_tilt
@@ -199,8 +206,12 @@ class BehaviorEngine:
                 self._desvio_hasta    = ahora + random.uniform(0.8, 2.0)
                 self._desvio_activo   = True
 
-        self._pan_obj  = _clamp(pan_real  + self._desvio_pan_off,  _PAN_MIN, _PAN_MAX)
-        self._tilt_obj = _clamp(tilt_real + self._desvio_tilt_off, _TILT_MIN, _TILT_MAX)
+        # Eye contact offset: levantar la mirada N grados para mirar a los ojos
+        # en vez del centro de la cara (que con keypoint nariz cae en el centro).
+        self._pan_obj  = _clamp(pan_real  + self._desvio_pan_off,
+                                _PAN_MIN, _PAN_MAX)
+        self._tilt_obj = _clamp(tilt_real + self._desvio_tilt_off + EYE_CONTACT_OFFSET_TILT,
+                                _TILT_MIN, _TILT_MAX)
 
         # Actualizar los objetivos internos del tracker (necesario para el cálculo de siguiente tick)
         self._tracker.pan_obj  = pan_real

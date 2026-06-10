@@ -18,6 +18,16 @@ import time
 import cv2
 import threading
 
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+except Exception:
+    pass
+
+# Limitar OpenCV a 1 hilo evita que se coma todos los cores y deje al
+# hilo stream-reader sin CPU para drenar el socket TCP del ESP32-CAM.
+cv2.setNumThreads(1)
+
 # ── Configuración ──────────────────────────────────────────────────────────────
 PUERTO_SERIAL  = 'COM3'
 BAUD_RATE      = 115200
@@ -99,11 +109,18 @@ def main() -> None:
     ultimo_rostro = 0.0
 
     # ── 6. Loop principal ──────────────────────────────────────────────────────
+    # IMPORTANTE: cap a 25 FPS. El ESP32-CAM emite a 60-80 FPS y procesar
+    # cada frame satura el GIL → el hilo stream-reader no drena el socket.
+    TARGET_FPS    = 25
+    TARGET_PERIOD = 1.0 / TARGET_FPS
+
     print('\nRobot Bob activo. Presiona Q para salir.')
     serial_mgr.cmd_servo(PAN_HOME, TILT_HOME)
 
     try:
         while True:
+            t_inicio_ciclo = time.monotonic()
+
             frame = tracker.leer_frame()
             if frame is None:
                 time.sleep(0.01)
@@ -121,6 +138,10 @@ def main() -> None:
 
             det   = tracker.ultimo_det
             estado = sm.estado
+
+            # Tick CONVERSATION_IDLE: si pasó el timeout sin nuevo turno, vuelve a IDLE
+            if estado == RobotState.CONVERSATION_IDLE:
+                sm.tick_conversation_idle()
 
             # ── Notificar cara a la máquina de estados ─────────────────────────
             if det is not None:
@@ -175,6 +196,11 @@ def main() -> None:
             cv2.imshow('Robot Bob', frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
+
+            # Cap a TARGET_FPS — cede CPU al hilo stream-reader.
+            elapsed = time.monotonic() - t_inicio_ciclo
+            if elapsed < TARGET_PERIOD:
+                time.sleep(TARGET_PERIOD - elapsed)
 
     finally:
         print('\nCerrando...')

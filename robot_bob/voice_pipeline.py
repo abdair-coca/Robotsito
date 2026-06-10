@@ -216,62 +216,89 @@ class VoicePipeline:
             if not self._sm.ev_escuchando.is_set():
                 continue
 
-            self._run_one_turn(pending_audio=self._sm.pending_audio)
+            self._run_conversation(pending_audio=self._sm.pending_audio)
             self._sm.pending_audio = None
 
-    def _run_one_turn(self, pending_audio: Optional[bytes] = None) -> None:
-        # ── 1. Grabar ──────────────────────────────────────────────────────────
-        if pending_audio:
-            audio = pending_audio
-            console.print('[dim][voice] Usando audio de barge-in[/]')
-        else:
-            console.print('[voice] Escuchando...')
-            audio = self._grabar()
+    def _run_conversation(self, pending_audio: Optional[bytes] = None) -> None:
+        """
+        Maneja una conversación completa: turno inicial + turnos sucesivos
+        sin requerir wake word entre ellos. Termina cuando:
+          - El usuario no responde en NEXT_TURN_TIMEOUT segundos
+          - El usuario dice una frase de salida/despedida
+          - Se llama a cerrar()
+        """
+        NEXT_TURN_TIMEOUT = 6.0   # s para esperar respuesta del usuario tras hablar Bob
+        FIRST_TURN_TIMEOUT = 10.0  # s para el primer turno tras wake word
 
-        if audio is None or not audio:
-            self._sm.fin_turno()
-            return
+        es_primer_turno = True
 
-        # ── 2. Transcribir ────────────────────────────────────────────────────
-        self._sm.iniciar_pensando()
-        console.print('[voice] Transcribiendo...')
-        texto = self._transcribir(audio)
-        if not texto:
-            console.print('[dim][voice] Audio sin texto[/]')
-            self._sm.fin_turno()
-            return
+        while not self._detener.is_set():
+            # ── 1. Grabar el turno ─────────────────────────────────────────────
+            if pending_audio:
+                audio = pending_audio
+                pending_audio = None
+                console.print('[dim][voice] Usando audio de barge-in[/]')
+            else:
+                if not es_primer_turno:
+                    # Después de hablar Bob, volvemos a LISTENING para el siguiente turno
+                    self._sm.iniciar_escuchando()
+                timeout = FIRST_TURN_TIMEOUT if es_primer_turno else NEXT_TURN_TIMEOUT
+                console.print(f'[voice] Escuchando ({timeout:.0f}s timeout)...')
+                audio = self._grabar(initial_timeout=timeout)
 
-        console.print(f'[bold cyan]Usuario:[/] {texto}')
+            if audio is None or not audio:
+                console.print('[dim][voice] Silencio prolongado, fin de conversación[/]')
+                break
 
-        # ── 3. Detectar wake word / comandos especiales ───────────────────────
-        ww = self._wake.detect(texto)
-        if WAKE_WORD_ENABLED and not self._sm.en_conversacion:
-            if not ww.detected:
-                # El usuario no dijo "Bob" y el robot no estaba en conversación
-                self._sm.fin_turno()
-                return
-            texto = ww.payload or texto
+            # ── 2. Transcribir ─────────────────────────────────────────────────
+            self._sm.iniciar_pensando()
+            console.print('[voice] Transcribiendo...')
+            texto = self._transcribir(audio)
+            if not texto:
+                console.print('[dim][voice] Audio sin texto[/]')
+                break
 
-        if _is_exit(texto):
-            self._hablar('Hasta luego.')
-            self._sm.fin_turno()
-            return
-        if _is_goodbye(texto):
-            self._hablar('Hasta pronto.')
-            self._sm.fin_turno()
-            return
+            console.print(f'[bold cyan]Usuario:[/] {texto}')
 
-        # ── 4. LLM + TTS paralelo ─────────────────────────────────────────────
-        console.print('[voice] Pensando...')
-        captured = self._stream_and_speak(texto)
+            # ── 3. (El wake word ya fue verificado por el wake_monitor antes ──
+            #       de transicionar a LISTENING. NO re-verificamos aquí.) ──────
+            #     Si el texto incluye "Bob" al inicio porque el usuario lo
+            #     repitió, lo quitamos por elegancia. Si no, dejamos el texto tal cual.
+            ww = self._wake.detect(texto)
+            if ww.detected and ww.payload:
+                texto = ww.payload
 
-        # ── 5. Fin de turno ───────────────────────────────────────────────────
-        self._sm.fin_turno(pending=captured)
+            # Si el audio solo contenía wake word vacío, seguir al siguiente turno
+            if not texto.strip():
+                es_primer_turno = False
+                continue
+
+            # ── 4. Comandos de salida (cualquier turno) ────────────────────────
+            if _is_exit(texto):
+                self._hablar('Hasta luego.')
+                break
+            if _is_goodbye(texto):
+                self._hablar('Hasta pronto.')
+                break
+
+            # ── 5. LLM + TTS paralelo ──────────────────────────────────────────
+            console.print('[voice] Pensando...')
+            captured = self._stream_and_speak(texto)
+
+            # Si hubo barge-in, el audio capturado va al siguiente turno
+            pending_audio = captured
+            es_primer_turno = False
+
+        # ── 6. Fin de conversación ─────────────────────────────────────────────
+        self._sm.fin_turno()
 
     # ── Grabación ────────────────────────────────────────────────────────────
 
-    def _grabar(self) -> Optional[bytes]:
-        """Graba desde micrófono de laptop con VAD + gate adaptativo."""
+    def _grabar(self, initial_timeout: float = 8.0) -> Optional[bytes]:
+        """
+        Graba desde micrófono de laptop con VAD + gate adaptativo.
+        initial_timeout: segundos máximo de silencio inicial antes de devolver None.
+        """
         q: queue.Queue = queue.Queue()
 
         def callback(indata, frames, t, status):
@@ -279,6 +306,7 @@ class VoicePipeline:
 
         frame_bytes = int(_LAP_SAMPLE_RATE * FRAME_MS / 1000) * 2  # int16
         vad_local   = webrtcvad.Vad(VAD_AGGRESSIVENESS)
+        initial_timeout_ms = int(initial_timeout * 1000)
 
         preroll:  deque[bytes] = deque(maxlen=PREROLL_FRAMES)
         recorded: List[bytes]  = []
@@ -298,7 +326,7 @@ class VoicePipeline:
 
                 if chunk is None:
                     waited_ms += 1000
-                    if not speech_started and waited_ms > 8000:
+                    if not speech_started and waited_ms > initial_timeout_ms:
                         return None
                     continue
 
@@ -322,7 +350,7 @@ class VoicePipeline:
                         speech_started = True
                         recorded.extend(preroll)
                         speech_ms = FRAME_MS * len(preroll)
-                    elif waited_ms > 8000:
+                    elif waited_ms > initial_timeout_ms:
                         return None
                 else:
                     recorded.append(frame)
@@ -528,6 +556,8 @@ class VoicePipeline:
             if ww.detected:
                 console.print(f'[bold yellow][wake] "{texto}" detectado![/]')
                 self._sm.notificar_wake_word()
+            else:
+                console.print(f'[dim][wake?] heard: "{texto}"[/]')
 
     def _grabar_wake(self) -> Optional[bytes]:
         """Versión corta de _grabar: graba máximo 3 s, sin esperar largo silencio."""
