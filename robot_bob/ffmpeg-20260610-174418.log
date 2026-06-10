@@ -1,0 +1,140 @@
+ffmpeg started on 2026-06-10 at 17:44:18
+Report written to "ffmpeg-20260610-174418.log"
+Log level: 48
+Command line:
+"C:\\Users\\abdai\\Desktop\\RobotCreeper\\scripts\\venv\\Lib\\site-packages\\imageio_ffmpeg\\binaries\\ffmpeg-win-x86_64-v7.1.exe" -hide_banner -loglevel error -i pipe:0 -af "aresample=8000:dither_method=triangular:resample_cutoff=0.95,highpass=f=150,equalizer=f=1000:t=q:w=1:g=3,equalizer=f=3000:t=q:w=1.5:g=4,lowpass=f=3600,alimiter=limit=0.90,volume=0.5" -ar 8000 -ac 1 -acodec pcm_u8 -f u8 pipe:1
+Splitting the commandline.
+Reading option '-hide_banner' ... matched as option 'hide_banner' (do not show program banner) with argument '1'.
+Reading option '-loglevel' ... matched as option 'loglevel' (set logging level) with argument 'error'.
+Reading option '-i' ... matched as input url with argument 'pipe:0'.
+Reading option '-af' ... matched as option 'af' (alias for -filter:a (apply filters to audio streams)) with argument 'aresample=8000:dither_method=triangular:resample_cutoff=0.95,highpass=f=150,equalizer=f=1000:t=q:w=1:g=3,equalizer=f=3000:t=q:w=1.5:g=4,lowpass=f=3600,alimiter=limit=0.90,volume=0.5'.
+Reading option '-ar' ... matched as option 'ar' (set audio sampling rate (in Hz)) with argument '8000'.
+Reading option '-ac' ... matched as option 'ac' (set number of audio channels) with argument '1'.
+Reading option '-acodec' ... matched as option 'acodec' (alias for -c:a (select encoder/decoder for audio streams)) with argument 'pcm_u8'.
+Reading option '-f' ... matched as option 'f' (force container format (auto-detected otherwise)) with argument 'u8'.
+Reading option 'pipe:1' ... matched as output url.
+Finished splitting the commandline.
+Parsing a group of options: global .
+Applying option hide_banner (do not show program banner) with argument 1.
+Applying option loglevel (set logging level) with argument error.
+Successfully parsed a group of options.
+Parsing a group of options: input url pipe:0.
+Successfully parsed a group of options.
+Opening an input file: pipe:0.
+[AVFormatContext @ 0000024474e86c00] Opening 'pipe:0' for reading
+[pipe @ 0000024474e80c40] Setting default whitelist 'crypto,data'
+[mp3 @ 0000024474e86c00] Format mp3 probed with size=2048 and score=51
+[mp3 @ 0000024474e86c00] Skipping 0 bytes of junk at 0.
+[mp3 @ 0000024474e86c00] Before avformat_find_stream_info() pos: 0 bytes read:11808 seeks:0 nb_streams:1
+[mp3 @ 0000024474e86c00] All info found
+[mp3 @ 0000024474e86c00] After avformat_find_stream_info() pos: 8192 bytes read:11808 seeks:0 frames:50
+Input #0, mp3, from 'pipe:0':
+  Duration: N/A, start: 0.000000, bitrate: 48 kb/s
+  Stream #0:0, 50, 1/14112000: Audio: mp3 (mp3float), 24000 Hz, mono, fltp, 48 kb/s
+Successfully opened the file.
+Parsing a group of options: output url pipe:1.
+Applying option af (alias for -filter:a (apply filters to audio streams)) with argument aresample=8000:dither_method=triangular:resample_cutoff=0.95,highpass=f=150,equalizer=f=1000:t=q:w=1:g=3,equalizer=f=3000:t=q:w=1.5:g=4,lowpass=f=3600,alimiter=limit=0.90,volume=0.5.
+Applying option ar (set audio sampling rate (in Hz)) with argument 8000.
+Applying option ac (set number of audio channels) with argument 1.
+Applying option acodec (alias for -c:a (select encoder/decoder for audio streams)) with argument pcm_u8.
+Applying option f (force container format (auto-detected otherwise)) with argument u8.
+Successfully parsed a group of options.
+Opening an output file: pipe:1.
+[out#0/u8 @ 0000024474ea8440] No explicit maps, mapping streams automatically...
+[aost#0:0/pcm_u8 @ 0000024474e8f440] Created audio stream from input stream 0:0
+[AVFilterGraph @ 0000024474e82640] Setting 'sample_rate' to value '8000'
+[AVFilterGraph @ 0000024474e82640] Setting 'dither_method' to value 'triangular'
+[AVFilterGraph @ 0000024474e82640] Setting 'resample_cutoff' to value '0.95'
+[AVFilterGraph @ 0000024474e82640] Setting 'f' to value '150'
+[AVFilterGraph @ 0000024474e82640] Setting 'f' to value '1000'
+[AVFilterGraph @ 0000024474e82640] Setting 't' to value 'q'
+[AVFilterGraph @ 0000024474e82640] Setting 'w' to value '1'
+[AVFilterGraph @ 0000024474e82640] Setting 'g' to value '3'
+[AVFilterGraph @ 0000024474e82640] Setting 'f' to value '3000'
+[AVFilterGraph @ 0000024474e82640] Setting 't' to value 'q'
+[AVFilterGraph @ 0000024474e82640] Setting 'w' to value '1.5'
+[AVFilterGraph @ 0000024474e82640] Setting 'g' to value '4'
+[AVFilterGraph @ 0000024474e82640] Setting 'f' to value '3600'
+[AVFilterGraph @ 0000024474e82640] Setting 'limit' to value '0.90'
+[AVFilterGraph @ 0000024474e82640] Setting 'volume' to value '0.5'
+[pipe @ 0000024474ea5b40] Setting default whitelist 'crypto,data'
+Successfully opened the file.
+Stream mapping:
+  Stream #0:0 -> #0:0 (mp3 (mp3float) -> pcm_u8 (native))
+[aost#0:0/pcm_u8 @ 0000024474e8f440] Starting thread...
+[af#0:0 @ 0000024474ea3b00] Starting thread...
+[aist#0:0/mp3 @ 0000024474ea8280] [dec:mp3float @ 0000024474ea4000] Starting thread...
+[in#0/mp3 @ 0000024474e86880] Starting thread...
+[AVFilterGraph @ 0000024474ea59c0] Setting 'sample_rate' to value '8000'
+[AVFilterGraph @ 0000024474ea59c0] Setting 'dither_method' to value 'triangular'
+[AVFilterGraph @ 0000024474ea59c0] Setting 'resample_cutoff' to value '0.95'
+[AVFilterGraph @ 0000024474ea59c0] Setting 'f' to value '150'
+[AVFilterGraph @ 0000024474ea59c0] Setting 'f' to value '1000'
+[AVFilterGraph @ 0000024474ea59c0] Setting 't' to value 'q'
+[AVFilterGraph @ 0000024474ea59c0] Setting 'w' to value '1'
+[AVFilterGraph @ 0000024474ea59c0] Setting 'g' to value '3'
+[AVFilterGraph @ 0000024474ea59c0] Setting 'f' to value '3000'
+[AVFilterGraph @ 0000024474ea59c0] Setting 't' to value 'q'
+[AVFilterGraph @ 0000024474ea59c0] Setting 'w' to value '1.5'
+[AVFilterGraph @ 0000024474ea59c0] Setting 'g' to value '4'
+[AVFilterGraph @ 0000024474ea59c0] Setting 'f' to value '3600'
+[AVFilterGraph @ 0000024474ea59c0] Setting 'limit' to value '0.90'
+[AVFilterGraph @ 0000024474ea59c0] Setting 'volume' to value '0.5'
+detected 12 logical cores
+[graph_-1_in_0:0 @ 0000024474ef5540] Setting 'time_base' to value '1/24000'
+[graph_-1_in_0:0 @ 0000024474ef5540] Setting 'sample_rate' to value '24000'
+[graph_-1_in_0:0 @ 0000024474ef5540] Setting 'sample_fmt' to value 'fltp'
+[graph_-1_in_0:0 @ 0000024474ef5540] Setting 'channel_layout' to value 'mono'
+[graph_-1_in_0:0 @ 0000024474ef5540] tb:1/24000 samplefmt:fltp samplerate:24000 chlayout:mono
+[format_out_#0:0 @ 0000024474ef7540] Setting 'sample_fmts' to value 'u8'
+[format_out_#0:0 @ 0000024474ef7540] Setting 'sample_rates' to value '8000'
+[format_out_#0:0 @ 0000024474ef7540] Setting 'channel_layouts' to value 'mono'
+[Parsed_alimiter_5 @ 0000024474ec1a40] auto-inserting filter 'auto_aresample_0' between the filter 'Parsed_lowpass_4' and the filter 'Parsed_alimiter_5'
+[Parsed_volume_6 @ 0000024474ef47c0] auto-inserting filter 'auto_aresample_1' between the filter 'Parsed_alimiter_5' and the filter 'Parsed_volume_6'
+[format_out_#0:0 @ 0000024474ef7540] auto-inserting filter 'auto_aresample_2' between the filter 'Parsed_volume_6' and the filter 'format_out_#0:0'
+[AVFilterGraph @ 0000024474ea59c0] query_formats: 10 queried, 12 merged, 18 already done, 0 delayed
+[auto_aresample_1 @ 0000024474ef6f40] picking flt out of 2 ref:dbl
+[Parsed_aresample_0 @ 0000024474edb400] [SWR @ 0000024474edf2c0] Using fltp internally between filters
+[Parsed_aresample_0 @ 0000024474edb400] ch:1 chl:mono fmt:fltp r:24000Hz -> ch:1 chl:mono fmt:fltp r:8000Hz
+[Parsed_highpass_1 @ 0000024474eda940] a=1.083124 -1.986137 0.916876:b=0.996534 -1.993068 0.996534
+[Parsed_equalizer_2 @ 0000024474eda380] a=1.297478 -1.414214 0.702522:b=1.420199 -1.414214 0.579801
+[Parsed_equalizer_3 @ 0000024474ed9d80] a=1.187225 1.414214 0.812775:b=1.296732 1.414214 0.703268
+[Parsed_lowpass_4 @ 0000024474ed94c0] a=1.218541 1.902113 0.781459:b=0.975528 1.951057 0.975528
+[auto_aresample_0 @ 0000024474ef6540] [SWR @ 0000024474efc140] Using fltp internally between filters
+[auto_aresample_0 @ 0000024474ef6540] ch:1 chl:mono fmt:fltp r:8000Hz -> ch:1 chl:mono fmt:dbl r:8000Hz
+[auto_aresample_1 @ 0000024474ef6f40] [SWR @ 0000024474f11500] Using dblp internally between filters
+[auto_aresample_1 @ 0000024474ef6f40] ch:1 chl:mono fmt:dbl r:8000Hz -> ch:1 chl:mono fmt:flt r:8000Hz
+[auto_aresample_1 @ 0000024474ef6f40] tb:0.000125 sample_rate:8000.000000 nb_channels:1.000000
+[Parsed_volume_6 @ 0000024474ef47c0] n:nan t:nan pts:nan precision:float volume:0.500000 volume_dB:-6.020600
+[auto_aresample_2 @ 0000024474ef5940] [SWR @ 0000024474f26700] Using fltp internally between filters
+[auto_aresample_2 @ 0000024474ef5940] ch:1 chl:mono fmt:flt r:8000Hz -> ch:1 chl:mono fmt:u8 r:8000Hz
+Output #0, u8, to 'pipe:1':
+  Metadata:
+    encoder         : Lavf61.7.100
+  Stream #0:0, 0, 1/8000: Audio: pcm_u8, 8000 Hz, mono, u8, 64 kb/s
+      Metadata:
+        encoder         : Lavc61.19.100 pcm_u8
+[out#0/u8 @ 0000024474ea8440] Starting thread...
+[in#0/mp3 @ 0000024474e86880] EOF while reading input
+[in#0/mp3 @ 0000024474e86880] Terminating thread with return code 0 (success)
+[aist#0:0/mp3 @ 0000024474ea8280] [dec:mp3float @ 0000024474ea4000] Decoder thread received EOF packet
+[aist#0:0/mp3 @ 0000024474ea8280] [dec:mp3float @ 0000024474ea4000] Decoder returned EOF, finishing
+[aist#0:0/mp3 @ 0000024474ea8280] [dec:mp3float @ 0000024474ea4000] Terminating thread with return code 0 (success)
+[out_#0:0 @ 0000024474ef5840] EOF on sink link out_#0:0:default.
+[af#0:0 @ 0000024474ea3b00] Filtergraph returned EOF, finishing
+[af#0:0 @ 0000024474ea3b00] All consumers returned EOF
+[aost#0:0/pcm_u8 @ 0000024474e8f440] Encoder thread received EOF
+[aost#0:0/pcm_u8 @ 0000024474e8f440] Terminating thread with return code 0 (success)
+[out#0/u8 @ 0000024474ea8440] All streams finished
+[out#0/u8 @ 0000024474ea8440] Terminating thread with return code 0 (success)
+[af#0:0 @ 0000024474ea3b00] Terminating thread with return code 0 (success)
+[AVIOContext @ 0000024474e8a3c0] Statistics: 15744 bytes written, 0 seeks, 83 writeouts
+[out#0/u8 @ 0000024474ea8440] Output file #0 (pipe:1):
+[out#0/u8 @ 0000024474ea8440]   Output stream #0:0 (audio): 83 frames encoded (15744 samples); 83 packets muxed (15744 bytes); 
+[out#0/u8 @ 0000024474ea8440]   Total: 83 packets (15744 bytes) muxed
+[out#0/u8 @ 0000024474ea8440] video:0KiB audio:15KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.000000%
+size=      15KiB time=00:00:01.96 bitrate=  64.0kbits/s speed= 186x    
+[in#0/mp3 @ 0000024474e86880] Input file #0 (pipe:0):
+[in#0/mp3 @ 0000024474e86880]   Input stream #0:0 (audio): 82 packets read (11808 bytes); 82 frames decoded; 0 decode errors (47232 samples); 
+[in#0/mp3 @ 0000024474e86880]   Total: 82 packets (11808 bytes) demuxed
+[AVIOContext @ 0000024474e97040] Statistics: 11808 bytes read, 0 seeks
