@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import io as _io
 import os
+import random
 import re
 import sys
 import asyncio
@@ -36,10 +37,13 @@ from scipy.signal import butter, sosfilt
 from groq import Groq
 from rich.console import Console
 
-# Asegurar que voicechatLap esté en el path para importar config y wake_word
+# voicechatLap se appendea (no se inserta al frente) para que robot_bob/config.py
+# tenga prioridad sobre voicechatLap/config.py al hacer `from config import ...`.
+# Esto deja que Abdair edite robot_bob/config.py como la única fuente de verdad
+# y que wake_word.py y audio_io.py sigan siendo importables.
 _VOICECHAT_DIR = os.path.join(os.path.dirname(__file__), '..', 'voicechatLap')
 if _VOICECHAT_DIR not in sys.path:
-    sys.path.insert(0, os.path.abspath(_VOICECHAT_DIR))
+    sys.path.append(os.path.abspath(_VOICECHAT_DIR))
 
 from config import (
     GROQ_API_KEY,
@@ -55,6 +59,7 @@ from config import (
     GROQ_LLM_MODEL, GROQ_STT_MODEL, TEMPERATURE, MAX_TOKENS, MAX_RETRIES,
     VOICE, TTS_FFMPEG_FILTERS, SENTENCE_MIN_CHARS, TTS_TAIL_S,
     SYSTEM_PROMPT, EXIT_PHRASES, GOODBYE_PHRASES,
+    TTS_SEND_CHUNK_BYTES,
 )
 from wake_word import WakeWordDetector
 
@@ -65,6 +70,39 @@ console = Console()
 _LAP_SAMPLE_RATE = 16000  # sounddevice graba a 16 kHz
 _SILENCE_FRAMES  = SILENCE_END_MS // FRAME_MS
 _MAX_FRAMES      = (MAX_RECORDING_S * 1000) // FRAME_MS
+
+# Saludos rápidos cuando el usuario gatilla wake word ("Bob ...")
+WAKE_GREETINGS = [
+    '¡Hola bola!',
+    '¿Qué pasa calabaza?',
+    '¡Aquí estoy!',
+    '¡Dime, dime!',
+    '¡Sí dime!',
+    '¿Qué tranza compadre?',
+    '¡Te escucho!',
+    '¿Qué hubo qué hay?',
+    '¡A la orden!',
+    '¿Qué onda banana?',
+    '¿Qué tal lechuga?',
+    '¡Aquí Bob, reportándose!',
+]
+
+# Openers cuando Bob inicia solo (vio una cara permanente, se animó a romper hielo).
+# Preguntas abiertas para invitar a charlar — el usuario no esperaba ser hablado.
+AUTO_OPENERS = [
+    '¡Hola! Soy Bob, ¿y tú cómo te llamas?',
+    '¡Buenas! ¿De qué carrera eres?',
+    '¡Hey! ¿Qué te trae por la feria?',
+    '¡Hola! Te estaba mirando, ¿charlamos?',
+    '¡Buenas! ¿Cómo va tu día?',
+    '¡Eh, hola! ¿Te cuento un chiste?',
+    '¡Hola! ¿Vienes a ver robots o a ver robots?',
+    '¡Saludos! ¿Te puedo preguntar algo?',
+    '¡Hola! Me aburría, ¿hablamos un rato?',
+    '¡Buenas! ¿Sabías que llevo aquí horas? Cuéntame algo.',
+    '¡Hola! ¿Eres de Potosí o de visita?',
+    '¡Hey! ¿Qué opinas de los robots conversacionales?',
+]
 
 # Filtro pasa-banda de voz (pre-calculado, reutilizable)
 _VOICE_BANDPASS = butter(4, [80, 3500], btype='band', fs=SAMPLE_RATE, output='sos')
@@ -167,9 +205,15 @@ class VoicePipeline:
     state_machine: StateMachine (para notificar transiciones)
     """
 
-    def __init__(self, serial_mgr, state_machine):
+    def __init__(self, serial_mgr, state_machine, audio_io=None):
+        """
+        audio_io: instancia opcional de AudioIO (voicechatLap.audio_io) ya conectada.
+                  Si USE_ROBOT_MIC o USE_ROBOT_SPEAKER son True y audio_io está,
+                  se rutea el audio por TCP al ESP32 en lugar de laptop.
+        """
         self._serial = serial_mgr
         self._sm     = state_machine
+        self._audio_io = audio_io
 
         self._client = Groq(api_key=GROQ_API_KEY)
         self._vad    = webrtcvad.Vad(VAD_AGGRESSIVENESS)
@@ -216,59 +260,96 @@ class VoicePipeline:
             if not self._sm.ev_escuchando.is_set():
                 continue
 
-            self._run_conversation(pending_audio=self._sm.pending_audio)
-            self._sm.pending_audio = None
+            # Capturar flags pendientes ANTES de arrancar la conversación
+            pending_audio = self._sm.pending_audio
+            pending_text  = self._sm.pending_text
+            greeting      = self._sm.greeting_pending
+            trigger       = self._sm.conversation_trigger
+            self._sm.pending_audio        = None
+            self._sm.pending_text         = None
+            self._sm.greeting_pending     = False
+            self._sm.conversation_trigger = None
 
-    def _run_conversation(self, pending_audio: Optional[bytes] = None) -> None:
+            self._run_conversation(pending_audio=pending_audio,
+                                   pending_text=pending_text,
+                                   greeting=greeting,
+                                   trigger=trigger)
+
+    def _run_conversation(self, pending_audio: Optional[bytes] = None,
+                          pending_text: Optional[str] = None,
+                          greeting: bool = False,
+                          trigger: Optional[str] = None) -> None:
         """
         Maneja una conversación completa: turno inicial + turnos sucesivos
         sin requerir wake word entre ellos. Termina cuando:
           - El usuario no responde en NEXT_TURN_TIMEOUT segundos
           - El usuario dice una frase de salida/despedida
           - Se llama a cerrar()
+
+        pending_text: si está presente, se usa como primer turno SIN grabar/transcribir
+                      (caso típico: "Bob ¿cómo estás?" — el payload tras el wake).
+        greeting:     si True, dice un saludo random ANTES de proceder.
         """
         NEXT_TURN_TIMEOUT = 6.0   # s para esperar respuesta del usuario tras hablar Bob
         FIRST_TURN_TIMEOUT = 10.0  # s para el primer turno tras wake word
 
         es_primer_turno = True
 
+        # ── Saludo / opener al arrancar conversación ──────────────────────────
+        if greeting:
+            if trigger == 'auto':
+                saludo = random.choice(AUTO_OPENERS)
+                console.print(f'[bold magenta][opener auto][/] {saludo}')
+            else:
+                saludo = random.choice(WAKE_GREETINGS)
+                console.print(f'[bold magenta][saludo wake][/] {saludo}')
+            self._sm.iniciar_hablando()
+            self._hablar(saludo)
+            # Si no hay payload pendiente, volvemos a LISTENING para grabar
+            if not pending_text:
+                self._sm.iniciar_escuchando()
+
         while not self._detener.is_set():
-            # ── 1. Grabar el turno ─────────────────────────────────────────────
-            if pending_audio:
+            # ── 1. Obtener input del turno ─────────────────────────────────────
+            texto: str = ''
+            if pending_text:
+                # El wake monitor ya transcribió la frase entera junto al wake.
+                # Saltamos grabar + STT para este primer turno.
+                texto = pending_text
+                pending_text = None
+                console.print(f'[dim][voice] Usando payload del wake: "{texto}"[/]')
+                self._sm.iniciar_pensando()
+            elif pending_audio:
                 audio = pending_audio
                 pending_audio = None
                 console.print('[dim][voice] Usando audio de barge-in[/]')
+                self._sm.iniciar_pensando()
+                console.print('[voice] Transcribiendo...')
+                texto = self._transcribir(audio)
             else:
                 if not es_primer_turno:
-                    # Después de hablar Bob, volvemos a LISTENING para el siguiente turno
                     self._sm.iniciar_escuchando()
                 timeout = FIRST_TURN_TIMEOUT if es_primer_turno else NEXT_TURN_TIMEOUT
                 console.print(f'[voice] Escuchando ({timeout:.0f}s timeout)...')
                 audio = self._grabar(initial_timeout=timeout)
+                if audio is None or not audio:
+                    console.print('[dim][voice] Silencio prolongado, fin de conversación[/]')
+                    break
+                self._sm.iniciar_pensando()
+                console.print('[voice] Transcribiendo...')
+                texto = self._transcribir(audio)
 
-            if audio is None or not audio:
-                console.print('[dim][voice] Silencio prolongado, fin de conversación[/]')
-                break
-
-            # ── 2. Transcribir ─────────────────────────────────────────────────
-            self._sm.iniciar_pensando()
-            console.print('[voice] Transcribiendo...')
-            texto = self._transcribir(audio)
             if not texto:
                 console.print('[dim][voice] Audio sin texto[/]')
                 break
 
             console.print(f'[bold cyan]Usuario:[/] {texto}')
 
-            # ── 3. (El wake word ya fue verificado por el wake_monitor antes ──
-            #       de transicionar a LISTENING. NO re-verificamos aquí.) ──────
-            #     Si el texto incluye "Bob" al inicio porque el usuario lo
-            #     repitió, lo quitamos por elegancia. Si no, dejamos el texto tal cual.
+            # Limpiar wake word residual si el usuario repitió "Bob"
             ww = self._wake.detect(texto)
             if ww.detected and ww.payload:
                 texto = ww.payload
 
-            # Si el audio solo contenía wake word vacío, seguir al siguiente turno
             if not texto.strip():
                 es_primer_turno = False
                 continue
@@ -295,6 +376,81 @@ class VoicePipeline:
     # ── Grabación ────────────────────────────────────────────────────────────
 
     def _grabar(self, initial_timeout: float = 8.0) -> Optional[bytes]:
+        """
+        Graba con VAD. Despacha a robot (ESP32 TCP) o laptop (sounddevice)
+        según el flag USE_ROBOT_MIC y la disponibilidad del AudioIO.
+        """
+        if USE_ROBOT_MIC and self._audio_io is not None and self._audio_io.connected:
+            return self._grabar_robot(initial_timeout)
+        return self._grabar_laptop(initial_timeout)
+
+    def _grabar_robot(self, initial_timeout: float) -> Optional[bytes]:
+        """
+        Graba uint8 @ 8 kHz desde el mic del ESP32 vía AudioIO.
+        Misma lógica de VAD + endpointing que la versión laptop.
+        """
+        self._audio_io.drain_mic()  # tirar audio viejo
+        vad_local   = webrtcvad.Vad(VAD_AGGRESSIVENESS)
+        u8_per_frame = SAMPLE_RATE * FRAME_MS // 1000  # 240 bytes / frame VAD a 8 kHz
+
+        preroll: deque[bytes] = deque(maxlen=PREROLL_FRAMES)
+        recorded: List[bytes] = []
+        buffer = bytearray()
+        speech_started = False
+        silence_streak = 0
+        speech_ms      = 0
+        waited_ms      = 0
+        initial_timeout_ms = int(initial_timeout * 1000)
+
+        while True:
+            chunk = self._audio_io.get_mic(timeout=0.5)
+            if chunk is None:
+                waited_ms += 500
+                if not speech_started and waited_ms > initial_timeout_ms:
+                    return None
+                continue
+            buffer.extend(chunk)
+
+            # Slice frames VAD de tamaño fijo
+            while len(buffer) >= u8_per_frame:
+                frame_u8 = bytes(buffer[:u8_per_frame])
+                del buffer[:u8_per_frame]
+
+                # webrtcvad requiere int16 → convertir
+                frame_i16 = _uint8_to_int16_bytes(frame_u8)
+                try:
+                    is_vad = vad_local.is_speech(frame_i16, SAMPLE_RATE)
+                except Exception:
+                    is_vad = False
+
+                rms = _rms_uint8(frame_u8)
+
+                if not speech_started:
+                    preroll.append(frame_u8)
+                    waited_ms += FRAME_MS
+                    if is_vad and rms > NOISE_FLOOR_MIN:
+                        speech_started = True
+                        recorded.extend(preroll)
+                        speech_ms = FRAME_MS * len(preroll)
+                    elif waited_ms > initial_timeout_ms:
+                        return None
+                else:
+                    recorded.append(frame_u8)
+                    speech_ms += FRAME_MS
+                    if is_vad and rms > NOISE_FLOOR_MIN:
+                        silence_streak = 0
+                    else:
+                        silence_streak += 1
+                    if silence_streak >= _SILENCE_FRAMES:
+                        if speech_ms < MIN_SPEECH_S * 1000:
+                            return None
+                        raw = b''.join(recorded)
+                        return _uint8_to_wav(raw)
+                    if speech_ms >= MAX_RECORDING_S * 1000:
+                        raw = b''.join(recorded)
+                        return _uint8_to_wav(raw)
+
+    def _grabar_laptop(self, initial_timeout: float = 8.0) -> Optional[bytes]:
         """
         Graba desde micrófono de laptop con VAD + gate adaptativo.
         initial_timeout: segundos máximo de silencio inicial antes de devolver None.
@@ -439,7 +595,47 @@ class VoicePipeline:
         self._reproducir_mp3(mp3)
 
     def _reproducir_mp3(self, mp3: bytes) -> Optional[bytes]:
-        """Reproduce MP3 con pygame. Devuelve None (barge-in no soportado en laptop sin ESP32)."""
+        """Reproduce MP3 — vía speaker del ESP32 (TCP) o pygame local según flag."""
+        if USE_ROBOT_SPEAKER and self._audio_io is not None and self._audio_io.connected:
+            return self._reproducir_mp3_robot(mp3)
+        return self._reproducir_mp3_laptop(mp3)
+
+    def _reproducir_mp3_robot(self, mp3: bytes) -> Optional[bytes]:
+        """Convierte mp3 → uint8 @ 8 kHz y lo manda al ESP32 en chunks."""
+        u8 = self._mp3_a_u8(mp3)
+        if not u8:
+            return None
+        # Mandar header + body en bloques. send_audio_chunk mete header+body en uno.
+        # Para frases grandes troceamos con header de longitud total + body por send_audio_body.
+        total = len(u8)
+        if not self._audio_io.send_audio_header(total):
+            return None
+        i = 0
+        while i < total and not self._detener.is_set():
+            end = min(i + TTS_SEND_CHUNK_BYTES, total)
+            if not self._audio_io.send_audio_body(u8[i:end]):
+                break
+            i = end
+            # Pacing: dejar al ESP32 reproducir
+            time.sleep(TTS_SEND_CHUNK_BYTES / SAMPLE_RATE * 0.85)
+        time.sleep(TTS_TAIL_S)
+        return None
+
+    @staticmethod
+    def _mp3_a_u8(mp3: bytes) -> bytes:
+        """Convierte mp3 → PCM uint8 mono @ SAMPLE_RATE Hz vía ffmpeg + filtros TTS."""
+        proc = subprocess.run(
+            [FFMPEG, '-hide_banner', '-loglevel', 'error',
+             '-i', 'pipe:0',
+             '-af', TTS_FFMPEG_FILTERS,
+             '-ar', str(SAMPLE_RATE), '-ac', '1',
+             '-acodec', 'pcm_u8', '-f', 'u8', 'pipe:1'],
+            input=mp3, capture_output=True, check=False,
+        )
+        return proc.stdout
+
+    def _reproducir_mp3_laptop(self, mp3: bytes) -> Optional[bytes]:
+        """Reproduce MP3 con pygame en parlantes de la laptop."""
         with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tf:
             tf.write(mp3)
             path = tf.name
@@ -554,13 +750,38 @@ class VoicePipeline:
 
             ww = self._wake.detect(texto)
             if ww.detected:
-                console.print(f'[bold yellow][wake] "{texto}" detectado![/]')
-                self._sm.notificar_wake_word()
+                payload = (ww.payload or '').strip()
+                if payload:
+                    console.print(f'[bold yellow][wake] "{texto}" → payload: "{payload}"[/]')
+                else:
+                    console.print(f'[bold yellow][wake] "{texto}" detectado![/]')
+                self._sm.notificar_wake_word(payload=payload or None)
             else:
                 console.print(f'[dim][wake?] heard: "{texto}"[/]')
 
     def _grabar_wake(self) -> Optional[bytes]:
-        """Versión corta de _grabar: graba máximo 3 s, sin esperar largo silencio."""
+        """Versión corta para wake monitor: ~3 s, despacha a robot o laptop."""
+        if USE_ROBOT_MIC and self._audio_io is not None and self._audio_io.connected:
+            return self._grabar_wake_robot()
+        return self._grabar_wake_laptop()
+
+    def _grabar_wake_robot(self) -> Optional[bytes]:
+        """Graba 3 s desde el mic del ESP32 (uint8) y devuelve WAV."""
+        self._audio_io.drain_mic()
+        collected = bytearray()
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 3.0 and not self._detener.is_set():
+            if self._sm.en_conversacion:
+                return None
+            chunk = self._audio_io.get_mic(timeout=0.1)
+            if chunk:
+                collected.extend(chunk)
+        if not collected:
+            return None
+        return _uint8_to_wav(bytes(collected))
+
+    def _grabar_wake_laptop(self) -> Optional[bytes]:
+        """Graba 3 s desde el mic local. Devuelve WAV int16 @ 16 kHz."""
         q: queue.Queue = queue.Queue()
 
         def callback(indata, frames, t, status):

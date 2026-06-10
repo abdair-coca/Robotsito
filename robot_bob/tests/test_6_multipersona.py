@@ -100,21 +100,23 @@ def _movimiento_lateral(t_dur):
 
 GUION = [
     # (t_ini, t_fin,  etiqueta,                      generador)
+    # IDLE empieza después de timeout_rostro (1.5s) tras desaparecer la cara.
+    # Para forzar startle necesitamos >30s en IDLE; por eso Persona C va a t=55.
     ( 0.0,   5.0,  'IDLE warmup (nadie)',           None),
     ( 5.0,  10.0,  'Persona A — quieta centro',     _quieto(160, 110)),
     (10.0,  15.0,  'Nadie — vuelve a IDLE',         None),
     (15.0,  20.0,  'Persona B — moviéndose',        _movimiento_lateral(5.0)),
-    (20.0,  50.0,  'Nadie — largo gap >30s',        None),
-    (50.0,  56.0,  'Persona C — DEBE doble toma',   _quieto(170, 105)),
-    (56.0,  60.0,  'Nadie (gap corto)',             None),
-    (60.0,  64.0,  'Persona D — sin doble toma',    _quieto(150, 115)),
-    (64.0,  66.0,  'Nadie',                         None),
-    (66.0,  67.0,  'Persona E (1s)',                _quieto(170, 115)),
-    (67.0,  68.0,  'Nadie',                         None),
-    (68.0,  69.0,  'Persona F (1s)',                _quieto(150, 115)),
-    (69.0,  70.0,  'Nadie',                         None),
-    (70.0,  71.0,  'Persona G (1s)',                _quieto(160, 110)),
-    (71.0,  76.0,  'Nadie — cierre',                None),
+    (20.0,  55.0,  'Nadie — largo gap (IDLE >30s)', None),
+    (55.0,  61.0,  'Persona C — DEBE doble toma',   _quieto(170, 105)),
+    (61.0,  65.0,  'Nadie (gap corto)',             None),
+    (65.0,  69.0,  'Persona D — sin doble toma',    _quieto(150, 115)),
+    (69.0,  71.0,  'Nadie',                         None),
+    (71.0,  72.0,  'Persona E (1s)',                _quieto(170, 115)),
+    (72.0,  73.0,  'Nadie',                         None),
+    (73.0,  74.0,  'Persona F (1s)',                _quieto(150, 115)),
+    (74.0,  75.0,  'Nadie',                         None),
+    (75.0,  76.0,  'Persona G (1s)',                _quieto(160, 110)),
+    (76.0,  80.0,  'Nadie — cierre',                None),
 ]
 
 
@@ -163,6 +165,7 @@ def main() -> None:
     duracion_total = GUION[-1][1]
     t0 = time.monotonic()
     idx_actual = -1
+    estado_oled_prev = None  # para enviar OLED solo en transiciones
 
     print(f'\nGuión: {len(GUION)} ventanas, duración {duracion_total:.0f}s')
     print('(observa el OLED + servos. El estado se imprime cuando cambia)\n')
@@ -190,12 +193,26 @@ def main() -> None:
                         sm.notificar_cara(True)
                     break
 
-            resultado.registrar(
-                ahora,
-                sm.estado.value,
-                sm.startle_active(),
-                tracker.ultimo_det is not None,
-            )
+            estado_actual = sm.estado.value
+            startle_now   = sm.startle_active()
+
+            # Feedback en OLED para que sea visible durante el test
+            #   PRESENCE         → SIGUIENDO
+            #   STARTLE activo   → CURIOSO (mientras dure)
+            #   resto            → lo que ya manda state_machine
+            if startle_now:
+                if estado_oled_prev != 'CURIOSO':
+                    mgr.cmd_estado('CURIOSO')
+                    estado_oled_prev = 'CURIOSO'
+            elif estado_actual == 'PRESENCE':
+                if estado_oled_prev != 'SIGUIENDO':
+                    mgr.cmd_estado('SIGUIENDO')
+                    estado_oled_prev = 'SIGUIENDO'
+            else:
+                estado_oled_prev = None  # otros estados ya manejados por state_machine
+
+            resultado.registrar(ahora, estado_actual, startle_now,
+                                tracker.ultimo_det is not None)
 
             time.sleep(LOOP_DT)
 
@@ -234,18 +251,18 @@ def main() -> None:
         print(f'  {"✓" if ok_alt else "✗"} Alternancia IDLE↔PRESENCE  '
               f'({n_presence} entradas a PRESENCE, esperaba ≥5)')
 
-        # 2: startle debe disparar EXACTAMENTE 1 vez, alrededor del segundo 50
+        # 2: startle debe disparar EXACTAMENTE 1 vez, alrededor del segundo 55
         ok_startle_n = len(resultado.startles) == 1
-        ok_startle_t = ok_startle_n and 49.5 < resultado.startles[0] < 52.0
+        ok_startle_t = ok_startle_n and 54.5 < resultado.startles[0] < 57.0
         if ok_startle_n and ok_startle_t:
-            print('  ✓ Doble toma  (1 startle alrededor de t=50s)')
+            print(f'  ✓ Doble toma  (1 startle en t={resultado.startles[0]:.1f}s)')
         elif len(resultado.startles) == 0:
             print('  ✗ Doble toma  (NUNCA se gatilló — bug en startle_active)')
         elif len(resultado.startles) > 1:
             print(f'  ✗ Doble toma  ({len(resultado.startles)} startles — falsos positivos)')
         else:
             print(f'  ✗ Doble toma  (startle en t={resultado.startles[0]:.1f}s, '
-                  f'esperaba ~50s)')
+                  f'esperaba ~55s)')
 
         # 3: ninguna transición a LISTENING (p_conv=0 y nadie dijo "Bob")
         n_listen = sum(1 for _, e in resultado.transiciones if e == 'LISTENING')

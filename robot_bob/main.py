@@ -29,18 +29,15 @@ except Exception:
 cv2.setNumThreads(1)
 
 # ── Configuración ──────────────────────────────────────────────────────────────
-PUERTO_SERIAL  = 'COM3'
-BAUD_RATE      = 115200
-IP_ESPCAM      = '192.168.0.22'
-URL_STREAM     = f'http://{IP_ESPCAM}:81/stream'
-MODELO_TFLITE  = os.path.join(os.path.dirname(__file__), '..', 'Esp32ThinkerAICam', 'blaze_face_short_range.tflite')
-
-# Parámetros de trigger de conversación
-T_PERMANENCIA_MIN  = 3.0   # segundos de cara antes de evaluar probabilidad
-P_CONVERSACION     = 0.35  # probabilidad de iniciar conversación
-COOLDOWN_CONV      = 30.0  # segundos entre conversaciones
-CONVERSATION_TIMEOUT = 5.0 # segundos de inactividad para volver a IDLE
-TIMEOUT_ROSTRO     = 1.5   # segundos sin cara para ir a SEARCHING
+# Toda la configuración modificable vive en config.py (en esta misma carpeta).
+from config import (
+    PUERTO_SERIAL, BAUD_RATE,
+    IP_ESPCAM, URL_STREAM, MODELO_TFLITE,
+    USE_ROBOT_MIC, USE_ROBOT_SPEAKER,
+    T_PERMANENCIA_MIN, P_CONVERSACION, COOLDOWN_CONV,
+    CONVERSATION_TIMEOUT, TIMEOUT_ROSTRO,
+    TARGET_FPS,
+)
 
 # Colores HUD (BGR)
 COLOR_OK    = (0, 255, 0)
@@ -95,8 +92,24 @@ def main() -> None:
     cx_c = tracker.cx_centro
     cy_c = tracker.cy_centro
 
-    # ── 4. VoicePipeline ───────────────────────────────────────────────────────
-    voice = VoicePipeline(serial_mgr, sm)
+    # ── 4. VoicePipeline (con AudioIO opcional al ESP32) ───────────────────────
+    audio_io = None
+    if USE_ROBOT_MIC or USE_ROBOT_SPEAKER:
+        try:
+            # Cargar AudioIO desde voicechatLap
+            sys.path.append(os.path.abspath(
+                os.path.join(os.path.dirname(__file__), '..', 'voicechatLap')))
+            from audio_io import AudioIO
+            print(f'[audio] Conectando al ESP32 audio TCP...')
+            audio_io = AudioIO()
+            audio_io.connect(timeout_s=5.0)
+            print(f'[audio] ✓ Conectado. MIC={USE_ROBOT_MIC} SPEAKER={USE_ROBOT_SPEAKER}')
+        except Exception as e:
+            print(f'[audio] ✗ No se pudo conectar al ESP32 audio: {e}')
+            print(f'[audio]   Fallback automático a laptop (mic + speaker).')
+            audio_io = None
+
+    voice = VoicePipeline(serial_mgr, sm, audio_io=audio_io)
     voice.iniciar_wake_monitor()
 
     # ── 5. BehaviorEngine ──────────────────────────────────────────────────────
@@ -207,6 +220,11 @@ def main() -> None:
         behavior.cerrar()
         voice.cerrar()
         tracker.cerrar()
+        if audio_io is not None:
+            try:
+                audio_io.close()
+            except Exception:
+                pass
         cv2.destroyAllWindows()
         serial_mgr.cmd_servo(PAN_HOME, TILT_HOME)
         time.sleep(0.3)

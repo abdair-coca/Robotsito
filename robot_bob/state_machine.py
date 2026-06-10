@@ -72,9 +72,14 @@ class StateMachine:
         self._t_sin_presencia = time.monotonic()  # cuándo entramos al estado IDLE actual
         self._startle_hasta   = 0.0   # hasta cuándo está activo el gesto de "doble toma"
 
-        # Umbral para gatillar la "doble toma" (cara nueva tras N segundos sin presencia)
-        self.STARTLE_THR_S    = 30.0
-        self.STARTLE_DUR_S    = 0.6
+        # Umbral para considerar a Bob "dormido" (cabeza baja, sin movimiento) y
+        # para gatillar el "despertar" cuando aparece una cara nueva.
+        # Coincide aproximadamente con el momento en que el firmware del OLED
+        # ya tiene el párpado bien bajo (~20 s de ESPERANDO continuo).
+        self.SLEEP_THR_S      = 20.0
+        self.STARTLE_DUR_S    = 1.5  # duración del gesto de despertar (lento + CURIOSO)
+        # Alias retrocompatible con código que aún use STARTLE_THR_S
+        self.STARTLE_THR_S    = self.SLEEP_THR_S
 
         # Eventos para sincronización de hilos
         self.ev_escuchando  = threading.Event()  # VoicePipeline: empieza a grabar
@@ -85,6 +90,13 @@ class StateMachine:
 
         # Pending audio del barge-in (bytes | None)
         self.pending_audio: bytes | None = None
+        # Pending text del wake monitor (frase capturada junto al wake word)
+        self.pending_text: str | None = None
+        # Flag: la próxima conversación debe arrancar con saludo divertido
+        self.greeting_pending: bool = False
+        # Origen del trigger: 'wake' (usuario dijo Bob) o 'auto' (Bob inició solo)
+        # Determina qué lista de frases usar en voice_pipeline.
+        self.conversation_trigger: str | None = None
 
     # ── Propiedades ────────────────────────────────────────────────────────────
 
@@ -104,8 +116,18 @@ class StateMachine:
             )
 
     def startle_active(self) -> bool:
-        """True si está corriendo el gesto de 'doble toma' (sorpresa)."""
+        """True si está corriendo el gesto de despertar (sorpresa lenta + CURIOSO)."""
         return time.monotonic() < self._startle_hasta
+
+    def is_asleep(self) -> bool:
+        """
+        True si Bob lleva más de SLEEP_THR_S sin presencia en IDLE → cabeza
+        debe quedar quieta (postura de sueño). Coordina con el OLED sleepy.
+        """
+        with self._lock:
+            if self._estado != RobotState.IDLE:
+                return False
+        return (time.monotonic() - self._t_sin_presencia) > self.SLEEP_THR_S
 
     # ── Transiciones (llamadas desde cualquier hilo) ───────────────────────────
 
@@ -125,20 +147,29 @@ class StateMachine:
             elif estado == RobotState.PRESENCE:
                 self._evaluar_inicio_conv(ahora)
         else:
-            # Sin cara
+            # Sin cara. NO reseteamos t_cara_vista en cada frame: flickers cortos
+            # de MediaPipe nunca dejarían acumular permanencia. Solo reseteamos
+            # al transicionar realmente a IDLE (tras timeout_rostro).
             if self._t_cara_perdida == 0.0:
                 self._t_cara_perdida = ahora
-            self._t_cara_vista = 0.0
 
             tiempo_sin_cara = ahora - self._t_cara_perdida
             if estado == RobotState.PRESENCE and tiempo_sin_cara > self._timeout_rostro:
+                self._t_cara_vista = 0.0
                 self._transicionar(RobotState.IDLE)
 
-    def notificar_wake_word(self) -> None:
-        """Wake word detectado — forzar inicio de conversación."""
+    def notificar_wake_word(self, payload: str | None = None) -> None:
+        """
+        Wake word detectado — forzar inicio de conversación.
+        payload: texto capturado después del wake (e.g. "como estas" tras "bob como estas").
+                 Si está, se pasa al pipeline como primer turno sin re-grabar.
+        """
         with self._lock:
             estado = self._estado
         if estado in (RobotState.IDLE, RobotState.PRESENCE):
+            self.greeting_pending = True
+            self.conversation_trigger = 'wake'
+            self.pending_text = (payload or '').strip() or None
             self._transicionar(RobotState.LISTENING)
 
     def iniciar_escuchando(self) -> None:
@@ -182,6 +213,10 @@ class StateMachine:
             if random.random() < self._p_conv:
                 self._t_cara_vista = 0.0  # resetear para no re-disparar
                 self._t_ultima_conv = ahora
+                # Bob inicia solo → opener divertido + ningún payload pendiente
+                self.greeting_pending = True
+                self.conversation_trigger = 'auto'
+                self.pending_text = None
                 self._transicionar_locked(RobotState.LISTENING)
 
     def _transicionar(self, nuevo: RobotState) -> None:
@@ -195,11 +230,11 @@ class StateMachine:
         self._estado   = nuevo
         self._t_cambio = time.monotonic()
 
-        # "Doble toma": si pasamos de IDLE a PRESENCE tras >STARTLE_THR_S sin presencia,
-        # activamos un gesto de sorpresa por STARTLE_DUR_S.
+        # "Despertar": si pasamos de IDLE a PRESENCE tras >SLEEP_THR_S sin presencia,
+        # activamos el gesto de despertar lento + CURIOSO por STARTLE_DUR_S.
         if anterior == RobotState.IDLE and nuevo == RobotState.PRESENCE:
             ausencia = self._t_cambio - self._t_sin_presencia
-            if ausencia > self.STARTLE_THR_S:
+            if ausencia > self.SLEEP_THR_S:
                 self._startle_hasta = self._t_cambio + self.STARTLE_DUR_S
         # Marcar inicio de ausencia cuando entramos a IDLE
         if nuevo == RobotState.IDLE:

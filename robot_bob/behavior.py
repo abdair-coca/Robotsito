@@ -45,12 +45,23 @@ TICK_S = 0.05  # 20 Hz — más suave para los servos sin saturar CPU
 # La gente espera contacto visual a los ojos → subimos la mirada N grados.
 EYE_CONTACT_OFFSET_TILT = -8.0  # tilt negativo = mirar más arriba
 
+# Postura de sueño: cabeza baja (mentón al pecho)
+SLEEP_TILT  = TILT_HOME + 15.0   # 105° — dentro del rango TILT_MAX=130
+SLEEP_PAN   = float(PAN_HOME)    # alineada al centro
+
+# Despertar: el tilt sube desde SLEEP_TILT hasta este offset sobre HOME (mirar arriba con CURIOSO)
+WAKE_TILT_PEAK = TILT_HOME - 18.0  # 72° — mira hacia arriba mientras se despierta
+
 
 class BehaviorEngine:
     def __init__(self, state_machine, facial_tracker):
         self._sm      = state_machine
         self._tracker = facial_tracker
         self._detener = threading.Event()
+        # Tracking interno para emitir OLED CURIOSO una sola vez al empezar el despertar
+        self._startle_prev  = False
+        self._asleep_prev   = False
+        self._thinking_prev = False
 
         # Parámetros de suavizado por estado (alpha del lerp exponencial)
         self.alpha = {
@@ -115,16 +126,44 @@ class BehaviorEngine:
         alpha    = self.alpha.get(estado, 0.08)
         max_paso = self.max_paso.get(estado, 1.0)
 
-        # "Doble toma": retroceso breve cuando aparece una cara tras larga ausencia.
-        # Levantamos tilt 12° respecto a la posición actual durante STARTLE_DUR_S.
-        if estado == RobotState.PRESENCE and self._sm.startle_active():
+        # Reset flags one-shot al salir de su estado
+        if estado != RobotState.THINKING:
+            self._thinking_prev = False
+
+        # ── Despertar: cara nueva tras >SLEEP_THR_S sin presencia ──────────────
+        # Gesto largo y tierno: tilt sube lento desde donde estaba hasta mirar arriba.
+        # OLED pasa a CURIOSO durante el gesto. Pan se mantiene quieto.
+        startle = (estado == RobotState.PRESENCE and self._sm.startle_active())
+        if startle:
+            if not self._startle_prev:
+                # Primer tick del despertar: cambiar OLED a CURIOSO
+                self._sm._serial.cmd_estado('CURIOSO')
+            self._startle_prev = True
             self._pan_obj  = self._tracker.pan_actual
-            self._tilt_obj = _clamp(self._tracker.tilt_actual - 12.0,
-                                    TILT_MIN, TILT_MAX)
+            self._tilt_obj = WAKE_TILT_PEAK
             self._tracker.set_objetivo(self._pan_obj, self._tilt_obj)
-            self._tracker.actualizar_servo(None, suavizado=0.80,
-                                           max_paso_pan=3.0, max_paso_tilt=3.0)
+            # max_paso bajo + suavizado alto → movimiento lento (~16°/s)
+            self._tracker.actualizar_servo(None, suavizado=0.92,
+                                           max_paso_pan=0.5, max_paso_tilt=0.8)
             return
+        else:
+            if self._startle_prev:
+                # Fin del despertar → volver al OLED de PRESENCE (SIGUIENDO lo
+                # mandará el main loop con cmd_siguiendo en el próximo frame)
+                self._sm._serial.cmd_estado('SIGUIENDO')
+            self._startle_prev = False
+
+        # ── Sueño: si Bob lleva >SLEEP_THR_S en IDLE sin nadie, baja la cabeza ─
+        if estado == RobotState.IDLE and self._sm.is_asleep() and det is None:
+            self._asleep_prev = True
+            self._pan_obj  = SLEEP_PAN
+            self._tilt_obj = SLEEP_TILT
+            self._tracker.set_objetivo(self._pan_obj, self._tilt_obj)
+            # Movimiento lento al "acomodarse" para dormir
+            self._tracker.actualizar_servo(None, suavizado=0.95,
+                                           max_paso_pan=0.6, max_paso_tilt=0.6)
+            return
+        self._asleep_prev = False
 
         if estado in (RobotState.IDLE, RobotState.PRESENCE) and det is None:
             self._tick_idle(ahora)
@@ -218,9 +257,19 @@ class BehaviorEngine:
         self._tracker.tilt_obj = tilt_real
 
     def _tick_thinking(self) -> None:
-        """Leve inclinación del tilt hacia arriba-derecha (como pensando)."""
-        self._pan_obj  = _clamp(self._tracker.pan_actual  + 5.0, PAN_MIN,  PAN_MAX)
-        self._tilt_obj = _clamp(self._tracker.tilt_actual - 5.0, TILT_MIN, TILT_MAX)
+        """
+        Pensar: cabeza quieta con una micro-inclinación SOLO al entrar.
+        Sin actualizar el objetivo en cada tick (eso es lo que provocaba que
+        la cabeza derivara hacia el corner: cada tick movía el target +5°
+        respecto al actual, creando un bucle positivo).
+        """
+        if not self._thinking_prev:
+            # Primer tick de THINKING: capturar pose y aplicar 3° de inclinación
+            self._pan_obj  = self._tracker.pan_actual
+            self._tilt_obj = _clamp(self._tracker.tilt_actual - 3.0,
+                                    TILT_MIN, TILT_MAX)
+            self._thinking_prev = True
+        # Resto de los ticks: dejar pan_obj/tilt_obj como están → cabeza quieta
 
     def _tick_speaking(self, det, ahora: float) -> None:
         """Tracking lento + desvíos más frecuentes."""
