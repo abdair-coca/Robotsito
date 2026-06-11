@@ -208,7 +208,7 @@ Durante TTS:
 * Parpadeos naturales
 * Expresiones relacionadas con contexto
 
-No limitarse a abrir y cerrar boca.
+No limitarse a explicar
 
 El rostro completo debe participar.
 
