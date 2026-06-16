@@ -1,98 +1,101 @@
-# MicroPython SH1106 OLED driver, I2C interface
-# Inherits from framebuf.FrameBuffer to automatically support all drawing methods:
-# fill, pixel, hline, vline, line, rect, fill_rect, text, blit, scroll.
+# MicroPython SSD1306 OLED driver, I2C and SPI interfaces
 
-import framebuf
 from micropython import const
+import framebuf
 
-_CMD_DISP_OFF        = const(0xAE)
-_CMD_DISP_ON         = const(0xAF)
-_CMD_CONTRAST        = const(0x81)
-_CMD_NORM_DISP       = const(0xA6)
-_CMD_INV_DISP        = const(0xA7)
-_CMD_SET_PAGE        = const(0xB0)
-_CMD_SET_COL_LO      = const(0x00)
-_CMD_SET_COL_HI      = const(0x10)
-_CMD_START_LINE      = const(0x40)
-_CMD_SEG_REMAP       = const(0xA1) # Mirror horizontal (0xA1 o 0xA0)
-_CMD_COM_OUT_REV     = const(0xC8) # Mirror vertical (0xC8 o 0xC0)
-_CMD_MUX_RATIO       = const(0xA8)
-_CMD_DISP_OFFSET     = const(0xD3)
-_CMD_CLK_DIV         = const(0xD5)
-_CMD_PRECHARGE       = const(0xD9)
-_CMD_COM_PINS        = const(0xDA)
-_CMD_VCOM_DESEL      = const(0xDB)
-_CMD_CHARGE_PUMP     = const(0xAD)
+SET_CONTRAST = const(0x81)
+SET_ENTIRE_ON = const(0xA4)
+SET_NORM_INV = const(0xA6)
+SET_DISP = const(0xAE)
+SET_MEM_ADDR = const(0x20)
+SET_COL_ADDR = const(0x21)
+SET_PAGE_ADDR = const(0x22)
+SET_DISP_START_LINE = const(0x40)
+SET_SEG_REMAP = const(0xA0)
+SET_MUX_RATIO = const(0xA8)
+SET_COM_OUT_DIR = const(0xC0)
+SET_DISP_OFFSET = const(0xD3)
+SET_COM_PIN_CFG = const(0xDA)
+SET_DISP_CLK_DIV = const(0xD5)
+SET_PRECHARGE = const(0xD9)
+SET_VCOM_DESEL = const(0xDB)
+SET_CHARGE_PUMP = const(0x8D)
 
-_COL_OFFSET = const(2) # El offset típico de 2 píxeles de la pantalla SH1106
-
-class SH1106(framebuf.FrameBuffer):
-    def __init__(self, width, height, i2c, addr=0x3C, external_vcc=False):
+class SSD1306:
+    def __init__(self, width, height, external_vcc):
         self.width = width
         self.height = height
-        self.i2c = i2c
-        self.addr = addr
         self.external_vcc = external_vcc
         self.pages = self.height // 8
         self.buffer = bytearray(self.pages * self.width)
-        super().__init__(self.buffer, self.width, self.height, framebuf.MONO_VLSB)
-        self._page_buf = bytearray(self.width + 1)
-        self._page_buf[0] = 0x40 # Control byte: datos
-        self._cmd_buf = bytearray(2)
-        self._cmd_buf[0] = 0x80 # Control byte: comando
+        self.framebuf = framebuf.FrameBuffer(
+            self.buffer, self.width, self.height, framebuf.MONO_VLSB
+        )
+        self.poweron()
         self.init_display()
-
-    def write_cmd(self, cmd):
-        self._cmd_buf[1] = cmd & 0xFF
-        self.i2c.writeto(self.addr, self._cmd_buf)
-
-    def write_data(self, buf):
-        self.i2c.writeto(self.addr, buf)
 
     def init_display(self):
         for cmd in (
-            _CMD_DISP_OFF,
-            _CMD_CLK_DIV,        0x80,
-            _CMD_MUX_RATIO,      self.height - 1,
-            _CMD_DISP_OFFSET,    0x00,
-            _CMD_START_LINE | 0x00,
-            _CMD_CHARGE_PUMP,    0x8B, # Bomba de carga interna ON (SH1106 usa 0x8B)
-            _CMD_SEG_REMAP,            # Remap de columnas
-            _CMD_COM_OUT_REV,          # COM output scan direction
-            _CMD_COM_PINS,       0x12 if self.height == 64 else 0x02,
-            _CMD_CONTRAST,       0xFF,
-            _CMD_PRECHARGE,      0x22 if self.external_vcc else 0xF1,
-            _CMD_VCOM_DESEL,     0x35, # Deselección VCOM
-            _CMD_NORM_DISP,
-            _CMD_DISP_ON,
+            SET_DISP,
+            SET_MEM_ADDR, 0x00,
+            SET_DISP_START_LINE,
+            SET_SEG_REMAP | 0x01,
+            SET_MUX_RATIO, self.height - 1,
+            SET_COM_OUT_DIR | 0x08,
+            SET_DISP_OFFSET, 0x00,
+            SET_COM_PIN_CFG, 0x12 if self.height == 64 else 0x02,
+            SET_DISP_CLK_DIV, 0x80,
+            SET_PRECHARGE, 0x22 if self.external_vcc else 0xF1,
+            SET_VCOM_DESEL, 0x30,
+            SET_CONTRAST, 0xFF,
+            SET_ENTIRE_ON,
+            SET_NORM_INV,
+            SET_CHARGE_PUMP, 0x10 if self.external_vcc else 0x14,
+            SET_DISP | 0x01,
         ):
             self.write_cmd(cmd)
         self.fill(0)
         self.show()
 
-    def poweroff(self):
-        self.write_cmd(_CMD_DISP_OFF)
-
     def poweron(self):
-        self.write_cmd(_CMD_DISP_ON)
+        pass
 
-    def contrast(self, v):
-        self.write_cmd(_CMD_CONTRAST)
-        self.write_cmd(v & 0xFF)
+    def contrast(self, contrast):
+        self.write_cmd(SET_CONTRAST)
+        self.write_cmd(contrast)
 
-    def invert(self, on):
-        self.write_cmd(_CMD_INV_DISP if on else _CMD_NORM_DISP)
+    def fill(self, col):
+        self.framebuf.fill(col)
+
+    def pixel(self, x, y, col):
+        self.framebuf.pixel(x, y, col)
+
+    def text(self, string, x, y, col=1):
+        self.framebuf.text(string, x, y, col)
 
     def show(self):
-        buf = self.buffer
-        page_buf = self._page_buf
-        width = self.width
-        for page in range(self.pages):
-            self.write_cmd(_CMD_SET_PAGE | page)
-            self.write_cmd(_CMD_SET_COL_LO | (_COL_OFFSET & 0x0F))
-            self.write_cmd(_CMD_SET_COL_HI | ((_COL_OFFSET >> 4) & 0x0F))
-            page_buf[1:] = buf[page * width : (page + 1) * width]
-            self.write_data(page_buf)
+        self.write_cmd(SET_COL_ADDR)
+        self.write_cmd(0)
+        self.write_cmd(self.width - 1)
+        self.write_cmd(SET_PAGE_ADDR)
+        self.write_cmd(0)
+        self.write_cmd(self.pages - 1)
+        self.write_data(self.buffer)
 
-# Alias para compatibilidad con código que use SH1106_I2C o SH1106
-SH1106_I2C = SH1106
+class SSD1306_I2C(SSD1306):
+    def __init__(self, width, height, i2c, addr=0x3C, external_vcc=False):
+        self.i2c = i2c
+        self.addr = addr
+        self.temp = bytearray(2)
+        self.write_list = [b"\x40", None]
+        super().__init__(width, height, external_vcc)
+
+    def write_cmd(self, cmd):
+        self.temp[0] = 0x80
+        self.temp[1] = cmd
+        self.i2c.writeto(self.addr, self.temp)
+
+    def write_data(self, buf):
+        self.write_list[1] = buf
+        self.i2c.writevto(self.addr, self.write_list)
+    

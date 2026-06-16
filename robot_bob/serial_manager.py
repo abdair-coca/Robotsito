@@ -1,17 +1,34 @@
 """
-serial_manager.py — Único dueño de COM3 para el robot Bob.
+serial_manager.py — Único dueño del canal de control del DevKit (servos + OLED).
 
 Centraliza todos los envíos al ESP32 en un hilo dedicado con:
   - Cola priorizada: SERVO (prio 0) > ESTADO (prio 1) > SIGUIENDO (prio 2)
   - Throttle por tipo: servo ≥ 50 ms, OLED ≥ 80 ms
   - Deduplicación: mismo ESTADO no se reenvía en <1 s
   - Thread-safe: cualquier hilo puede llamar cmd_* sin lock externo
+
+Transporte (resuelto en _conectar, en orden):
+  1. WiFi/TCP al DevKit (si USE_WIFI_SERIAL) — manda las MISMAS líneas de texto
+     que el viejo serial, ahora por socket. Ver firmware Esp32/main.py.
+  2. USB COM3 (pyserial) — fallback.
+  3. Sin ESP32 — modo solo visión (no rompe la demo).
+
+El protocolo de texto es idéntico en ambos transportes:
+  H:<pan>,V:<tilt>\\n  |  ESTADO:<NOMBRE>\\n  |  SIGUIENDO:<dx>,<dy>\\n
 """
 
 import queue
+import socket
 import threading
 import time
 import serial
+
+try:
+    from config import USE_WIFI_SERIAL, CONTROL_IP, CONTROL_PORT
+except Exception:               # config viejo sin estas claves → solo USB
+    USE_WIFI_SERIAL = False
+    CONTROL_IP      = ""
+    CONTROL_PORT    = 0
 
 # ── Prioridades de cola ────────────────────────────────────────────────────────
 _PRIO_SERVO    = 0
@@ -22,11 +39,19 @@ _PRIO_SIGUIENDO = 2
 class SerialManager:
     def __init__(self, port: str, baud: int = 115200,
                  intervalo_servo: float = 0.05,
-                 intervalo_oled: float = 0.08):
+                 intervalo_oled: float = 0.08,
+                 use_wifi: bool | None = None,
+                 control_ip: str | None = None,
+                 control_port: int | None = None):
         self._port            = port
         self._baud            = baud
         self._intervalo_servo = intervalo_servo
         self._intervalo_oled  = intervalo_oled
+
+        # Config WiFi (None = tomar de config.py)
+        self._use_wifi     = USE_WIFI_SERIAL if use_wifi is None else use_wifi
+        self._control_ip   = CONTROL_IP   if control_ip   is None else control_ip
+        self._control_port = CONTROL_PORT if control_port is None else control_port
 
         self._cola:  queue.PriorityQueue = queue.PriorityQueue(maxsize=60)
         self._detener = threading.Event()
@@ -37,7 +62,10 @@ class SerialManager:
         self._ultimo_estado  = ''
         self._t_ultimo_estado = 0.0
 
+        # Transportes (solo uno activo)
+        self._modo: str = 'none'                       # 'wifi' | 'usb' | 'none'
         self._esp32: serial.Serial | None = None
+        self._sock:  socket.socket  | None = None
         self._conectar()
 
         self._hilo = threading.Thread(target=self._loop, daemon=True, name='serial-writer')
@@ -60,6 +88,15 @@ class SerialManager:
     def cerrar(self) -> None:
         self._detener.set()
         self._hilo.join(timeout=1.0)
+        if self._sock is not None:
+            try:
+                self._sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                self._sock.close()
+            except OSError:
+                pass
         if self._esp32 and self._esp32.is_open:
             try:
                 self._esp32.close()
@@ -75,6 +112,30 @@ class SerialManager:
             pass  # descarta si la cola está llena (no bloquea nunca)
 
     def _conectar(self) -> None:
+        """Resuelve el transporte: WiFi → USB → sin ESP32."""
+        if self._use_wifi and self._control_ip and self._control_port:
+            if self._conectar_wifi():
+                return
+            print('[serial] WiFi no disponible, intentando USB...')
+        self._conectar_usb()
+
+    def _conectar_wifi(self) -> bool:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(3.0)
+            s.connect((self._control_ip, self._control_port))
+            s.settimeout(None)
+            s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            self._sock = s
+            self._modo = 'wifi'
+            print(f'[serial] Conectado WiFi {self._control_ip}:{self._control_port}')
+            return True
+        except Exception as e:
+            print(f'[serial] No conecta WiFi {self._control_ip}:{self._control_port}: {e}')
+            self._sock = None
+            return False
+
+    def _conectar_usb(self) -> None:
         try:
             esp = serial.Serial()
             esp.port          = self._port
@@ -85,19 +146,25 @@ class SerialManager:
             esp.rts           = False
             esp.open()
             self._esp32 = esp
+            self._modo  = 'usb'
             print(f'[serial] Conectado en {self._port}')
         except Exception as e:
             print(f'[serial] No conecta en {self._port}: {e}')
             print('[serial] Continuando en modo sin ESP32 (solo visión)')
             self._esp32 = None
+            self._modo  = 'none'
 
     def _enviar(self, raw: str) -> None:
-        if self._esp32 is None:
-            return
-        try:
-            self._esp32.write(raw.encode())
-        except Exception:
-            pass  # pérdida de frame aceptable
+        if self._modo == 'wifi' and self._sock is not None:
+            try:
+                self._sock.sendall(raw.encode())
+            except OSError:
+                pass  # pérdida de frame aceptable
+        elif self._modo == 'usb' and self._esp32 is not None:
+            try:
+                self._esp32.write(raw.encode())
+            except Exception:
+                pass  # pérdida de frame aceptable
 
     def _loop(self) -> None:
         while not self._detener.is_set():

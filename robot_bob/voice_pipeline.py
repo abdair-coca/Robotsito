@@ -62,6 +62,34 @@ from config import (
     TTS_SEND_CHUNK_BYTES,
 )
 from wake_word import WakeWordDetector
+from expression_engine import (
+    pulse_emotion, react_to_user_text, react_to_bob_text,
+    mood_delta_for_user_text, is_love,
+    EMO_WAKE_DETECTED, EMO_GREETING_PLAYED, EMO_AUTO_OPENER,
+    EMO_STT_FAIL, EMO_LLM_ERROR,
+    PULSE_FAST, PULSE_NORM, PULSE_SLOW,
+)
+
+# ── Tags de emoción del LLM (InteractiveGoal Fase A) ───────────────────────────
+# El LLM prefija cada frase con [EMO:X]. Lo extraemos para el OLED y lo
+# quitamos del texto antes del TTS (no debe leerse en voz alta).
+_EMO_TAG_RE = re.compile(r'\[EMO:([A-ZÁÉÍÓÚÜÑ_]+)\]', re.IGNORECASE)
+_VALID_EMOS = {'FELIZ', 'MUY_FELIZ', 'CURIOSO', 'TRAVIESO', 'PENSANDO',
+               'SORPRENDIDO', 'CONFUNDIDO', 'TRISTE', 'AMOR', 'HABLANDO'}
+
+
+def _extract_emo_tag(text: str) -> tuple:
+    """
+    Devuelve (emo | None, texto_limpio).
+    Usa el primer tag válido encontrado; borra TODOS los tags del texto.
+    """
+    emo = None
+    for m in _EMO_TAG_RE.finditer(text):
+        cand = m.group(1).upper()
+        if emo is None and cand in _VALID_EMOS:
+            emo = cand
+    clean = _EMO_TAG_RE.sub('', text).strip()
+    return emo, clean
 
 FFMPEG  = imageio_ffmpeg.get_ffmpeg_exe()
 console = Console()
@@ -294,15 +322,18 @@ class VoicePipeline:
         FIRST_TURN_TIMEOUT = 10.0  # s para el primer turno tras wake word
 
         es_primer_turno = True
+        n_turnos = 0  # contador de turnos para el bonus de mood (charla fluye)
 
         # ── Saludo / opener al arrancar conversación ──────────────────────────
         if greeting:
             if trigger == 'auto':
                 saludo = random.choice(AUTO_OPENERS)
                 console.print(f'[bold magenta][opener auto][/] {saludo}')
+                pulse_emotion(self._serial, self._sm, EMO_AUTO_OPENER, PULSE_FAST)
             else:
                 saludo = random.choice(WAKE_GREETINGS)
                 console.print(f'[bold magenta][saludo wake][/] {saludo}')
+                pulse_emotion(self._serial, self._sm, EMO_GREETING_PLAYED, PULSE_FAST)
             self._sm.iniciar_hablando()
             self._hablar(saludo)
             # Si no hay payload pendiente, volvemos a LISTENING para grabar
@@ -341,9 +372,45 @@ class VoicePipeline:
 
             if not texto:
                 console.print('[dim][voice] Audio sin texto[/]')
+                # Pulso CONFUNDIDO para señalar visualmente que no entendió
+                pulse_emotion(self._serial, self._sm, EMO_STT_FAIL, PULSE_FAST)
+                self._sm.mood_event(-0.05)  # silencio incomprendido
+                self._sm.stt_fail_streak += 1
+                if self._sm.stt_fail_streak >= 2:
+                    # Fase C: 2 fallos seguidos → Bob lo reconoce con empatía
+                    # y da otra oportunidad en vez de cortar la conversación.
+                    self._sm.stt_fail_streak = 0
+                    console.print('[dim][voice] 2 fallos STT → mensaje empático[/]')
+                    self._sm.iniciar_hablando()
+                    self._serial.cmd_estado('CONFUNDIDO')
+                    self._hablar('Perdón, no te estoy escuchando bien. '
+                                 'Acércate un poquito y dime de nuevo, ¿sí?')
+                    es_primer_turno = False
+                    continue
                 break
 
             console.print(f'[bold cyan]Usuario:[/] {texto}')
+
+            # Reaccionar emocionalmente a lo que dijo el usuario
+            # (AMOR / TRISTE / CONFUNDIDO según contenido)
+            react_to_user_text(self._serial, self._sm, texto)
+
+            # ── Mood drift (Fase A) + continuidad (Fase C) ─────────────────
+            self._sm.stt_fail_streak = 0   # transcripción exitosa
+            self._sm.mood_decay()                                  # 5% hacia 0
+            delta = mood_delta_for_user_text(texto)
+            self._sm.mood_event(delta)
+            if is_love(texto):
+                self._sm.mood_floor(0.6)   # cariño directo: salto de ánimo
+            if delta > 0:
+                self._sm.positive_streak += 1
+            elif delta < 0:
+                self._sm.positive_streak = 0
+            n_turnos += 1
+            if n_turnos > 4:
+                self._sm.mood_event(0.10)  # la conversación fluye — bonus
+            console.print(f'[dim][mood] {self._sm.mood:+.2f}  '
+                          f'racha+{self._sm.positive_streak}[/]')
 
             # Limpiar wake word residual si el usuario repitió "Bob"
             ww = self._wake.detect(texto)
@@ -470,6 +537,7 @@ class VoicePipeline:
         silence_streak = 0
         speech_ms      = 0
         waited_ms      = 0
+        invite_sent    = False  # Fase D: CURIOSO de invitación a los 3 s
 
         with sd.RawInputStream(samplerate=_LAP_SAMPLE_RATE, channels=1,
                                dtype='int16', blocksize=frame_bytes // 2,
@@ -502,6 +570,10 @@ class VoicePipeline:
                 if not speech_started:
                     preroll.append(frame)
                     waited_ms += FRAME_MS
+                    # Fase D: a los 3 s sin hablar, Bob "te invita" con ojos curiosos
+                    if not invite_sent and waited_ms > 3000:
+                        invite_sent = True
+                        pulse_emotion(self._serial, self._sm, 'CURIOSO', 700)
                     if is_vad and level > 1.5:
                         speech_started = True
                         recorded.extend(preroll)
@@ -675,10 +747,31 @@ class VoicePipeline:
                 if sent is None:
                     audio_q.put(None)
                     return
-                mp3 = _synthesize_mp3(sent)
-                audio_q.put((sent, mp3))
+                # Extraer el tag [EMO:X] ANTES del TTS para que no se lea
+                emo, clean = _extract_emo_tag(sent)
+                # Saltar fragmentos sin contenido hablable (solo tag, puntuación,
+                # espacios) — edge-tts lanza NoAudioReceived con esos.
+                if not any(ch.isalnum() for ch in clean):
+                    continue
+                try:
+                    mp3 = _synthesize_mp3(clean)
+                except Exception as e:
+                    # Una frase mala no debe matar el hilo TTS entero
+                    console.print(f'[red][voice] TTS error ("{clean[:40]}"): {e}[/]')
+                    continue
+                audio_q.put((clean, mp3, emo))
 
         self._sm.iniciar_hablando()
+
+        # Fase C: si la conversación viene muy bien (mood alto o racha de 3+
+        # turnos positivos), Bob arranca a hablar con cara eufórica. La emoción
+        # del primer tag del LLM la reemplaza cuando empiece la primera frase.
+        if self._sm.mood >= 0.6 or self._sm.positive_streak >= 3:
+            self._serial.cmd_estado('MUY_FELIZ')
+
+        t_pensando = time.monotonic()  # para detectar LLM lento (Fase D)
+        primera_frase = True
+
         llm_t = threading.Thread(target=llm_worker, daemon=True)
         tts_t = threading.Thread(target=tts_worker, daemon=True)
         llm_t.start()
@@ -691,15 +784,40 @@ class VoicePipeline:
                 break
             if item is None:
                 break
-            sent_text, mp3 = item
+            sent_text, mp3, emo = item
             if not mp3:
                 continue
 
-            oled = 'FELIZ' if _is_happy(sent_text) else 'HABLANDO'
-            self._serial.cmd_estado(oled)
-            console.print(f'[bold green]Bob:[/] {sent_text}')
+            # Fase D: si el LLM tardó >2.5s, flash de "¡ya sé!" antes de hablar
+            if primera_frase:
+                primera_frase = False
+                if time.monotonic() - t_pensando > 2.5:
+                    self._serial.cmd_estado('MUY_FELIZ')
+                    time.sleep(0.20)
+
+            # Fase D: risa explícita en la frase sin tag → MUY_FELIZ
+            low = sent_text.lower()
+            if emo is None and ('jaja' in low or 'jeje' in low):
+                emo = 'MUY_FELIZ'
+
+            if emo:
+                # El LLM decidió la emoción de esta frase — fuente principal
+                self._serial.cmd_estado(emo)
+                console.print(f'[bold green]Bob[/] [dim]({emo})[/]: {sent_text}')
+            else:
+                # Fallback si el LLM olvidó el tag: keywords como antes
+                oled = 'FELIZ' if _is_happy(sent_text) else 'HABLANDO'
+                self._serial.cmd_estado(oled)
+                console.print(f'[bold green]Bob:[/] {sent_text}')
+                react_to_bob_text(self._serial, self._sm, sent_text)
 
             c = self._reproducir_mp3(mp3)
+
+            # Fase D: si la frase fue una pregunta, cara CURIOSA al terminarla
+            # (la siguiente frase o la transición a LISTENING la reemplaza)
+            if sent_text.rstrip().endswith('?'):
+                self._serial.cmd_estado('CURIOSO')
+
             if c is not None:
                 captured[0] = c
                 break
@@ -755,6 +873,8 @@ class VoicePipeline:
                     console.print(f'[bold yellow][wake] "{texto}" → payload: "{payload}"[/]')
                 else:
                     console.print(f'[bold yellow][wake] "{texto}" detectado![/]')
+                # Pulso emocional inmediato: ojos CURIOSOS al oír su nombre
+                pulse_emotion(self._serial, self._sm, EMO_WAKE_DETECTED, PULSE_FAST)
                 self._sm.notificar_wake_word(payload=payload or None)
             else:
                 console.print(f'[dim][wake?] heard: "{texto}"[/]')

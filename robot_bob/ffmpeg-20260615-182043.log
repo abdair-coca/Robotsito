@@ -1,8 +1,8 @@
-ffmpeg started on 2026-06-10 at 17:44:02
-Report written to "ffmpeg-20260610-174402.log"
+ffmpeg started on 2026-06-15 at 18:20:43
+Report written to "ffmpeg-20260615-182043.log"
 Log level: 48
 Command line:
-"C:\\Users\\abdai\\Desktop\\RobotCreeper\\scripts\\venv\\Lib\\site-packages\\imageio_ffmpeg\\binaries\\ffmpeg-win-x86_64-v7.1.exe" -version
+"C:\\Users\\abdai\\Desktop\\RobotCreeper\\scripts\\robot_bob\\venv311\\Lib\\site-packages\\imageio_ffmpeg\\binaries\\ffmpeg-win-x86_64-v7.1.exe" -version
 Splitting the commandline.
 Reading option '-version' ... matched as option 'version' (show version) with argument '(null)'.
 Finished splitting the commandline.

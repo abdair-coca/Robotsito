@@ -132,12 +132,19 @@ class BehaviorEngine:
 
         # ── Despertar: cara nueva tras >SLEEP_THR_S sin presencia ──────────────
         # Gesto largo y tierno: tilt sube lento desde donde estaba hasta mirar arriba.
-        # OLED pasa a CURIOSO durante el gesto. Pan se mantiene quieto.
+        # OLED hace SORPRENDIDO breve → CURIOSO sostenido (doble toma expresiva).
         startle = (estado == RobotState.PRESENCE and self._sm.startle_active())
         if startle:
             if not self._startle_prev:
-                # Primer tick del despertar: cambiar OLED a CURIOSO
-                self._sm._serial.cmd_estado('CURIOSO')
+                # Primer tick: SORPRENDIDO instantáneo (impacto visual fuerte)
+                self._sm._serial.cmd_estado('SORPRENDIDO')
+                # Después de 400ms pasamos a CURIOSO sostenido (vía hilo)
+                import threading as _th, time as _tm
+                def _to_curioso():
+                    _tm.sleep(0.4)
+                    if self._sm.startle_active():
+                        self._sm._serial.cmd_estado('CURIOSO')
+                _th.Thread(target=_to_curioso, daemon=True).start()
             self._startle_prev = True
             self._pan_obj  = self._tracker.pan_actual
             self._tilt_obj = WAKE_TILT_PEAK
@@ -258,18 +265,16 @@ class BehaviorEngine:
 
     def _tick_thinking(self) -> None:
         """
-        Pensar: cabeza quieta con una micro-inclinación SOLO al entrar.
-        Sin actualizar el objetivo en cada tick (eso es lo que provocaba que
-        la cabeza derivara hacia el corner: cada tick movía el target +5°
-        respecto al actual, creando un bucle positivo).
+        Pensar: cabeza COMPLETAMENTE quieta en la pose actual.
+        Sin micro-inclinación porque movió la cámara y perdía el rostro
+        durante el procesamiento STT/LLM.
         """
         if not self._thinking_prev:
-            # Primer tick de THINKING: capturar pose y aplicar 3° de inclinación
+            # Primer tick: congelar la pose exactamente donde estaba
             self._pan_obj  = self._tracker.pan_actual
-            self._tilt_obj = _clamp(self._tracker.tilt_actual - 3.0,
-                                    TILT_MIN, TILT_MAX)
+            self._tilt_obj = self._tracker.tilt_actual
             self._thinking_prev = True
-        # Resto de los ticks: dejar pan_obj/tilt_obj como están → cabeza quieta
+        # Resto de los ticks: no tocar nada → servo se mantiene
 
     def _tick_speaking(self, det, ahora: float) -> None:
         """Tracking lento + desvíos más frecuentes."""

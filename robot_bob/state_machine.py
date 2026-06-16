@@ -98,6 +98,18 @@ class StateMachine:
         # Determina qué lista de frases usar en voice_pipeline.
         self.conversation_trigger: str | None = None
 
+        # ── Mood drift (InteractiveGoal Fase A) ────────────────────────────
+        # Estado de ánimo acumulado DENTRO de la conversación actual.
+        # Rango [-1.0, +1.0]. Se resetea al volver a IDLE.
+        self.mood: float = 0.0
+        self._mood_lock = threading.Lock()
+
+        # ── Continuidad (InteractiveGoal Fase C) ───────────────────────────
+        # Turnos positivos consecutivos → si llega a 3, Bob arranca eufórico.
+        self.positive_streak: int = 0
+        # Fallos de STT consecutivos → a los 2, mensaje empático y reintento.
+        self.stt_fail_streak: int = 0
+
     # ── Propiedades ────────────────────────────────────────────────────────────
 
     @property
@@ -128,6 +140,31 @@ class StateMachine:
             if self._estado != RobotState.IDLE:
                 return False
         return (time.monotonic() - self._t_sin_presencia) > self.SLEEP_THR_S
+
+    # ── Mood drift (InteractiveGoal Fase A) ────────────────────────────────────
+
+    def mood_event(self, delta: float) -> None:
+        """Suma delta al mood, clampeado a [-1, +1]."""
+        with self._mood_lock:
+            self.mood = max(-1.0, min(1.0, self.mood + delta))
+
+    def mood_decay(self) -> None:
+        """Acerca el mood 5% hacia 0 (llamar una vez por turno)."""
+        with self._mood_lock:
+            self.mood *= 0.95
+
+    def mood_reset(self) -> None:
+        """Vuelve al baseline. Llamar cuando la conversación termina de verdad."""
+        with self._mood_lock:
+            self.mood = 0.0
+        self.positive_streak = 0
+        self.stt_fail_streak = 0
+
+    def mood_floor(self, value: float) -> None:
+        """Sube el mood a un mínimo (e.g. cariño directo → salto a +0.6)."""
+        with self._mood_lock:
+            if self.mood < value:
+                self.mood = value
 
     # ── Transiciones (llamadas desde cualquier hilo) ───────────────────────────
 
@@ -198,6 +235,7 @@ class StateMachine:
                 return False
         if ahora - self._t_ultimo_turno > self._conv_timeout:
             self._t_ultima_conv = ahora  # cooldown sigue corriendo
+            self.mood_reset()            # la conversación terminó → baseline
             self._transicionar(RobotState.IDLE)
             return False
         return True  # sigue en conversación

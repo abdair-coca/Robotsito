@@ -34,7 +34,7 @@ import random
 # ============================================================
 # HARDWARE
 # ============================================================
-i2c = I2C(0, scl=Pin(22), sda=Pin(21), freq=100000)
+i2c = I2C(0, scl=Pin(32), sda=Pin(33), freq=100000)
 oled = SH1106(128, 64, i2c)
 
 # ============================================================
@@ -99,7 +99,8 @@ _TRACK_SMOOTH_ALPHA = 0.70
 # ── FASE 7 — Sistema de aburrimiento ──────────────────────────────────
 # Umbrales en ms de tiempo en 'neutral' sin interacción.
 # Nivel: 0=normal, 1=mirar más, 2=pensativo, 3=aburrido, 4=somnoliento, 5=dormido.
-_BOREDOM_THRESHOLDS_MS = (10_000, 30_000, 60_000, 120_000, 300_000)
+# Calibrado para que llegue a dormido en ~30 s totales — natural en feria.
+_BOREDOM_THRESHOLDS_MS = (5_000, 10_000, 15_000, 22_000, 30_000)
 # Encoge ry (ojos más chicos) según nivel — efecto visible "ojos cansados"
 _BOREDOM_RY_SHRINK = (0, 0, 1, 2, 5, 8)
 # Multiplicador de cadencia de blink (alto = blinks más espaciados)
@@ -108,7 +109,7 @@ _BOREDOM_BLINK_MULT = (1.0, 1.0, 1.2, 1.5, 1.8, 2.0)
 # ── FASE 8 — Transición de sueño ──────────────────────────────────────
 # Cuando boredom_level llega a 5, se gatilla una transición adorable
 # antes de pasar al estado 'durmiendo' que muestra los Zzz.
-_SLEEP_TRANSITION_MS = 3000     # duración del cierre gradual de ojos
+_SLEEP_TRANSITION_MS = 2000     # duración del cierre gradual de ojos (más rápido)
 
 
 # ============================================================
@@ -230,6 +231,8 @@ class Behavior:
         # ── FASE 8: Transición a sueño ─────────────────────────
         self.sleep_transition_active = False
         self.sleep_transition_start_t = 0
+        # Lock: una vez dormido, ignorar ESPERANDO externo hasta despertar real
+        self.sleeping_locked = False
 
 
 # Instancias singleton (módulo)
@@ -288,12 +291,15 @@ def update_saccade(t):
 
     if t >= beh.next_saccade_t:
         r = random.random()
+        # ESCUCHANDO: sacadas más frecuentes — atención reforzada al usuario
+        # (InteractiveGoal Fase D). Los gaps entre sacadas se acortan 40%.
+        gap = 0.6 if beh.estado == 'escuchando' else 1.0
         if r < 0.25:
             # Mirada espontánea (desplazamiento medio-largo)
             beh.saccade_dx = random.choice([-5, -3, 3, 5])
             beh.saccade_dy = random.choice([-2, -1, 1, 2])
             duration = random.randint(500, 1200)
-            beh.next_saccade_t = t + duration + random.randint(1500, 4000)
+            beh.next_saccade_t = t + duration + int(random.randint(1500, 4000) * gap)
             beh.saccade_end_t  = t + duration
             beh.saccade_active = True
         elif r < 0.75:
@@ -301,11 +307,11 @@ def update_saccade(t):
             beh.saccade_dx = random.choice([-1, 0, 1])
             beh.saccade_dy = random.choice([-1, 0, 1])
             duration = random.randint(80, 200)
-            beh.next_saccade_t = t + duration + random.randint(400, 1500)
+            beh.next_saccade_t = t + duration + int(random.randint(400, 1500) * gap)
             beh.saccade_end_t  = t + duration
             beh.saccade_active = True
         else:
-            beh.next_saccade_t = t + random.randint(800, 2500)
+            beh.next_saccade_t = t + int(random.randint(800, 2500) * gap)
 
     if beh.saccade_active and t >= beh.saccade_end_t:
         beh.saccade_dx = 0
@@ -348,12 +354,12 @@ def update_boredom(t):
     FASE 7+8: Sistema de aburrimiento → sueño.
 
     Tiempo en 'neutral' sin interacción escala el nivel (0-5):
-      0  [0-10s]    normal
-      1  [10-30s]   mirar más (sacadas más amplias — heredado de iniciativa)
-      2  [30-60s]   pensativo (cejas levantadas, ojos un poco más chicos)
-      3  [60-120s]  aburrido (ojos visiblemente más chicos, blinks lentos)
-      4  [120-300s] somnoliento (ojos a la mitad, blinks muy lentos)
-      5  [300+s]    arranca transición a 'durmiendo' (Fase 8)
+      0  [0-5s]     normal
+      1  [5-10s]    mirar más (sacadas más amplias — heredado de iniciativa)
+      2  [10-15s]   pensativo (cejas levantadas, ojos un poco más chicos)
+      3  [15-22s]   aburrido (ojos visiblemente más chicos, blinks lentos)
+      4  [22-30s]   somnoliento (ojos a la mitad, blinks muy lentos)
+      5  [30+s]     arranca transición a 'durmiendo' (Fase 8)
 
     Cualquier transición de estado (otra cosa que neutral) resetea el timer.
     """
@@ -401,6 +407,7 @@ def update_boredom(t):
             # Cambiar a 'durmiendo' (que dibuja Zzz)
             beh.estado = 'durmiendo'
             beh.sleep_transition_active = False
+            beh.sleeping_locked = True   # latch hasta despertar real
 
 
 def update_attention(t):
@@ -1188,8 +1195,35 @@ def set_estado(s):
     Setea el estado actual. Acepta:
       - Nombres lowercase locales ('neutral', 'feliz', 'hablando', ...)
       - Nombres UPPERCASE del SerialManager ('ESPERANDO', 'HABLANDO', ...)
+      - Cualquiera de las 21 emociones en UPPERCASE (FELIZ, SORPRENDIDO, ...)
+
+    Si el estado no existe, lo ignora silenciosamente (no rompe el flujo serial).
     """
-    beh.estado = PRODUCTION_STATES.get(s, s)
+    if not s:
+        return
+    # 1. Match exacto en PRODUCTION_STATES (mapeo explícito UPPERCASE → lowercase)
+    mapped = PRODUCTION_STATES.get(s)
+    if mapped is not None:
+        target = mapped
+    elif isinstance(s, str) and s.lower() in ESTADOS:
+        target = s.lower()
+    elif s in ESTADOS:
+        target = s
+    else:
+        return
+
+    # SLEEP LOCK: si Bob está durmiendo, ignoramos 'neutral' (firmware sigue
+    # mandando ESPERANDO cada tick). Solo despertamos con un estado activo.
+    if beh.sleeping_locked:
+        if target == 'neutral':
+            return  # seguir durmiendo
+        # Despertar: limpiar lock + reiniciar timer de aburrimiento
+        beh.sleeping_locked = False
+        beh.last_interaction_t = _get_t()
+        beh.boredom_level = 0
+        beh.sleep_transition_active = False
+
+    beh.estado = target
 
 
 def set_following_offset(dx, dy):
@@ -1213,10 +1247,21 @@ def reset():
     beh.saccade_active = False
 
 
-def tick(estado='ESPERANDO', sig_dx=0.0, sig_dy=0.0):
+# Alias para compatibilidad con el main.py del firmware viejo
+# (la versión anterior se llamaba reset_state)
+def reset_state():
+    """Alias retrocompatible de reset()."""
+    reset()
+
+
+def tick(estado='ESPERANDO', sig_dx=0.0, sig_dy=0.0, **kwargs):
     """
     Entrada principal compatible con la firmware actual (Esp32/oled_ojos.py).
     El main loop del firmware llama tick() en cada ciclo.
+
+    Acepta y descarta silenciosamente cualquier kwarg adicional (idle_ms,
+    blink_factor, etc.) que el main.py viejo del firmware le pase. El sistema
+    nuevo maneja todo eso internamente (Fase 7: aburrimiento, Fase 8: sueño).
 
     Equivalente a:
         set_estado(estado)
@@ -1238,6 +1283,27 @@ def ojos_hablar():           tick('HABLANDO')
 def ojos_feliz():            tick('FELIZ')
 def ojos_curioso():          tick('CURIOSO')
 def ojos_siguiendo(dx, dy):  tick('SIGUIENDO', dx, dy)
+
+
+# Aliases para compatibilidad con el main.py del firmware viejo,
+# que tenía un hilo separado disparando blinks/winks por su cuenta.
+def do_blink():
+    """Fuerza un parpadeo coordinado L+R inmediato."""
+    t = _get_t()
+    is_double = random.random() < 0.15
+    if not eye_l.blink_active:
+        eye_l.start_blink(t, is_double=is_double, is_wink=False)
+    if not eye_r.blink_active:
+        eye_r.start_blink(t, is_double=is_double, is_wink=False)
+
+
+def do_wink(eye=None):
+    """Fuerza un guiño asimétrico. eye='L' | 'R' | None (random)."""
+    if eye is None:
+        eye = 'L' if random.random() < 0.5 else 'R'
+    target = eye_l if eye == 'L' else eye_r
+    if not target.blink_active:
+        target.start_blink(_get_t(), is_double=False, is_wink=True)
 
 
 # ============================================================

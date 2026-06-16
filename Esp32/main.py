@@ -1,411 +1,583 @@
-# oled_ojos.py — Expresiones RICAS para Creeper en OLED SH1106 128x64.
+# main.py — ESP32 DevKit COMPLETO
+# Integra: Audio streaming half-duplex (con barge-in soportado), servos pan/tilt,
+# OLED de ojos, y comandos serial desde la laptop.
 #
-# Arquitectura:
-#   - Cada estado emocional es un DICT de parámetros animables:
-#       rx, ry          → tamaño del ojo
-#       eyelid_top      → 0..1 cuánto baja el párpado superior
-#       pupil_r         → radio de la pupila (0 = sin pupila, p.ej. FELIZ)
-#       pupil_dx, dy    → desplazamiento de la pupila
-#       brow_y          → offset vertical de la ceja
-#       brow_angle      → -1 (frunce) .. 0 (recta) .. 1 (arqueada hacia arriba)
-#       special         → modo especial ('half_bot' = solo mitad inferior ^^)
+# Hilo 1 (_thread): hilo_audio  — state machine LISTEN ↔ PLAY a 8 kHz
+# Hilo 2 (_thread): hilo_oled   — renderiza el estado emocional a ~12 fps
+# Loop principal:                comandos Serial (H:XX,V:XX | ESTADO:XX | SIGUIENDO:dx,dy)
 #
-#   - `tick(estado, ...)` interpola el config actual hacia el target del
-#     nuevo estado en `_morph_total` frames, agrega microsacadas y
-#     sleepy progresivo en idle largo, y dibuja UN frame.
-#
-#   - `do_blink()` ejecuta una animación de parpadeo (~150 ms, 7 frames).
-#
-# Filosofía: máxima vivacidad. Cada llamada a tick() es un disp.show()
-# completo (~25 ms de I2C). El caller decide la cadencia.
+# Protocolo de audio (debe coincidir con scripts/VoiceChat/audio_io.py):
+#   PORT_MIC (ESP32 -> laptop): stream uint8 8 kHz crudo, sin headers.
+#   PORT_SPK (laptop -> ESP32): | 4 bytes BE length | N bytes |
+#       length > 0  normal  -> audio uint8 a reproducir
+#       length == 0xFFFFFFFE -> KEEPALIVE (no-op)
+#       length == 0xFFFFFFFF -> STOP (descartado en half-duplex)
+
+from machine import ADC, DAC, Pin, PWM
+import network, usocket, utime, struct, gc, sys, select
+import _thread
+from config import SSID, PASSWORD
+
+# OLED — opcional: si el módulo no está, se omite el hilo OLED.
+# Usamos el nuevo API tick() / do_blink() / do_wink() del módulo.
+try:
+    import oled_ojos
+    OLED_DISPONIBLE = True
+except Exception as _e_oled:
+    OLED_DISPONIBLE = False
+    print('OLED no disponible:', _e_oled)
 
 import math
-import time
-import random
-from machine import Pin, SoftI2C
-from sh1106 import SH1106_I2C
+import urandom
 
 
-# ── Display ────────────────────────────────────────────────────
-_i2c = SoftI2C(scl=Pin(22), sda=Pin(21), freq=400000)
-disp = SH1106_I2C(128, 64, _i2c, Pin(16), addr=0x3C)
+# ══════════════════════════════════════════════════════════════════
+# CONFIGURACIÓN
+# ══════════════════════════════════════════════════════════════════
+
+PORT_MIC    = 5005
+PORT_SPK    = 5006
+PORT_CTRL   = 5007       # comandos servos/estado/seguimiento por WiFi
+                         # DEBE coincidir con CONTROL_PORT en robot_bob/config.py
+SAMPLE_RATE = 8000
+INTERVAL_US = 1_000_000 // SAMPLE_RATE   # 166.67 µs por muestra
+
+MIC_CHUNK_SIZE  = 256                    # bytes por paquete TCP de mic (32 ms)
+SPK_RECV_SIZE   = 1024                   # bytes pedidos por refill del DAC
+SPK_CHECK_EVERY = 32                     # samples entre peeks del socket spk
+
+EAGAIN = 11
+
+# Límites de los servos
+PAN_MIN,  PAN_MAX  =   0, 180
+TILT_MIN, TILT_MAX =  40, 140
 
 
-# ── Geometría ──────────────────────────────────────────────────
-OJO_IZQ_X = 32
-OJO_DER_X = 96
-OJO_Y     = 32
-MOUTH_CX  = 64
-MOUTH_CY  = 55
-PUPILA_MAX_DESP = 6
+# ══════════════════════════════════════════════════════════════════
+# HARDWARE
+# ══════════════════════════════════════════════════════════════════
+
+# Micrófono MAX9814 sobre ADC1 (GPIO34)
+adc = ADC(Pin(34))
+adc.atten(ADC.ATTN_11DB)
+adc.width(ADC.WIDTH_12BIT)
+
+# Speaker (PAM8403) por el DAC interno (GPIO25)
+dac = DAC(Pin(25))
+dac.write(128)
+
+# Servos pan/tilt
+pan  = PWM(Pin(13), freq=50)
+tilt = PWM(Pin(12), freq=50)
+
+# Cachés: acceso a un local es ~3x más rápido que resolver el atributo
+_adc_read   = adc.read
+_dac_write  = dac.write
+_ticks_us   = utime.ticks_us
+_ticks_diff = utime.ticks_diff
 
 
-# ── Configuraciones por estado ─────────────────────────────────
-# Notar los detalles:
-#   ESCUCHANDO: ojos más abiertos + cejas levemente arqueadas (atento)
-#   PENSANDO:   un ojo entrecerrado por arriba + pupila arriba-derecha
-#               + cejas fruncidas (focalizado)
-#   FELIZ:      solo mitad inferior (^^) + cejas onduladas
-#   CURIOSO:    ojos más grandes + cejas muy arqueadas
-#   HABLANDO:   ojos normales (la boca anima por separado)
-_STATES = {
-    'ESPERANDO':  {'rx':14, 'ry':11, 'pupil_r':4, 'pupil_dx':0, 'pupil_dy':0,
-                   'eyelid_top':0.0, 'brow_y':-19, 'brow_angle':0.0,
-                   'special':None},
-    'ESCUCHANDO': {'rx':15, 'ry':13, 'pupil_r':4, 'pupil_dx':0, 'pupil_dy':0,
-                   'eyelid_top':0.0, 'brow_y':-22, 'brow_angle':0.4,
-                   'special':None},
-    'PENSANDO':   {'rx':14, 'ry':11, 'pupil_r':3, 'pupil_dx':4, 'pupil_dy':-3,
-                   'eyelid_top':0.35,'brow_y':-17, 'brow_angle':-0.6,
-                   'special':None},
-    'HABLANDO':   {'rx':14, 'ry':11, 'pupil_r':4, 'pupil_dx':0, 'pupil_dy':0,
-                   'eyelid_top':0.0, 'brow_y':-19, 'brow_angle':0.2,
-                   'special':None},
-    'FELIZ':      {'rx':15, 'ry':10, 'pupil_r':0, 'pupil_dx':0, 'pupil_dy':0,
-                   'eyelid_top':0.0, 'brow_y':-19, 'brow_angle':0.5,
-                   'special':'half_bot'},
-    'CURIOSO':    {'rx':17, 'ry':14, 'pupil_r':5, 'pupil_dx':0, 'pupil_dy':0,
-                   'eyelid_top':0.0, 'brow_y':-23, 'brow_angle':0.8,
-                   'special':None},
-    'SIGUIENDO':  {'rx':14, 'ry':11, 'pupil_r':4, 'pupil_dx':0, 'pupil_dy':0,
-                   'eyelid_top':0.0, 'brow_y':-19, 'brow_angle':0.1,
-                   'special':None},
-}
+# ══════════════════════════════════════════════════════════════════
+# ESTADO GLOBAL (compartido entre hilos)
+# ══════════════════════════════════════════════════════════════════
+# Las escrituras simples de int/float/string son atómicas en MicroPython,
+# así que no necesitamos locks. Lo único que puede pelearse es estado_robot:
+# el hilo de audio lo pone en ESCUCHANDO/HABLANDO/ESPERANDO según su modo,
+# y la laptop puede sobrescribirlo por serial (ESTADO:FELIZ, etc.).
 
-# Buffers de estado interno (sin allocs en runtime)
-_current      = dict(_STATES['ESPERANDO'])
-_target       = dict(_STATES['ESPERANDO'])
-_morph_total  = 5
-_morph_left   = 0
-_last_state   = 'ESPERANDO'
-
-# Microsacadas
-_micro_dx     = 0
-_micro_dy     = 0
-_micro_tick   = 0
-_MICRO_PERIOD = 25     # frames entre nuevos targets (~2.5 s @ 10 fps)
+estado_robot = 'ESPERANDO'   # ESPERANDO | ESCUCHANDO | PENSANDO | HABLANDO
+                              # | FELIZ | CURIOSO | SIGUIENDO
+sig_dx       = 0.0            # -1..1 — coord X del rostro (seguimiento)
+sig_dy       = 0.0            # -1..1
+frame_habla  = 0              # contador para animar la boca/ojos al hablar
+reproduciendo = False         # True mientras el DAC reproduce audio
 
 
-# ── Helpers geométricos ────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+# SERVOS
+# ══════════════════════════════════════════════════════════════════
 
-def _fill_ellipse(cx, cy, rx, ry, color):
-    """Elipse rellena scanline-por-scanline."""
-    rx = int(rx)
-    ry = int(ry)
-    if rx <= 0 or ry <= 0:
-        return
-    ry2 = ry * ry
-    rx2 = rx * rx
-    for dy in range(-ry, ry + 1):
-        val = rx2 * (ry2 - dy * dy)
-        if val < 0:
-            continue
-        x = int(math.sqrt(val) / ry)
-        disp.hline(cx - x, cy + dy, 2 * x + 1, color)
+def angulo_duty(grados):
+    """Grados (0-180) -> duty cycle PWM."""
+    pulso = 0.5 + (grados / 180.0) * 2.0    # 0.5–2.5 ms
+    return int((pulso / 20.0) * 1023)
 
-def _fill_ellipse_inferior(cx, cy, rx, ry, color):
-    """Solo la mitad inferior (para ojos felices ^^)."""
-    rx = int(rx)
-    ry = int(ry)
-    if rx <= 0 or ry <= 0:
-        return
-    ry2 = ry * ry
-    rx2 = rx * rx
-    for dy in range(0, ry + 1):
-        val = rx2 * (ry2 - dy * dy)
-        if val < 0:
-            continue
-        x = int(math.sqrt(val) / ry)
-        disp.hline(cx - x, cy + dy, 2 * x + 1, color)
+def mover_servos(pan_g, tilt_g):
+    pan_g  = max(PAN_MIN,  min(PAN_MAX,  pan_g))
+    tilt_g = max(TILT_MIN, min(TILT_MAX, tilt_g))
+    pan.duty(angulo_duty(pan_g))
+    tilt.duty(angulo_duty(tilt_g))
 
-
-# ── Lerp de configs (para transiciones suaves) ─────────────────
-def _lerp_to(t):
-    """Interpola _current → _target con factor t, devuelve dict en RAM.
-    Bools (special) se cambian al cruzar el 50%."""
-    out = {}
-    for k, av in _current.items():
-        bv = _target[k]
-        if isinstance(av, bool) or isinstance(av, str) or av is None or isinstance(bv, str) or bv is None:
-            out[k] = bv if t >= 0.5 else av
-        else:
-            out[k] = av + (bv - av) * t
-    return out
-
-
-# ── Primitivas de dibujo ───────────────────────────────────────
-
-def _draw_eye(cx, cy, c, mdx=0, mdy=0):
-    """Dibuja UN ojo según el dict c. mdx/mdy son microsacadas."""
-    if c.get('special') == 'half_bot':
-        _fill_ellipse_inferior(cx, cy - 2, c['rx'], c['ry'] * 2, 1)
-        return
-
-    rx = max(1, int(c['rx']))
-    ry = max(1, int(c['ry']))
-
-    # Globo blanco
-    _fill_ellipse(cx, cy, rx, ry, 1)
-
-    # Párpado superior (rectángulo negro que cubre la parte de arriba)
-    elt = c['eyelid_top']
-    if elt > 0.02:
-        h_clip = int(ry * 2 * elt)
-        if h_clip > 0:
-            disp.fill_rect(cx - rx - 1, cy - ry - 1, 2 * rx + 3, h_clip, 0)
-
-    # Pupila (no dibujar si el párpado la cubre o si pupil_r == 0)
-    pr = max(0, int(c['pupil_r']))
-    if pr > 0 and elt < 0.85:
-        px = cx + int(c['pupil_dx']) + mdx
-        py = cy + int(c['pupil_dy']) + mdy
-        # Mantener pupila dentro del ojo
-        if px < cx - rx + pr: px = cx - rx + pr
-        if px > cx + rx - pr: px = cx + rx - pr
-        if py < cy - ry + pr: py = cy - ry + pr
-        if py > cy + ry - pr: py = cy + ry - pr
-        _fill_ellipse(px, py, pr, pr, 0)
-        # Brillo de 2 px en la esquina sup-izq de la pupila
-        disp.pixel(px - 1, py - 1, 1)
-        disp.pixel(px - 2, py - 1, 1)
-
-def _draw_brow(cx, cy_base, brow_y, angle):
-    """Ceja como línea de 2 px de grosor. cx = centro X del ojo.
-    angle: -1 frunce ( /\\ ), 0 recta, 1 arqueada ( \\/ ).
-    Para el ojo IZQ el extremo externo es a la IZQUIERDA del cx.
-    Para el DER, a la derecha."""
-    y_center = cy_base + int(brow_y)
-    if y_center < 1:
-        return
-    half_w = 12
-    dy = int(angle * 4)
-    if cx < 64:    # ojo izquierdo: outer = lado izq
-        x1, y1 = cx - half_w, y_center - dy
-        x2, y2 = cx + half_w, y_center + dy
-    else:          # ojo derecho: outer = lado der
-        x1, y1 = cx - half_w, y_center + dy
-        x2, y2 = cx + half_w, y_center - dy
-    disp.line(x1, y1, x2, y2, 1)
-    disp.line(x1, y1 + 1, x2, y2 + 1, 1)
-
-def _draw_mouth(open_amount):
-    """Boca centrada en MOUTH_CX, MOUTH_CY. open_amount in [0, 1]."""
-    if open_amount < 0.05:
-        disp.line(MOUTH_CX - 5, MOUTH_CY, MOUTH_CX + 5, MOUTH_CY, 1)
-    else:
-        h = int(1 + open_amount * 4)
-        _fill_ellipse(MOUTH_CX, MOUTH_CY, 6, h, 1)
-        if h >= 3:
-            _fill_ellipse(MOUTH_CX, MOUTH_CY, 4, h - 2, 0)
-
-def _draw_zzz():
-    """Tres Z's pequeñas en la esquina sup-derecha para sleepy."""
-    disp.text('z', 92, 6, 1)
-    disp.text('Z', 103, 1, 1)
-
-
-# ── API PÚBLICA ────────────────────────────────────────────────
-
-def reset_state():
-    """Resetea el estado interno (útil al reconectarse)."""
-    global _current, _target, _morph_left, _last_state
-    global _micro_dx, _micro_dy, _micro_tick
-    _current = dict(_STATES['ESPERANDO'])
-    _target  = dict(_STATES['ESPERANDO'])
-    _morph_left = 0
-    _last_state = 'ESPERANDO'
-    _micro_dx = 0
-    _micro_dy = 0
-    _micro_tick = 0
-
-
-def tick(estado='ESPERANDO', sig_dx=0.0, sig_dy=0.0,
-         idle_ms=0, mouth_amp=0.0):
-    """
-    Renderiza UN frame con todos los adornos:
-      - Transición lerp si el estado cambió (5 frames)
-      - Microsacadas en estados 'alerta' (ESPERANDO, ESCUCHANDO, PENSANDO)
-      - Sleepy progresivo en ESPERANDO si idle_ms > 15 s
-      - Pupila siguiendo en SIGUIENDO
-      - Boca animada en HABLANDO según mouth_amp [0, 1]
-    Devuelve True si dibujó, False si saltó por estado desconocido.
-    """
-    global _current, _target, _morph_left, _last_state
-    global _micro_dx, _micro_dy, _micro_tick
-
-    # Cambio de estado → iniciar morph
-    if estado != _last_state:
-        if estado in _STATES:
-            _target = dict(_STATES[estado])
-        else:
-            _target = dict(_STATES['ESPERANDO'])
-        _morph_left = _morph_total
-        _last_state = estado
-
-    # Aplicar paso de morph
-    if _morph_left > 0:
-        t = 1.0 - (_morph_left - 1) / _morph_total
-        rendering = _lerp_to(t)
-        _morph_left -= 1
-        if _morph_left == 0:
-            # Snap final
-            for k in _current:
-                _current[k] = _target[k]
-    else:
-        rendering = dict(_current)
-
-    # Microsacadas (solo en estados conscientes, no SIGUIENDO ni FELIZ)
-    if estado in ('ESPERANDO', 'ESCUCHANDO', 'PENSANDO'):
-        _micro_tick += 1
-        if _micro_tick >= _MICRO_PERIOD:
-            _micro_tick = 0
-            _micro_dx = random.randint(-2, 2)
-            _micro_dy = random.randint(-1, 1)
-    else:
-        _micro_dx = 0
-        _micro_dy = 0
-
-    # SIGUIENDO: override de pupila desde rostro detectado
-    if estado == 'SIGUIENDO':
-        if sig_dx >  1.0: sig_dx =  1.0
-        elif sig_dx < -1.0: sig_dx = -1.0
-        if sig_dy >  1.0: sig_dy =  1.0
-        elif sig_dy < -1.0: sig_dy = -1.0
-        rendering['pupil_dx'] = sig_dx * PUPILA_MAX_DESP
-        rendering['pupil_dy'] = sig_dy * PUPILA_MAX_DESP
-
-    # SLEEPY: párpado baja progresivamente en ESPERANDO largo
-    show_zzz = False
-    if estado == 'ESPERANDO':
-        if idle_ms > 15000:
-            sleep_factor = (idle_ms - 15000) / 15000.0
-            if sleep_factor > 1.0:
-                sleep_factor = 1.0
-            target_lid = sleep_factor * 0.65
-            if target_lid > rendering['eyelid_top']:
-                rendering['eyelid_top'] = target_lid
-        if idle_ms > 30000:
-            rendering['eyelid_top'] = 0.95     # casi cerrados
-            if (idle_ms // 1500) & 1 == 0:
-                show_zzz = True
-
-    # DRAW
-    disp.fill(0)
-    _draw_eye(OJO_IZQ_X, OJO_Y, rendering, _micro_dx, _micro_dy)
-    _draw_eye(OJO_DER_X, OJO_Y, rendering, _micro_dx, _micro_dy)
-
-    # Cejas: solo si los ojos están razonablemente abiertos
-    if rendering['eyelid_top'] < 0.8 and rendering.get('special') != 'half_bot':
-        _draw_brow(OJO_IZQ_X, OJO_Y, rendering['brow_y'], rendering['brow_angle'])
-        _draw_brow(OJO_DER_X, OJO_Y, rendering['brow_y'], rendering['brow_angle'])
-    elif rendering.get('special') == 'half_bot':
-        # Cejas extra arqueadas para FELIZ
-        _draw_brow(OJO_IZQ_X, OJO_Y, rendering['brow_y'], rendering['brow_angle'])
-        _draw_brow(OJO_DER_X, OJO_Y, rendering['brow_y'], rendering['brow_angle'])
-
-    # Boca durante HABLANDO
-    if estado == 'HABLANDO' or mouth_amp > 0:
-        _draw_mouth(mouth_amp)
-
-    if show_zzz:
-        _draw_zzz()
-
-    disp.show()
-    return True
-
-
-def do_blink():
-    """Parpadeo: cierre + apertura suave en ~150 ms (7 frames)."""
-    # Usar el config actual como base
-    fases = (1.0, 0.4, 0.0, 0.0, 0.4, 0.8, 1.0)   # multiplicador de ry
-    for f in fases:
-        cfg = dict(_current)
-        cfg['ry'] = max(1, int(_current['ry'] * f))
-        cfg['eyelid_top'] = 0
-        disp.fill(0)
-        _draw_eye(OJO_IZQ_X, OJO_Y, cfg, _micro_dx, _micro_dy)
-        _draw_eye(OJO_DER_X, OJO_Y, cfg, _micro_dx, _micro_dy)
-        if f > 0.5 and cfg.get('special') != 'half_bot':
-            _draw_brow(OJO_IZQ_X, OJO_Y, cfg['brow_y'], cfg['brow_angle'])
-            _draw_brow(OJO_DER_X, OJO_Y, cfg['brow_y'], cfg['brow_angle'])
-        disp.show()
-        time.sleep_ms(20)
-
-
-def do_wink(eye='left'):
-    """Guiño asimétrico: cierra UN solo ojo brevemente."""
-    fases = (1.0, 0.3, 0.0, 0.3, 1.0)
-    for f in fases:
-        cfg_open  = dict(_current)
-        cfg_close = dict(_current)
-        cfg_close['ry'] = max(1, int(_current['ry'] * f))
-        cfg_close['eyelid_top'] = 0
-        disp.fill(0)
-        if eye == 'left':
-            _draw_eye(OJO_IZQ_X, OJO_Y, cfg_close)
-            _draw_eye(OJO_DER_X, OJO_Y, cfg_open)
-        else:
-            _draw_eye(OJO_IZQ_X, OJO_Y, cfg_open)
-            _draw_eye(OJO_DER_X, OJO_Y, cfg_close)
-        if cfg_open.get('special') != 'half_bot':
-            _draw_brow(OJO_IZQ_X, OJO_Y, cfg_open['brow_y'], cfg_open['brow_angle'])
-            _draw_brow(OJO_DER_X, OJO_Y, cfg_open['brow_y'], cfg_open['brow_angle'])
-        disp.show()
-        time.sleep_ms(35)
-
-
-# ── API legacy (back-compat con código previo) ─────────────────
-
-def ojos_normal():     tick('ESPERANDO')
-def ojos_abiertos():   tick('ESCUCHANDO')
-def ojos_pensando():   tick('PENSANDO')
-def ojos_feliz():      tick('FELIZ')
-def ojos_curioso():    tick('CURIOSO')
-def ojos_siguiendo(dx, dy): tick('SIGUIENDO', sig_dx=dx, sig_dy=dy)
-def parpadear():       do_blink()
-
-def ojos_hablando(frame):
-    # Convertimos el contador a una amplitud tipo seno
-    amp = abs(math.sin(frame * 0.4)) * 0.85
-    tick('HABLANDO', mouth_amp=amp)
-
-
-# ══════════════════════════════════════════════════════════════
-# DEMO
-# ══════════════════════════════════════════════════════════════
-if __name__ == '__main__':
-    print('Demo oled_ojos (rich edition)')
-    estados = ['ESPERANDO', 'ESCUCHANDO', 'PENSANDO',
-               'HABLANDO', 'FELIZ', 'CURIOSO']
+def parsear_servo(cmd):
+    """Parsea 'H:90,V:45'. Devuelve (h, v) o (None, None)."""
     try:
-        while True:
-            for s in estados:
-                print(' ->', s)
-                for i in range(30):
-                    if s == 'HABLANDO':
-                        amp = abs(math.sin(i * 0.4)) * 0.85
-                        tick(s, mouth_amp=amp)
+        partes = cmd.strip().split(',')
+        h = int(partes[0].split(':')[1])
+        v = int(partes[1].split(':')[1])
+        return h, v
+    except Exception:
+        return None, None
+
+# Inicializar al centro
+mover_servos(90, 90)
+print('Servos inicializados en centro (90, 90)')
+
+
+# ══════════════════════════════════════════════════════════════════
+# WIFI
+# ══════════════════════════════════════════════════════════════════
+
+def conectar_wifi():
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+    # Desactivar power-save del WiFi: corriente más estable (menos picos del
+    # radio que sagan el riel y hacen temblar al servo) + menor latencia de
+    # control. Si el firmware no soporta la constante, se ignora.
+    try:
+        wlan.config(pm=network.WLAN.PM_NONE)
+    except Exception:
+        pass
+    # Bajar potencia de TX: en setup de corto alcance reduce el pico de
+    # corriente del radio (ayuda al brownout) y el desense del ESP32-CAM que
+    # está al lado. ~13 dBm es de sobra para metros de distancia.
+    try:
+        wlan.config(txpower=13)
+    except Exception:
+        pass
+    if wlan.isconnected():
+        ip = wlan.ifconfig()[0]
+        print('Ya conectado. IP:', ip)
+        return ip
+    print('Conectando al WiFi...')
+    wlan.connect(SSID, PASSWORD)
+    for _ in range(30):
+        if wlan.isconnected():
+            ip = wlan.ifconfig()[0]
+            print('Conectado! IP del ESP32:', ip)
+            return ip
+        utime.sleep(0.5)
+        print('.', end='')
+    raise RuntimeError('No se pudo conectar al WiFi')
+
+
+# ══════════════════════════════════════════════════════════════════
+# AUDIO — state machine LISTEN ↔ PLAY (busy-wait determinista)
+# ══════════════════════════════════════════════════════════════════
+# Este firmware NO usa Timer ISR (los callbacks de MicroPython no sostienen
+# 8 kHz). En su lugar, cada muestra se garantiza con busy-wait sobre ticks_us.
+
+def listen_mode(conn_mic, conn_spk, mic_buf, header_buf, header_state):
+    """
+    LISTEN con timing ABSOLUTO.
+
+    El reloj objetivo del sample N es `start + N*125µs`. Si una preempción
+    de FreeRTOS / WiFi atrasa nuestro busy-wait, los samples siguientes
+    se disparan SIN espera hasta alcanzar el reloj real → el ADC mantiene
+    la tasa media de 8000 Hz aunque haya jitter.
+    Cada ~12 s re-anclamos `start` para que sample_idx*INTERVAL_US no se
+    desborde el rango de ticks_us.
+    """
+    global estado_robot
+    estado_robot = 'ESCUCHANDO'
+
+    pos = 0
+    chk = 0
+    start = _ticks_us()
+    sample_idx = 0
+
+    while True:
+        # ── 1) sample mic ────────────────────────────────────────
+        mic_buf[pos] = _adc_read() >> 4
+        pos += 1
+        if pos >= MIC_CHUNK_SIZE:
+            try:
+                conn_mic.send(mic_buf)
+            except OSError as e:
+                if not (e.args and e.args[0] == EAGAIN):
+                    raise e
+            pos = 0
+
+        # ── 2) peek del socket spk para ver si llegó audio ───────
+        chk += 1
+        if chk >= SPK_CHECK_EVERY:
+            chk = 0
+            try:
+                hp = header_state[0]
+                got = conn_spk.recv(4 - hp)
+                if got:
+                    n = len(got)
+                    for i in range(n):
+                        header_buf[hp + i] = got[i]
+                    hp += n
+                    header_state[0] = hp
+                    if hp >= 4:
+                        tam = struct.unpack('>I', header_buf)[0]
+                        header_state[0] = 0
+                        if tam > 0 and tam != 0xFFFFFFFF and tam != 0xFFFFFFFE:
+                            return tam
+            except OSError as e:
+                if not (e.args and e.args[0] == EAGAIN):
+                    raise e
+
+        # ── 3) busy-wait absoluto: target = start + idx*125µs ────
+        sample_idx += 1
+        target_us = sample_idx * INTERVAL_US
+        while _ticks_diff(_ticks_us(), start) < target_us:
+            pass
+
+        # ── 4) re-anclar cada ~12 s para no overflow ticks_us ────
+        if sample_idx >= 100000:
+            start = _ticks_us()
+            sample_idx = 0
+
+
+def play_mode(conn_spk, total, recv_buf):
+    """
+    PLAY con timing ABSOLUTO.
+
+    Cada sample N debe escribirse al DAC en el tick `start + N*125µs`.
+    Si la lectura del socket o un context-switch nos atrasan, los
+    siguientes samples se disparan sin busy-wait hasta alcanzar el reloj
+    → el audio total dura exactamente lo que debe (mantiene 8 kHz medio).
+
+    Si nos atrasamos > 50 ms (network hiccup raro), re-anclamos para no
+    causar un "chipmunk" de catch-up demasiado largo.
+    """
+    global reproduciendo, estado_robot
+    estado_robot = 'HABLANDO'
+    reproduciendo = True
+
+    received = 0
+    play_pos = 0
+    play_len = 0
+
+
+    conn_spk.setblocking(True)
+    conn_spk.settimeout(3.0)
+    mv = memoryview(recv_buf)
+
+    start = _ticks_us()
+    sample_idx = 0
+
+    try:
+        while received < total or play_pos < play_len:
+            # refill del buffer cuando se vacía
+            if play_pos >= play_len:
+                if received >= total:
+                    break
+                want = total - received
+                if want > SPK_RECV_SIZE:
+                    want = SPK_RECV_SIZE
+                n = conn_spk.readinto(mv, want)
+                if not n:
+                    return
+                received += n
+                play_len = n
+                play_pos = 0
+                # Re-anclamos la base de tiempo para evitar desfases acumulados por la recarga del socket
+                start = _ticks_us()
+                sample_idx = 0
+
+            # ── busy-wait absoluto sobre el target del sample (evita lentitud) ──
+            target_us = sample_idx * INTERVAL_US
+            while _ticks_diff(_ticks_us(), start) < target_us:
+                pass
+
+            _dac_write(recv_buf[play_pos])
+            play_pos += 1
+            sample_idx += 1
+    finally:
+        conn_spk.setblocking(False)
+        _dac_write(128)
+        # IMPORTANTE: cambiar el estado ANTES de bajar reproduciendo
+        # para que el hilo OLED no dibuje 'HABLANDO' en el flanco final.
+        estado_robot = 'ESPERANDO'
+        reproduciendo = False
+        gc.enable()
+        gc.collect()
+
+
+# ══════════════════════════════════════════════════════════════════
+# HILO DE AUDIO
+# ══════════════════════════════════════════════════════════════════
+
+def hilo_audio():
+    global estado_robot
+
+    srv_mic = usocket.socket(usocket.AF_INET, usocket.SOCK_STREAM)
+    srv_mic.setsockopt(usocket.SOL_SOCKET, usocket.SO_REUSEADDR, 1)
+    srv_mic.bind(('', PORT_MIC))
+    srv_mic.listen(1)
+
+    srv_spk = usocket.socket(usocket.AF_INET, usocket.SOCK_STREAM)
+    srv_spk.setsockopt(usocket.SOL_SOCKET, usocket.SO_REUSEADDR, 1)
+    srv_spk.bind(('', PORT_SPK))
+    srv_spk.listen(1)
+
+    print('[Audio] Puertos:', PORT_MIC, '(mic)', PORT_SPK, '(spk)')
+
+    # Buffers pre-asignados (no asignar memoria en el hot loop)
+    mic_buf      = bytearray(MIC_CHUNK_SIZE)
+    recv_buf     = bytearray(SPK_RECV_SIZE)
+    header_buf   = bytearray(4)
+    header_state = bytearray(1)
+
+    while True:
+        try:
+            print('[Audio] Esperando laptop...')
+            conn_mic, addr_m = srv_mic.accept()
+            print('[Audio] mic conectado:', addr_m)
+            conn_spk, addr_s = srv_spk.accept()
+            print('[Audio] spk conectado:', addr_s)
+
+            # mic: bloqueante con timeout corto (para no colgar el ESP32)
+            conn_mic.setblocking(True)
+            conn_mic.settimeout(1.0)
+            # spk: no-bloqueante para el peek de headers en LISTEN
+            conn_spk.setblocking(False)
+
+            header_state[0] = 0
+            dac.write(128)
+            gc.collect()
+            print('[Audio] Sesión iniciada (half-duplex).')
+
+            while True:
+                tam = listen_mode(conn_mic, conn_spk, mic_buf, header_buf, header_state)
+                play_mode(conn_spk, tam, recv_buf)
+                # tras tocar, vuelve a LISTEN automáticamente
+
+        except OSError as e:
+            print('[Audio] Sesión cerrada:', e)
+        except Exception as e:
+            print('[Audio] Error:', e)
+        finally:
+            estado_robot = 'ESPERANDO'
+            try:
+                conn_mic.close()
+            except Exception:
+                pass
+            try:
+                conn_spk.close()
+            except Exception:
+                pass
+            dac.write(128)
+            gc.collect()
+
+
+# ══════════════════════════════════════════════════════════════════
+# HILO OLED — animación CONTINUA con máxima vivacidad
+# ══════════════════════════════════════════════════════════════════
+# El módulo oled_ojos.tick() hace TODO el trabajo emocional:
+#   - Transición lerp entre estados (5 frames)
+#   - Microsacadas en estados conscientes
+#   - Sleepy progresivo después de 15 s en ESPERANDO
+#   - Pupilas siguiendo en SIGUIENDO
+#   - Boca animada en HABLANDO según mouth_amp
+# El hilo solo:
+#   - Calcula idle_ms desde el último cambio de estado
+#   - Calcula mouth_amp para HABLANDO (oscilación tipo seno)
+#   - Dispara parpadeos aleatorios cada 3-7 s en estados despiertos
+#   - Reduce la cadencia durante reproduciendo para no destrozar el DAC
+
+OLED_FPS_MS_NORMAL   = 100     # ~10 fps en estados sin audio competiendo
+OLED_FPS_MS_AUDIO    = 220     # ~4.5 fps cuando reproduce (audio prioritario)
+OLED_BLINK_MIN_MS    = 3000    # parpadeo aleatorio cada [3..7] s
+OLED_BLINK_MAX_MS    = 7000
+
+def hilo_oled():
+    if not OLED_DISPONIBLE:
+        return
+
+    while True:
+        try:
+            gc.collect()
+            oled_ojos.reset_state()
+
+            state_started_at = utime.ticks_ms()
+            last_state       = ''
+            next_blink_at    = utime.ticks_ms() + urandom.getrandbits(12) + OLED_BLINK_MIN_MS
+            frame_n          = 0
+
+            while True:
+                ahora  = utime.ticks_ms()
+                estado = estado_robot
+
+                # Cambio de estado: reset timers
+                if estado != last_state:
+                    state_started_at = ahora
+                    last_state = estado
+                    frame_n = 0
+                    next_blink_at = ahora + OLED_BLINK_MIN_MS + (urandom.getrandbits(12) % (OLED_BLINK_MAX_MS - OLED_BLINK_MIN_MS))
+
+                idle_ms = utime.ticks_diff(ahora, state_started_at)
+
+                # Boca animada en HABLANDO (oscilación tipo seno)
+                mouth = 0.0
+                if estado == 'HABLANDO':
+                    mouth = abs(math.sin(frame_n * 0.45)) * 0.85
+                    frame_n += 1
+
+                # Parpadeo aleatorio: solo en estados despiertos, no
+                # durante el sueño profundo (idle_ms > 30 s en ESPERANDO).
+                blink_ok = (
+                    not reproduciendo                # no parpadear durante PLAY
+                    and estado in ('ESPERANDO', 'ESCUCHANDO', 'HABLANDO', 'CURIOSO')
+                    and not (estado == 'ESPERANDO' and idle_ms > 30000)
+                )
+                if blink_ok and ahora >= next_blink_at:
+                    try:
+                        if urandom.getrandbits(3) == 0:    # 1/8 de los blinks = guiño
+                            oled_ojos.do_wink('left' if urandom.getrandbits(1) else 'right')
+                        else:
+                            oled_ojos.do_blink()
+                    except Exception as e:
+                        print('[OLED] blink err:', e)
+                    next_blink_at = ahora + OLED_BLINK_MIN_MS + (urandom.getrandbits(12) % (OLED_BLINK_MAX_MS - OLED_BLINK_MIN_MS))
+
+                # Frame normal
+                try:
+                    oled_ojos.tick(estado,
+                                   sig_dx=sig_dx, sig_dy=sig_dy,
+                                   idle_ms=idle_ms,
+                                   mouth_amp=mouth)
+                except Exception as e:
+                    print('[OLED] frame err:', e)
+
+                # Sleep adaptativo según si el audio está activo
+                if reproduciendo:
+                    utime.sleep_ms(OLED_FPS_MS_AUDIO)
+                else:
+                    utime.sleep_ms(OLED_FPS_MS_NORMAL)
+
+        except Exception as e:
+            print('[OLED] hilo crash, reiniciando:', e)
+            utime.sleep(1)
+
+
+# ══════════════════════════════════════════════════════════════════
+# ARRANQUE
+# ══════════════════════════════════════════════════════════════════
+
+conectar_wifi()
+
+_thread.start_new_thread(hilo_audio, ())
+print('Hilo de audio iniciado')
+
+if OLED_DISPONIBLE:
+    _thread.start_new_thread(hilo_oled, ())
+    print('Hilo OLED iniciado')
+
+
+# ══════════════════════════════════════════════════════════════════
+# PARSER DE COMANDOS (compartido WiFi + USB)
+# ══════════════════════════════════════════════════════════════════
+# Formatos aceptados:
+#   H:90,V:45               -> mover servos
+#   ESTADO:FELIZ            -> sobrescribir el estado (afecta el OLED)
+#   SIGUIENDO:0.12,-0.34    -> coord normalizadas del rostro a seguir
+
+def aplicar_cmd(cmd):
+    """Procesa UN comando de texto (sin salto de línea). Devuelve respuesta str."""
+    global estado_robot, sig_dx, sig_dy
+    if not cmd:
+        return ''
+    if cmd.startswith('H:'):
+        h, v = parsear_servo(cmd)
+        if h is not None:
+            mover_servos(h, v)
+            return 'OK H:%d V:%d\n' % (h, v)
+        return 'ERR formato incorrecto\n'
+    elif cmd.startswith('ESTADO:'):
+        estado_robot = cmd.split(':', 1)[1]
+        return 'OK ESTADO:%s\n' % estado_robot
+    elif cmd.startswith('SIGUIENDO:'):
+        partes = cmd.split(':', 1)[1].split(',')
+        sig_dx = float(partes[0])
+        sig_dy = float(partes[1])
+        estado_robot = 'SIGUIENDO'
+        return 'OK SIGUIENDO\n'
+    return 'ERR comando desconocido\n'
+
+
+# ══════════════════════════════════════════════════════════════════
+# LOOP PRINCIPAL — comandos por WiFi (TCP) + USB serial (fallback)
+# ══════════════════════════════════════════════════════════════════
+# Canal primario: servidor TCP en PORT_CTRL (la laptop conecta por WiFi).
+# Canal fallback: USB serial (sys.stdin) — sigue funcionando en paralelo,
+# así un cable conectado a Thonny también puede mandar comandos.
+
+srv_ctrl = usocket.socket(usocket.AF_INET, usocket.SOCK_STREAM)
+srv_ctrl.setsockopt(usocket.SOL_SOCKET, usocket.SO_REUSEADDR, 1)
+srv_ctrl.bind(('', PORT_CTRL))
+srv_ctrl.listen(1)
+srv_ctrl.setblocking(False)
+
+conn_ctrl = None
+buf_ctrl  = b''
+print('Loop de control listo. WiFi puerto', PORT_CTRL, '+ USB serial (fallback).')
+
+while True:
+    # ── A) WiFi: aceptar/atender al cliente de control ───────────────
+    if conn_ctrl is None:
+        try:
+            conn_ctrl, addr = srv_ctrl.accept()
+            conn_ctrl.setblocking(False)
+            print('[Ctrl] Laptop conectada:', addr)
+        except OSError:
+            pass                              # nadie conectando ahora
+
+    if conn_ctrl is not None:
+        try:
+            data = conn_ctrl.recv(256)
+            if data == b'':                    # conexión cerrada por la laptop
+                print('[Ctrl] Laptop desconectada')
+                conn_ctrl.close()
+                conn_ctrl = None
+                buf_ctrl  = b''
+            else:
+                buf_ctrl += data
+                # COALESCE: el TCP entrega los comandos en lote. Aplicar TODOS
+                # los 'H:' del lote haría que el servo salte por posiciones
+                # intermedias en <1 ms → espasmo. Guardamos solo el ÚLTIMO 'H:'
+                # y lo movemos una sola vez por iteración (igual que el path USB,
+                # paced ~20 ms). ESTADO/SIGUIENDO se aplican al toque (última gana).
+                ultimo_h = None
+                while b'\n' in buf_ctrl:
+                    linea, buf_ctrl = buf_ctrl.split(b'\n', 1)
+                    cmd = linea.decode().strip()
+                    if cmd.startswith('H:'):
+                        ultimo_h = cmd         # diferir: solo el último mueve
                     else:
-                        tick(s, idle_ms=i * 100)
-                    time.sleep_ms(100)
-                if s == 'ESPERANDO':
-                    print('   parpadeo')
-                    do_blink()
-                if s == 'FELIZ':
-                    print('   guiño')
-                    do_wink('left')
-            # Probar SIGUIENDO
-            print(' -> SIGUIENDO (círculo)')
-            for ang in range(0, 360, 12):
-                rad = ang * 0.01745
-                tick('SIGUIENDO', sig_dx=math.cos(rad), sig_dy=math.sin(rad))
-                time.sleep_ms(80)
-            # Probar SLEEPY
-            print(' -> Sleepy (40 s de ESPERANDO)')
-            for i in range(400):
-                tick('ESPERANDO', idle_ms=i * 100)
-                time.sleep_ms(100)
-    except KeyboardInterrupt:
-        reset_state()
-        tick('ESPERANDO')
-        print('demo terminada')
+                        try:
+                            aplicar_cmd(cmd)    # ESTADO / SIGUIENDO
+                        except Exception as e:
+                            print('[Ctrl] cmd malo:', cmd, e)
+                if ultimo_h is not None:
+                    try:
+                        aplicar_cmd(ultimo_h)   # un solo movimiento de servo
+                    except Exception as e:
+                        print('[Ctrl] servo malo:', ultimo_h, e)
+                # Nota: NO respondemos por TCP. El SerialManager del laptop solo
+                # escribe, nunca lee; mandar 'OK..' llenaría el buffer de envío.
+        except OSError as e:
+            # EAGAIN = simplemente no hay datos; cualquier otro = cerrar sesión
+            if not (e.args and e.args[0] == EAGAIN):
+                try:
+                    conn_ctrl.close()
+                except Exception:
+                    pass
+                conn_ctrl = None
+                buf_ctrl  = b''
+
+    # ── B) USB serial (fallback en paralelo) ─────────────────────────
+    listo, _, _ = select.select([sys.stdin], [], [], 0)
+    if listo:
+        try:
+            resp = aplicar_cmd(sys.stdin.readline().strip())
+            if resp:
+                sys.stdout.write(resp)
+        except Exception as e:
+            sys.stdout.write('ERR %s\n' % e)
+
+    # No saturar el CPU. La laptop envía ~12 cmd/s en seguimiento facial.
+    utime.sleep_ms(20)
