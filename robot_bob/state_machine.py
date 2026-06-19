@@ -118,6 +118,12 @@ class StateMachine:
             return self._estado
 
     @property
+    def t_en_estado(self) -> float:
+        """Segundos transcurridos desde la última transición de estado."""
+        with self._lock:
+            return time.monotonic() - self._t_cambio
+
+    @property
     def en_conversacion(self) -> bool:
         with self._lock:
             return self._estado in (

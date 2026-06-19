@@ -111,6 +111,7 @@ def main() -> None:
 
     voice = VoicePipeline(serial_mgr, sm, audio_io=audio_io)
     voice.iniciar_wake_monitor()
+    voice.iniciar_soliloquio_monitor()   # Bob habla solo cuando está libre
 
     # ── 5. BehaviorEngine ──────────────────────────────────────────────────────
     behavior = BehaviorEngine(sm, tracker)

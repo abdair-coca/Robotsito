@@ -60,6 +60,8 @@ from config import (
     VOICE, TTS_FFMPEG_FILTERS, SENTENCE_MIN_CHARS, TTS_TAIL_S,
     SYSTEM_PROMPT, EXIT_PHRASES, GOODBYE_PHRASES,
     TTS_SEND_CHUNK_BYTES,
+    SOLILOQUIO_ENABLED, SOLO_IDLE_MIN_S, PRESENCE_NUDGE_S,
+    P_SOLILOQUIO, SOLILOQUIO_COOLDOWN_S, SOLILOQUIO_SETTLE_MS, BANCO_SOLILOQUIO,
 )
 from wake_word import WakeWordDetector
 from expression_engine import (
@@ -247,6 +249,9 @@ class VoicePipeline:
         self._vad    = webrtcvad.Vad(VAD_AGGRESSIVENESS)
         self._convo: List[Dict[str, str]] = []
         self._detener = threading.Event()
+        # Anti-eco: cuando Bob habla solo (soliloquio), el wake monitor NO debe
+        # grabar su propia voz. Este flag lo silencia mientras dura el soliloquio.
+        self._muted = threading.Event()
 
         self._wake = WakeWordDetector(
             wake_word=WAKE_CANONICAL,
@@ -850,11 +855,92 @@ class VoicePipeline:
         """
         threading.Thread(target=self._wake_monitor_loop, daemon=True, name='wake-monitor').start()
 
+    # ── Soliloquio / actitud (featuresAction.md Fase A) ───────────────────────
+
+    def iniciar_soliloquio_monitor(self) -> None:
+        """Hilo que, cuando Bob está libre (IDLE/PRESENCE, fuera de conversación),
+        suelta de vez en cuando una frase espontánea del banco local."""
+        if not SOLILOQUIO_ENABLED:
+            return
+        threading.Thread(target=self._soliloquio_loop, daemon=True,
+                         name='soliloquio').start()
+
+    def _soliloquio_loop(self) -> None:
+        from state_machine import RobotState
+        t_ultimo = 0.0
+        while not self._detener.is_set():
+            time.sleep(1.0)
+            if self._detener.is_set():
+                break
+            # No hablar solo si hay una charla en curso o si ya estamos hablando.
+            if self._sm.en_conversacion or self._muted.is_set():
+                continue
+            ahora = time.monotonic()
+            if ahora - t_ultimo < SOLILOQUIO_COOLDOWN_S:
+                continue
+
+            est  = self._sm.estado
+            t_en = self._sm.t_en_estado
+            if est == RobotState.IDLE and t_en >= SOLO_IDLE_MIN_S:
+                categoria = random.choice(('aburrimiento', 'curiosidad', 'actitud'))
+            elif est == RobotState.PRESENCE and t_en >= PRESENCE_NUDGE_S:
+                categoria = 'carnada'
+            else:
+                continue
+
+            if random.random() > P_SOLILOQUIO:
+                continue
+            frases = BANCO_SOLILOQUIO.get(categoria)
+            if not frases:
+                continue
+            # Última verificación: pudo entrar una conversación en este segundo.
+            if self._sm.en_conversacion:
+                continue
+
+            self.decir_soliloquio(random.choice(frases))
+            t_ultimo = time.monotonic()
+
+    def decir_soliloquio(self, frase: str) -> None:
+        """Dice UNA frase espontánea: muta el mic (anti-eco), pone el OLED según
+        su tag [EMO], habla, restaura el OLED y deja decaer el eco."""
+        emo, clean = _extract_emo_tag(frase)
+        if not any(ch.isalnum() for ch in clean):
+            return
+        self._muted.set()
+        try:
+            if emo:
+                self._serial.cmd_estado(emo)
+            console.print(f'[bold blue][soliloquio][/] [dim]({emo})[/]: {clean}')
+            self._hablar(clean)
+        except Exception as e:
+            console.print(f'[red][soliloquio] error: {e}[/]')
+        finally:
+            self._restaurar_oled()
+            time.sleep(SOLILOQUIO_SETTLE_MS / 1000.0)
+            self._muted.clear()
+
+    def _restaurar_oled(self) -> None:
+        """Devuelve el OLED al look del estado actual tras un soliloquio."""
+        from state_machine import RobotState, _OLED_STATE
+        est = self._sm.estado
+        # En PRESENCE el FacialTracker manda SIGUIENDO; no lo pisamos.
+        if est == RobotState.PRESENCE:
+            return
+        cmd = _OLED_STATE.get(est)
+        if cmd:
+            self._serial.cmd_estado(cmd)
+
     def _wake_monitor_loop(self) -> None:
         from state_machine import RobotState
         while not self._detener.is_set():
             # Solo monitorear en estados no-conversacionales
             if self._sm.en_conversacion:
+                time.sleep(0.2)
+                continue
+
+            # Anti-eco: si Bob está hablando solo, no grabar (su voz no debe
+            # auto-dispararse como wake word).
+            if self._muted.is_set():
                 time.sleep(0.2)
                 continue
 
