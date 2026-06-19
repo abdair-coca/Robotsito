@@ -1,325 +1,153 @@
-# AGENT.md - Bob
+# Bob — Catálogo de Features (filtrado a 100% viable)
 
-## Descripción General
+Bob es un robot social impulsado por IA: visión, voz, memoria, emociones y comportamiento
+autónomo. El cerebro corre en la **laptop** (MediaPipe + Groq); el ESP32 solo hace
+servos pan/tilt + OLED + audio.
 
-Bob es un robot social impulsado por IA diseñado para interactuar con personas de manera natural mediante visión artificial, voz, memoria, emociones y comportamiento autónomo.
-
-El objetivo principal de Bob es generar la sensación de estar interactuando con una entidad social con personalidad propia y memoria persistente.
-
----
-
-# Funcionalidades Actuales
-
-## Visión
-
-* Reconocimiento facial.
-* Detección de presencia humana.
-* Seguimiento visual mediante movimiento Pan/Tilt.
-* Búsqueda activa de personas.
-
-## Conversación
-
-* Conversación mediante LLM.
-* Integración con Groq.
-* Inicio de conversación por detección facial.
-* Inicio de conversación mediante wake words.
-* Respuestas por voz.
-* Captura de audio mediante micrófono.
-
-## Personalidad
-
-* Sistema de emociones.
-* Emociones persistentes durante la conversación.
-* Estados emocionales:
-
-  * Feliz
-  * Triste
-  * Enojado
-  * Neutral
-
-## Expresión Visual
-
-* Pantalla OLED para ojos.
-* Expresiones emocionales.
-* Animaciones de sueño.
-* Animaciones de conversación.
-
-## Comportamiento Autónomo
-
-* Modo sueño.
-* Despertar automático.
-* Búsqueda de personas cuando está solo.
-* Inicio autónomo de conversaciones.
+> Esta lista quedó **podada a features con ~100% de éxito** dadas las limitaciones reales
+> (ver apéndice "Descartado"). Todo lo que sobrevive corre en la laptop o usa hardware que
+> ya tenemos y funciona. Orden = recomendación de implementación (olas de software primero).
 
 ---
 
-# Objetivos de Desarrollo
+## Funcionalidades Actuales (ya funcionando)
 
-## Prioridad 1 - Memoria Persistente
+**Visión:** reconocimiento facial · presencia humana · seguimiento Pan/Tilt · búsqueda activa.
+**Conversación:** LLM (Groq) · inicio por cara o wake word · respuestas por voz · captura por mic.
+**Personalidad:** sistema de emociones · emociones persistentes en la charla (Feliz/Triste/Enojado/Neutral).
+**Expresión visual:** OLED de ojos · expresiones emocionales · animaciones de sueño y de charla.
+**Autónomo:** modo sueño · despertar automático · búsqueda de personas · inicio autónomo de charla.
 
-### Reconocimiento de Personas
+---
 
+# Objetivos de Desarrollo (solo features 100% viables)
+
+Orden recomendado: **P1 → P2 → P3 → P7 → P9 → P5 → P6 → P4 → P8 → P10**
+(las primeras son software puro sobre el cerebro de la laptop; las últimas dependen de
+CPU/visión/firmware pero siguen siendo 100% alcanzables con el alcance ya recortado).
+
+## Prioridad 1 — Memoria Persistente
+
+### Reconocimiento de Personas (usuarios enrolados, de cerca)
 * Asociar cara ↔ nombre.
 * Reconocer usuarios conocidos.
 * Registrar nuevos usuarios.
 
-### Memoria Personal
-
-Guardar:
-
-* Nombre
-* Edad
-* Gustos
-* Temas favoritos
-* Fecha de última interacción
-* Relación con Bob
+### Memoria Personal (DB local)
+Guardar: Nombre · Edad · Gustos · Temas favoritos · Fecha de última interacción · Relación con Bob.
 
 ### Memoria Episódica
+Guardar recuerdos importantes (conversaciones relevantes, eventos, experiencias) que el
+LLM resume y luego reinyecta al contexto.
+Ej: *"Recuerdo cuando me hablaste de tu proyecto."*
 
-Guardar recuerdos importantes:
-
-* Conversaciones relevantes.
-* Eventos especiales.
-* Experiencias compartidas.
-
-Ejemplos:
-
-* "Recuerdo cuando me enseñaste a bailar."
-* "Recuerdo cuando me hablaste de tu proyecto."
-
----
-
-## Prioridad 2 - Relaciones Sociales
+## Prioridad 2 — Relaciones Sociales
 
 ### Sistema de Amistad
-
-Cada usuario tendrá:
-
-* Nivel de amistad.
-* Nivel de confianza.
-* Historial de interacciones.
+Cada usuario tendrá: nivel de amistad · nivel de confianza · historial de interacciones.
 
 ### Comportamiento Adaptativo
+Bob modifica según el usuario: forma de hablar · entusiasmo · frecuencia de saludo · temas sugeridos.
 
-Bob modificará:
+## Prioridad 3 — Expresividad
 
-* Forma de hablar.
-* Entusiasmo.
-* Frecuencia de saludo.
-* Temas sugeridos.
+### Nuevas Emociones (tags del LLM)
+Curiosidad · Sorpresa · Vergüenza · Orgullo · Aburrimiento · Entusiasmo.
 
----
+### Estados Internos (variables del StateMachine)
+Energía · Motivación · Curiosidad · Sociabilidad.
 
-## Prioridad 3 - Expresividad
+### Expresiones OLED (firmware editable)
+Ojos curiosos · confundidos · emocionados · aburridos · asustados.
 
-### Nuevas Emociones
+## Prioridad 7 — Comportamiento Autónomo Avanzado
 
-* Curiosidad
-* Sorpresa
-* Vergüenza
-* Orgullo
-* Aburrimiento
-* Entusiasmo
+### Actividades Autónomas (estando solo)
+Explorar visualmente · mirar alrededor · bostezar · buscar personas.
+*(Movimientos suaves por la limitación de poder — ver apéndice.)*
 
-### Estados Internos
+### Conversaciones Autónomas (sobre P1)
+Iniciar conversaciones · hacer preguntas · recordar temas pendientes.
+Ej: *"La última vez hablábamos de tu robot, ¿cómo va?"*
 
-* Energía
-* Motivación
-* Curiosidad
-* Sociabilidad
-
-### Expresiones OLED
-
-* Ojos curiosos.
-* Ojos confundidos.
-* Ojos emocionados.
-* Ojos aburridos.
-* Ojos asustados.
-
----
-
-## Prioridad 4 - Visión Artificial Avanzada
-
-### Detección de Emociones Humanas
-
-* Sonrisa.
-* Tristeza.
-* Cansancio.
-* Enojo.
-* Sorpresa.
-
-### Detección de Gestos
-
-* Saludo.
-* Pulgar arriba.
-* Pulgar abajo.
-* Chocar los cinco.
-* Piedra.
-* Papel.
-* Tijera.
-
-### Reconocimiento de Objetos
-
-* Teléfono.
-* Computadora.
-* Libro.
-* Botella.
-* Mochila.
-
-### OCR
-
-* Lectura de texto.
-* Lectura de nombres.
-* Lectura de códigos QR.
-
----
-
-## Prioridad 5 - Juegos
-
-### Juegos Conversacionales
-
-* Adivinanzas.
-* Trivia.
-* Veo veo.
-
-### Juegos Físicos
-
-* Piedra papel o tijera.
-* Chocar los cinco.
-* Seguir movimientos.
-
----
-
-## Prioridad 6 - Música y Entretenimiento
-
-### Música
-
-* Reproducir canciones.
-* Pausar canciones.
-* Cambiar canciones.
-* Ajustar volumen.
-
-### Baile
-
-* Bailar al ritmo de la música.
-* Sincronizar expresiones con la música.
-* Animaciones especiales para canciones.
-
-### Entretenimiento
-
-* Contar chistes.
-* Contar historias.
-* Hacer preguntas divertidas.
-
----
-
-## Prioridad 7 - Comportamiento Autónomo Avanzado
-
-### Actividades Autónomas
-
-Cuando Bob esté solo:
-
-* Explorar visualmente.
-* Mirar alrededor.
-* Bostezar.
-* Buscar personas.
-
-### Conversaciones Autónomas
-
-Bob podrá:
-
-* Iniciar conversaciones.
-* Hacer preguntas.
-* Recordar temas pendientes.
-
-Ejemplo:
-
-"Abdair, la última vez estábamos hablando de tu robot. ¿Cómo va el proyecto?"
-
----
-
-## Prioridad 8 - Interacción Física
-
-### Gestos Corporales
-
-* Asentir.
-* Negar.
-* Inclinar la cabeza.
-* Saludar.
-
-### Reacciones
-
-* Reaccionar a aplausos.
-* Reaccionar a saludos.
-* Reaccionar a sonidos fuertes.
-
-### Simulación de Daño
-
-Comandos:
-
-* "Bang"
-* "Te disparo"
-
-Reacciones:
-
-* Ojos X.
-* Desmayo temporal.
-* Reinicio.
-* Comentarios humorísticos.
-
----
-
-## Prioridad 9 - Asistente Personal
+## Prioridad 9 — Asistente Personal
 
 ### Información
-
-* Hora.
-* Fecha.
-* Clima.
-* Noticias.
+Hora · Fecha (local) · Clima · Noticias (vía API).
 
 ### Productividad
+Alarmas · Recordatorios · Temporizadores · Agenda (scheduling local + tool-calling del LLM).
 
-* Alarmas.
-* Recordatorios.
-* Temporizadores.
-* Agenda.
+## Prioridad 5 — Juegos
 
----
+### Juegos Conversacionales (LLM)
+Adivinanzas · Trivia · Veo-veo.
 
-## Prioridad 10 - Modo Desarrollador
+### Juegos Físicos (viables)
+Piedra-papel-tijera (detección de mano) · Seguir movimientos (pan/tilt sigue al usuario).
 
-Acceso exclusivo para el creador.
+## Prioridad 6 — Entretenimiento y Música (control)
+
+### Música (reproducción en la laptop)
+Reproducir · Pausar · Cambiar canción · Ajustar volumen.
+
+### Entretenimiento (LLM)
+Contar chistes · Contar historias · Hacer preguntas divertidas.
+
+## Prioridad 4 — Visión Artificial Avanzada (modelos confiables)
+
+### Detección de Gestos de Mano (MediaPipe Hands, de cerca)
+Pulgar arriba · Pulgar abajo · Piedra · Papel · Tijera.
+
+### Reconocimiento de Objetos (YOLO, clases COCO)
+Teléfono · Computadora · Libro · Botella · Mochila.
+
+### Códigos QR (pyzbar)
+Lectura de códigos QR.
+
+## Prioridad 8 — Interacción Física (2 DOF) y Reacciones
+
+### Gestos de Cabeza (pan/tilt)
+Asentir · Negar · Inclinar la cabeza.
+
+### Reacciones (audio)
+Reaccionar a aplausos · a sonidos fuertes (detección por RMS del mic).
+
+### Simulación de Daño (por comando de voz: "bang" / "te disparo")
+Ojos X · desmayo temporal (OLED + cabeza caída) · reinicio (`machine.reset`) · comentarios humorísticos.
+
+## Prioridad 10 — Modo Desarrollador
 
 ### Diagnóstico
-
-* CPU.
-* RAM.
-* Temperatura.
-* Estado WiFi.
-* Estado de sensores.
+Laptop: CPU · RAM · Temperatura (psutil). ESP32: estado WiFi · sensores (requiere canal de
+telemetría de retorno en el firmware).
 
 ### Debug
-
-* Logs.
-* Reinicio remoto.
-* Actualizaciones.
-* Estado de servicios.
+Logs · Reinicio remoto del ESP32 · estado de servicios.
 
 ---
 
 # Objetivo Final
 
-Convertir a Bob en un robot social autónomo capaz de:
+Bob como entidad social que **reconoce personas, mantiene relaciones de largo plazo,
+recuerda experiencias, expresa emociones, inicia conversaciones y aprende de sus
+interacciones** — generando sensación de personalidad propia. No un chatbot: una presencia
+social con memoria, emociones e iniciativa. La presencia **física** se expresa con una
+cabeza de 2 ejes (pan/tilt) + ojos OLED.
 
-* Reconocer personas.
-* Mantener relaciones de largo plazo.
-* Recordar experiencias compartidas.
-* Expresar emociones.
-* Iniciar conversaciones.
-* Aprender de sus interacciones.
-* Generar la sensación de personalidad propia.
+---
 
-Bob no debe comportarse como un chatbot tradicional.
+# Apéndice — Descartado por limitaciones (no llega a 100%)
 
-Bob debe comportarse como una entidad social con memoria, emociones, iniciativa y presencia física.
+| Feature | Por qué se descarta |
+|---|---|
+| Detección de emociones humanas (sonrisa/tristeza/enojo…) | Precisión baja a VGA + luz de feria; no confiable. |
+| Gestos dinámicos: saludo con mano / chocar los cinco (detección) | Detección de movimiento poco confiable. |
+| OCR de texto y nombres | Letra chica ilegible a VGA (firmware CAM fijo). *QR sí queda.* |
+| Chocar los cinco (físico) · Saludar con brazo | **Bob no tiene brazos** (solo pan/tilt). |
+| Bailar al ritmo / coreografías / animaciones de baile | 2 DOF + **brownout** de la fuente con movimiento continuo. |
+| Música por el parlante del robot | Audio 8 kHz u8 pésimo. *Control + reproducción en laptop sí queda.* |
+| Actualizaciones OTA del firmware | Esfuerzo alto, fiabilidad no garantizada. |
+
+> Estos vuelven a la mesa si se resuelven sus límites: **fuente ≥2 A** (baile/movimiento),
+> **brazos/servos extra** (gestos físicos), o **cámara de mayor resolución** (OCR/emociones).
