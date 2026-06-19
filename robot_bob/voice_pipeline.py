@@ -64,6 +64,7 @@ from config import (
     SOLILOQUIO_ENABLED, SOLO_IDLE_MIN_S, PRESENCE_NUDGE_S,
     P_SOLILOQUIO, SOLILOQUIO_COOLDOWN_S, SOLILOQUIO_SETTLE_MS, BANCO_SOLILOQUIO,
     SOLILOQUIO_USA_LLM, SOLILOQUIO_LLM_RATIO, SOLILOQUIO_LLM_MAX_TOK,
+    SOLILOQUIO_MAX_CARNADAS,
 )
 from wake_word import WakeWordDetector
 from expression_engine import (
@@ -270,6 +271,8 @@ class VoicePipeline:
         # Anti-eco: cuando Bob habla solo (soliloquio), el wake monitor NO debe
         # grabar su propia voz. Este flag lo silencia mientras dura el soliloquio.
         self._muted = threading.Event()
+        # Anti-repetición de soliloquios: últimas frases dichas (texto sin tag).
+        self._soliloquio_reciente: deque = deque(maxlen=5)
 
         self._wake = WakeWordDetector(
             wake_word=WAKE_CANONICAL,
@@ -886,10 +889,19 @@ class VoicePipeline:
     def _soliloquio_loop(self) -> None:
         from state_machine import RobotState
         t_ultimo = 0.0
+        cooldown = SOLILOQUIO_COOLDOWN_S
+        carnadas = 0                      # frases-carnada disparadas en esta presencia
         while not self._detener.is_set():
             time.sleep(1.0)
             if self._detener.is_set():
                 break
+
+            est = self._sm.estado
+            # Al dejar PRESENCE (se fue la persona o arrancó charla), resetear el
+            # contador de carnadas para la próxima persona.
+            if est != RobotState.PRESENCE:
+                carnadas = 0
+
             # No hablar solo si hay una charla en curso o si ya estamos hablando.
             if self._sm.en_conversacion or self._muted.is_set():
                 continue
@@ -897,14 +909,16 @@ class VoicePipeline:
             if self._sm.is_asleep():
                 continue
             ahora = time.monotonic()
-            if ahora - t_ultimo < SOLILOQUIO_COOLDOWN_S:
+            if ahora - t_ultimo < cooldown:
                 continue
 
-            est  = self._sm.estado
             t_en = self._sm.t_en_estado
             if est == RobotState.IDLE and t_en >= SOLO_IDLE_MIN_S:
                 categoria = random.choice(('aburrimiento', 'curiosidad', 'actitud'))
             elif est == RobotState.PRESENCE and t_en >= PRESENCE_NUDGE_S:
+                # Carnada acotada: no acosar a quien no se anima a hablar.
+                if carnadas >= SOLILOQUIO_MAX_CARNADAS:
+                    continue
                 categoria = 'carnada'
             else:
                 continue
@@ -919,7 +933,11 @@ class VoicePipeline:
             if not frase:
                 continue
             self.decir_soliloquio(frase)
+            if categoria == 'carnada':
+                carnadas += 1
             t_ultimo = time.monotonic()
+            # Cadencia con jitter: que no suene metronómico.
+            cooldown = SOLILOQUIO_COOLDOWN_S * random.uniform(0.8, 1.4)
 
     def _elegir_frase_soliloquio(self, categoria: str, estado) -> Optional[str]:
         """Mezcla LLM/banco: con prob LLM_RATIO pide una frase nueva al LLM;
@@ -929,7 +947,12 @@ class VoicePipeline:
             if frase:
                 return frase
         frases = BANCO_SOLILOQUIO.get(categoria)
-        return random.choice(frases) if frases else None
+        if not frases:
+            return None
+        # Anti-repetición: evitar las frases dichas hace poco.
+        candidatas = [f for f in frases
+                      if _extract_emo_tag(f)[1].lower() not in self._soliloquio_reciente]
+        return random.choice(candidatas or frases)
 
     def _soliloquio_llm(self, categoria: str, estado) -> Optional[str]:
         """Genera UNA frase de soliloquio con Groq. Devuelve None si falla."""
@@ -942,6 +965,9 @@ class VoicePipeline:
             situacion = "No hay nadie a la vista; esperas que llegue gente."
         contexto = (f"Categoría: {categoria}. Son las {hora}. {situacion} "
                     f"Tu ánimo (de -1 a 1) está en {self._sm.mood:+.1f}.")
+        if self._soliloquio_reciente:
+            contexto += (" No repitas ni parafrasees estas frases que ya dijiste: "
+                         + " | ".join(self._soliloquio_reciente))
         try:
             resp = self._client.chat.completions.create(
                 model=GROQ_LLM_MODEL,
@@ -964,6 +990,7 @@ class VoicePipeline:
         emo, clean = _extract_emo_tag(frase)
         if not any(ch.isalnum() for ch in clean):
             return
+        self._soliloquio_reciente.append(clean.lower())   # anti-repetición
         self._muted.set()
         self._sm.oled_ocupar()          # bloquea muecas mientras Bob habla solo
         try:

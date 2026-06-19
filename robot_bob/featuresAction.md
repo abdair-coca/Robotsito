@@ -185,3 +185,21 @@ BANCO_SOLILOQUIO = {
   `agents.md`). Mitigación: arrancar con muecas solo-OLED.
 - **Riesgo eco:** si el gating del mic falla, Bob se auto-conversa. Prioridad #1 de testing.
 - **Riesgo costo:** LLM en soliloquio puede sumar llamadas; el banco local es el camino seguro.
+
+---
+
+## 📍 Estado de implementación
+
+| Fase | Status |
+|---|---|
+| A — Soliloquio hablado con banco local | ✅ implementado y validado en vivo |
+| B — Muecas (ojos + cabeza suave) | ✅ implementado; cabeza gateada por poder (config `MUECA_HEAD_ENABLED`) |
+| C — Variedad con LLM (mezcla banco/LLM) | ✅ implementado (`SOLILOQUIO_USA_LLM`, `_RATIO`) |
+| D — Pulido | ✅ anti-repetición + carnada acotada (`SOLILOQUIO_MAX_CARNADAS`) + cadencia con jitter |
+| Gap-filler en CONVERSATION_IDLE | ⏸️ diferido (bajo valor, riesgo de pisar el cierre de charla) |
+
+**Coherencia de sueño:** soliloquio y muecas se callan cuando `is_asleep()` (pose de
+sueño = quieto y callado). `SLEEP_THR_S` ahora se lee de config.
+
+**Feature "Actitud" completo.** Para feria, bajar `SOLILOQUIO_LLM_RATIO` (~0.3) y subir
+`SOLILOQUIO_COOLDOWN_S` (~20) para cuidar costo/latencia; los valores actuales son de demo.
