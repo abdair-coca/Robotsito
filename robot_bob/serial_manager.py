@@ -31,6 +31,7 @@ except Exception:               # config viejo sin estas claves → solo USB
     CONTROL_PORT    = 0
 
 # ── Prioridades de cola ────────────────────────────────────────────────────────
+_PRIO_MOTOR    = 0   # locomoción: tan prioritario como el servo (responsivo)
 _PRIO_SERVO    = 0
 _PRIO_ESTADO   = 1
 _PRIO_SIGUIENDO = 2
@@ -66,6 +67,9 @@ class SerialManager:
         self._ultimo_oled    = 0.0
         self._ultimo_estado  = ''
         self._t_ultimo_estado = 0.0
+        self._intervalo_motor = 0.04   # 25 Hz máx — suficiente para el watchdog (400 ms)
+        self._ultimo_motor    = 0.0
+        self._ultimo_motor_cmd = None  # dedup: no reenviar la misma dirección
 
         # Transportes (solo uno activo)
         self._modo: str = 'none'                       # 'wifi' | 'usb' | 'none'
@@ -85,6 +89,12 @@ class SerialManager:
     def cmd_estado(self, estado: str) -> None:
         """Enviar estado OLED (ESCUCHANDO, PENSANDO, etc.)."""
         self._encolar(_PRIO_ESTADO, ('estado', estado))
+
+    def cmd_motor(self, izq: int, der: int) -> None:
+        """Enviar dirección de los motores DC. izq/der en {-1,0,1}.
+        El firmware tiene watchdog (400 ms): repetir el comando para sostener
+        el movimiento."""
+        self._encolar(_PRIO_MOTOR, ('motor', izq, der))
 
     def cmd_siguiendo(self, dx: float, dy: float) -> None:
         """Enviar coordenadas de seguimiento facial al OLED."""
@@ -214,7 +224,21 @@ class SerialManager:
             ahora = time.monotonic()
             tipo  = item[0]
 
-            if tipo == 'servo':
+            if tipo == 'motor':
+                _, izq, der = item
+                izq = 1 if izq > 0 else (-1 if izq < 0 else 0)
+                der = 1 if der > 0 else (-1 if der < 0 else 0)
+                cmd = (izq, der)
+                # Throttle + dedup: pero el cambio de dirección SIEMPRE pasa
+                # (responsivo); la repetición (para el watchdog) se throttlea.
+                if cmd == self._ultimo_motor_cmd and \
+                   ahora - self._ultimo_motor < self._intervalo_motor:
+                    continue
+                self._enviar(f'M:{izq},{der}\n')
+                self._ultimo_motor = ahora
+                self._ultimo_motor_cmd = cmd
+
+            elif tipo == 'servo':
                 if ahora - self._ultimo_servo < self._intervalo_servo:
                     continue  # descarta, llegará uno más nuevo
                 _, pan, tilt = item
