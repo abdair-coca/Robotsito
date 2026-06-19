@@ -875,6 +875,9 @@ class VoicePipeline:
             # No hablar solo si hay una charla en curso o si ya estamos hablando.
             if self._sm.en_conversacion or self._muted.is_set():
                 continue
+            # Dormido = callado (igual que las muecas): coherencia con la pose de sueño.
+            if self._sm.is_asleep():
+                continue
             ahora = time.monotonic()
             if ahora - t_ultimo < SOLILOQUIO_COOLDOWN_S:
                 continue
