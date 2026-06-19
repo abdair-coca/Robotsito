@@ -45,6 +45,16 @@ ZONA_MUERTA_X = 35      # un poco más chico → seguimiento más fino
 ZONA_MUERTA_Y = 30
 ADELANTO_MAX  = 12      # deja más margen entre objetivo y actual (más fluido)
 
+# Filtro EMA (media móvil exponencial) sobre el ángulo final del servo.
+# Suaviza el jitter residual → movimiento más fluido. alpha en (0, 1]:
+#   1.0  = sin filtro (salida = entrada)
+#   ~0.5 = suavizado moderado (default)
+#   bajo = muy suave pero con más lag
+try:
+    from config import SERVO_EMA_ALPHA
+except Exception:
+    SERVO_EMA_ALPHA = 0.5
+
 
 # ── LectorStream (socket TCP crudo — evita crash FFmpeg) ──────────────────────
 
@@ -305,6 +315,10 @@ class FacialTracker:
         self.pan_obj      = float(PAN_HOME)
         self.tilt_obj     = float(TILT_HOME)
 
+        # Estado del filtro EMA del ángulo enviado al servo (más fluido).
+        self._pan_ema     = float(PAN_HOME)
+        self._tilt_ema    = float(TILT_HOME)
+
     # ── API pública ────────────────────────────────────────────────────────────
 
     @property
@@ -372,7 +386,13 @@ class FacialTracker:
         self.pan_actual  = _clamp(self.pan_actual  + dpan,  PAN_MIN, PAN_MAX)
         self.tilt_actual = _clamp(self.tilt_actual + dtilt, TILT_MIN, TILT_MAX)
 
-        self._serial.cmd_servo(self.pan_actual, self.tilt_actual)
+        # Filtro EMA final: y[n] = a*x[n] + (1-a)*y[n-1]. Suaviza el jitter
+        # residual del ángulo antes de mandarlo al servo → movimiento más fluido.
+        a = SERVO_EMA_ALPHA
+        self._pan_ema  = a * self.pan_actual  + (1.0 - a) * self._pan_ema
+        self._tilt_ema = a * self.tilt_actual + (1.0 - a) * self._tilt_ema
+
+        self._serial.cmd_servo(self._pan_ema, self._tilt_ema)
 
     def set_objetivo(self, pan: float, tilt: float) -> None:
         """BehaviorEngine inyecta objetivo para movimiento idle."""
