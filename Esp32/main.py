@@ -147,9 +147,10 @@ def conectar_wifi():
         pass
     # Bajar potencia de TX: en setup de corto alcance reduce el pico de
     # corriente del radio (ayuda al brownout) y el desense del ESP32-CAM que
-    # está al lado. ~13 dBm es de sobra para metros de distancia.
+    # está al lado. 8 dBm alcanza de sobra a pocos metros del AP.
+    # Si la conexión se vuelve inestable (lejos del router), subir de a 2 dBm.
     try:
-        wlan.config(txpower=13)
+        wlan.config(txpower=8)
     except Exception:
         pass
     # Fijar IP estática ANTES de conectar (si el config la define).
