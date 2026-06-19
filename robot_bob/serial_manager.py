@@ -56,6 +56,11 @@ class SerialManager:
         self._cola:  queue.PriorityQueue = queue.PriorityQueue(maxsize=60)
         self._detener = threading.Event()
 
+        # Reconexión: si el DevKit se reinicia (brownout) el socket WiFi queda
+        # muerto. El writer reintenta reconectar cada _intervalo_reconexion s.
+        self._intervalo_reconexion = 2.0
+        self._t_reintento          = 0.0
+
         # Throttle state (solo accedido desde el hilo writer)
         self._ultimo_servo   = 0.0
         self._ultimo_oled    = 0.0
@@ -155,19 +160,52 @@ class SerialManager:
             self._modo  = 'none'
 
     def _enviar(self, raw: str) -> None:
-        if self._modo == 'wifi' and self._sock is not None:
-            try:
+        try:
+            if self._modo == 'wifi' and self._sock is not None:
                 self._sock.sendall(raw.encode())
-            except OSError:
-                pass  # pérdida de frame aceptable
-        elif self._modo == 'usb' and self._esp32 is not None:
-            try:
+            elif self._modo == 'usb' and self._esp32 is not None:
                 self._esp32.write(raw.encode())
+        except Exception:
+            # El transporte se cayó (p.ej. el DevKit hizo brownout y reinició).
+            # Marcamos caído; el loop reconectará. Este frame se pierde (ok).
+            self._marcar_caido()
+
+    def _marcar_caido(self) -> None:
+        """Cierra el transporte muerto y deja _modo='none' para forzar reconexión."""
+        if self._sock is not None:
+            try:
+                self._sock.close()
             except Exception:
-                pass  # pérdida de frame aceptable
+                pass
+            self._sock = None
+        if self._esp32 is not None:
+            try:
+                self._esp32.close()
+            except Exception:
+                pass
+            self._esp32 = None
+        if self._modo != 'none':
+            print('[serial] Transporte caído (¿reinicio del DevKit?). Reconectando...')
+        self._modo = 'none'
+
+    def _reconectar(self) -> None:
+        """Reintenta resolver el transporte (WiFi → USB → none) y re-anuncia estado."""
+        self._conectar()
+        if self._modo != 'none':
+            # Reenviar el último estado para que el OLED quede coherente tras el reset.
+            est = self._ultimo_estado or 'ESPERANDO'
+            self._ultimo_estado = ''     # forzar reenvío (saltar la deduplicación)
+            self._enviar(f'ESTADO:{est}\n')
 
     def _loop(self) -> None:
         while not self._detener.is_set():
+            # Si el transporte está caído, reintentar reconexión (throttleado).
+            if self._modo == 'none':
+                ahora = time.monotonic()
+                if ahora - self._t_reintento >= self._intervalo_reconexion:
+                    self._t_reintento = ahora
+                    self._reconectar()
+
             try:
                 prio, item = self._cola.get(timeout=0.1)
             except queue.Empty:

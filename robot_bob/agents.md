@@ -15,10 +15,31 @@ el sistema va perfecto; el objetivo es replicar ese rendimiento sin cables de co
 y **recién con su feedback** se decide avanzar, repetir o ramificar. No encadenar pasos.
 No asumir éxito. Cada paso deja evidencia que descarta una causa.
 
-### 🎯 Objetivo 1 (actual): conectar a la cámara por WiFi
+### ✅ Objetivo 1 (CERRADO): conectar a la cámara por WiFi
 
-Premisa: el stream ya debería funcionar por WiFi (el CAM está vivo, responde a ping).
-Hay que aislar **dónde** se rompe: CAM, red, o código de la laptop.
+**Resuelto.** Causa raíz: el CAM streamea a **un cliente a la vez**; un navegador con el
+stream abierto (o un proceso previo sin cerrar) retiene el slot y el segundo cliente
+recibe **RST (WinError 10054)**. Ni el código ni el CAM bajo carga eran el problema —
+una conexión sostenida da 46–66 fps estables. **Regla operativa: un solo cliente al
+stream a la vez; cerrar navegador/tests antes de correr `main.py`.** Tests de diagnóstico
+quedaron en `tests/probe_cam_tcp.py` y `tests/probe_cam_stream.py`.
+
+### 🎯 Objetivo 2 (actual): el DevKit hace brownout y se reinicia
+
+Síntoma: tras unos segundos de seguimiento, el **OLED se apaga y se prende** (el DevKit
+se reinicia) y después los **servos no responden** aunque las coords sigan llegando.
+Causa: pico de corriente de **servos + radio WiFi activa** sobre una fuente débil
+(cargador USB de pared) → caída de voltaje → brownout/reset del ESP32. Por cable la WiFi
+del DevKit estaba ociosa; por WiFi transmite y suma corriente justo en el arranque del servo.
+
+- **Software (hecho):** `serial_manager.py` ahora detecta el socket muerto y **reconecta
+  solo** (cada 2 s), re-anunciando el estado. Antes el socket quedaba muerto y los
+  comandos se tiraban en silencio. Esto NO evita el reset, solo recupera el control tras él.
+- **Hardware (a probar por el usuario):** alimentar con fuente de ≥2 A; idealmente
+  **rail de poder separado para los servos** con tierra común al ESP32 + **capacitor
+  electrolítico 470–1000 µF** entre V+ y GND de los servos para absorber el inrush.
+
+### (referencia) Plan de aislamiento usado en Objetivo 1
 
 > ⚠️ El CAM sirve **un solo cliente a la vez**. Mientras pruebas el stream en el
 > navegador, NINGÚN otro proceso (otro tab, `main.py`, un test) puede estar conectado.
