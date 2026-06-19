@@ -42,6 +42,18 @@ except Exception:
     MUECA_ENABLED, MUECA_HEAD_ENABLED = False, False
     MUECA_HEAD_AMPL, MUECA_COOLDOWN_S, P_MUECA = 6.0, 8.0, 0.30
 
+# Config de locomoción (giro del cuerpo hacia la cara, Fase 3). Fallback si falta.
+try:
+    from config import (MOTORES_ENABLED, GIRO_PAN_MARGEN, GIRO_BURST_S,
+                        GIRO_COOLDOWN_S, GIRO_INVERTIR)
+except Exception:
+    MOTORES_ENABLED = False
+    GIRO_PAN_MARGEN, GIRO_BURST_S, GIRO_COOLDOWN_S, GIRO_INVERTIR = 12, 0.45, 0.6, False
+
+# Comandos de giro sobre el eje (izq, der) para mover_motores del firmware.
+_GIRO_IZQ = (-1, 1)
+_GIRO_DER = (1, -1)
+
 # Límites servo (deben coincidir con facial_tracker.py)
 PAN_MIN,  PAN_MAX  = 20,  160
 TILT_MIN, TILT_MAX = 50,  130
@@ -115,6 +127,11 @@ class BehaviorEngine:
         self._mueca_pan_off    = 0.0
         self._mueca_tilt_off   = 0.0
 
+        # Giro de cuerpo (Fase 3): máquina de ráfaga corta + cooldown
+        self._giro_dir            = None   # (izq,der) en ráfaga, o None
+        self._giro_hasta          = 0.0    # fin de la ráfaga actual
+        self._giro_cooldown_hasta = 0.0    # hasta cuándo no re-evaluar
+
         self._hilo = threading.Thread(target=self._loop, daemon=True, name='behavior-engine')
         self._hilo.start()
 
@@ -123,6 +140,11 @@ class BehaviorEngine:
     def cerrar(self) -> None:
         self._detener.set()
         self._hilo.join(timeout=1.0)
+        # Parar motores al cerrar (el watchdog igual los pararía, pero explícito mejor).
+        try:
+            self._sm._serial.cmd_motor(0, 0)
+        except Exception:
+            pass
 
     # ── Loop principal ─────────────────────────────────────────────────────────
 
@@ -138,6 +160,49 @@ class BehaviorEngine:
             elapsed = time.monotonic() - t0
             if elapsed < TICK_S:
                 self._detener.wait(TICK_S - elapsed)
+
+    def _maybe_girar_cuerpo(self, det, ahora: float) -> None:
+        """Gira el cuerpo sobre su eje, en ráfagas cortas, cuando el pan se queda
+        sin recorrido y la cara sigue corrida hacia ese lado. NO traslada."""
+        if not MOTORES_ENABLED:
+            return
+        serial = self._sm._serial
+
+        # En ráfaga: seguir enviando (alimenta el watchdog de 400 ms del firmware).
+        if self._giro_dir is not None:
+            if ahora < self._giro_hasta:
+                serial.cmd_motor(*self._giro_dir)
+                return
+            # Fin de la ráfaga → parar y entrar en cooldown (deja re-detectar la cara).
+            self._parar_giro()
+            self._giro_cooldown_hasta = ahora + GIRO_COOLDOWN_S
+            return
+
+        if ahora < self._giro_cooldown_hasta:
+            return
+
+        # ¿pan saturado y cara aún corrida hacia ese lado?
+        cx    = det[0]
+        err_x = cx - self._tracker.cx_centro
+        pan   = self._tracker.pan_actual
+        giro  = None
+        if pan <= PAN_MIN + GIRO_PAN_MARGEN and err_x > ZONA_MUERTA_X:
+            giro = _GIRO_DER if GIRO_INVERTIR else _GIRO_IZQ
+        elif pan >= PAN_MAX - GIRO_PAN_MARGEN and err_x < -ZONA_MUERTA_X:
+            giro = _GIRO_IZQ if GIRO_INVERTIR else _GIRO_DER
+
+        if giro is not None:
+            self._giro_dir   = giro
+            self._giro_hasta = ahora + GIRO_BURST_S
+            serial.cmd_motor(*giro)
+
+    def _parar_giro(self) -> None:
+        if self._giro_dir is not None:
+            try:
+                self._sm._serial.cmd_motor(0, 0)
+            except Exception:
+                pass
+            self._giro_dir = None
 
     def _maybe_mueca(self, estado: RobotState, ahora: float) -> None:
         """Dispara muecas espontáneas (cara + micro-gesto de cabeza) cuando Bob
@@ -176,6 +241,11 @@ class BehaviorEngine:
         # Reset flags one-shot al salir de su estado
         if estado != RobotState.THINKING:
             self._thinking_prev = False
+
+        # Seguridad: si dejamos de estar en PRESENCE-con-cara, parar cualquier giro.
+        if self._giro_dir is not None and not (
+                estado == RobotState.PRESENCE and det is not None):
+            self._parar_giro()
 
         # ── Despertar: cara nueva tras >SLEEP_THR_S sin presencia ──────────────
         # Gesto largo y tierno: tilt sube lento desde donde estaba hasta mirar arriba.
@@ -224,6 +294,7 @@ class BehaviorEngine:
 
         elif estado == RobotState.PRESENCE and det is not None:
             self._tick_presence(det, ahora)
+            self._maybe_girar_cuerpo(det, ahora)   # gira el cuerpo si el pan se satura
 
         elif estado == RobotState.THINKING:
             self._tick_thinking()

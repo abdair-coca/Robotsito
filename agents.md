@@ -238,12 +238,14 @@ edites a menos que el usuario lo pida. **Atención:** algunas siguen siendo
 Objetivo: que Bob **se desplace** (no solo mueva la cabeza pan/tilt). Tracción
 diferencial (tipo tanque) con **2 motores DC** vía un **puente H dual (L298N o similar)**.
 
-> **Estado (2026-06-19):** Fase 0 ✅ (OLED movido a I2C 32/33 → 21/22 libres; motores
-> alimentados por cargador aparte, GND común; ENA/ENB jumpeados → sin velocidad por ahora).
-> **Fase 1 ✅ implementada** en `Esp32/main.py`: `mover_motores()`, comando `M:<izq>,<der>`
-> en el parser, y watchdog que para a los 400 ms sin comando. **Falta:** jumpers para
-> terminar el cableado físico, re-subir el firmware y testear (Fase 2). El control desde
-> la laptop (`SerialManager.cmd_motor`) aún NO existe — es lo próximo.
+> **Estado (2026-06-19):** Fases 0–3 ✅ validadas en vivo.
+> - **Fase 0:** OLED en I2C 32/33 (21/22 libres); motores con cargador aparte, GND común; ENA/ENB jumpeados (sin velocidad).
+> - **Fase 1 (firmware):** `mover_motores()`, comando `M:<izq>,<der>`, watchdog 400 ms. ✅ probado en Thonny.
+> - **Fase 2 (laptop):** `SerialManager.cmd_motor()` + `tests/test_motor.py` (teclado WASD, reenvía cada 150 ms). ✅ probado.
+> - **Fase 3 (autónomo):** `behavior._maybe_girar_cuerpo` — Bob **gira sobre su eje** (no traslada)
+>   en ráfagas cortas (`GIRO_BURST_S`) + cooldown cuando el pan se satura y la cara sigue corrida.
+>   Config: `MOTORES_ENABLED`, `GIRO_*`, `GIRO_INVERTIR` (flip si gira al lado equivocado).
+> - **Pendiente:** control de velocidad (ENA/ENB + PWM), y traslación solo con sensores (no hay aún).
 
 ### Cableado dado por el usuario
 | Señal | Pin ESP32 | Driver |
