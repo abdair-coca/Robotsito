@@ -66,6 +66,11 @@ from config import (
     SOLILOQUIO_USA_LLM, SOLILOQUIO_LLM_RATIO, SOLILOQUIO_LLM_MAX_TOK,
     SOLILOQUIO_MAX_CARNADAS,
 )
+# Prosodia por emoción (config local, gitignoreado). Fallback neutro si falta.
+try:
+    from config import TTS_RATE_BASE, TTS_PITCH_BASE, TTS_EMO_PROSODY
+except Exception:
+    TTS_RATE_BASE, TTS_PITCH_BASE, TTS_EMO_PROSODY = "+0%", "+0Hz", {}
 from wake_word import WakeWordDetector
 from expression_engine import (
     pulse_emotion, react_to_user_text, react_to_bob_text,
@@ -206,17 +211,26 @@ def _is_goodbye(text: str) -> bool:
 
 # ── TTS ────────────────────────────────────────────────────────────────────────
 
-async def _edge_tts_bytes(text: str) -> bytes:
+def _prosody_for_emo(emo: Optional[str]) -> tuple:
+    """Devuelve (rate, pitch) edge-tts según la emoción; default = base."""
+    if emo:
+        p = TTS_EMO_PROSODY.get(emo.upper())
+        if p:
+            return p
+    return (TTS_RATE_BASE, TTS_PITCH_BASE)
+
+async def _edge_tts_bytes(text: str, rate: str, pitch: str) -> bytes:
     chunks = []
-    async for c in edge_tts.Communicate(text, voice=VOICE).stream():
+    async for c in edge_tts.Communicate(text, voice=VOICE, rate=rate, pitch=pitch).stream():
         if c['type'] == 'audio':
             chunks.append(c['data'])
     return b''.join(chunks)
 
-def _synthesize_mp3(text: str) -> bytes:
+def _synthesize_mp3(text: str, emo: Optional[str] = None) -> bytes:
     if not text.strip():
         return b''
-    return asyncio.run(_edge_tts_bytes(text))
+    rate, pitch = _prosody_for_emo(emo)
+    return asyncio.run(_edge_tts_bytes(text, rate, pitch))
 
 def _mp3_to_wav(mp3: bytes) -> bytes:
     proc = subprocess.run(
@@ -410,7 +424,7 @@ class VoicePipeline:
                     self._sm.iniciar_hablando()
                     self._serial.cmd_estado('CONFUNDIDO')
                     self._hablar('Perdón, no te estoy escuchando bien. '
-                                 'Acércate un poquito y dime de nuevo, ¿sí?')
+                                 'Acércate un poquito y dime de nuevo, ¿sí?', 'CONFUNDIDO')
                     es_primer_turno = False
                     continue
                 break
@@ -686,8 +700,8 @@ class VoicePipeline:
 
     # ── TTS + Reproducción ────────────────────────────────────────────────────
 
-    def _hablar(self, texto: str) -> None:
-        mp3 = _synthesize_mp3(texto)
+    def _hablar(self, texto: str, emo: Optional[str] = None) -> None:
+        mp3 = _synthesize_mp3(texto, emo)
         if not mp3:
             return
         self._reproducir_mp3(mp3)
@@ -780,7 +794,7 @@ class VoicePipeline:
                 if not any(ch.isalnum() for ch in clean):
                     continue
                 try:
-                    mp3 = _synthesize_mp3(clean)
+                    mp3 = _synthesize_mp3(clean, emo)
                 except Exception as e:
                     # Una frase mala no debe matar el hilo TTS entero
                     console.print(f'[red][voice] TTS error ("{clean[:40]}"): {e}[/]')
@@ -997,7 +1011,7 @@ class VoicePipeline:
             if emo:
                 self._serial.cmd_estado(emo)
             console.print(f'[bold blue][soliloquio][/] [dim]({emo})[/]: {clean}')
-            self._hablar(clean)
+            self._hablar(clean, emo)
         except Exception as e:
             console.print(f'[red][soliloquio] error: {e}[/]')
         finally:
