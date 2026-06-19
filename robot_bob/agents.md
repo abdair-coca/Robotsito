@@ -9,6 +9,40 @@ el sistema va perfecto; el objetivo es replicar ese rendimiento sin cables de co
 
 ---
 
+## ▶ Plan de ejecución gateado (un paso a la vez)
+
+**Regla de oro:** ejecutar **UN** paso, el usuario lo testea, reporta el resultado,
+y **recién con su feedback** se decide avanzar, repetir o ramificar. No encadenar pasos.
+No asumir éxito. Cada paso deja evidencia que descarta una causa.
+
+### 🎯 Objetivo 1 (actual): conectar a la cámara por WiFi
+
+Premisa: el stream ya debería funcionar por WiFi (el CAM está vivo, responde a ping).
+Hay que aislar **dónde** se rompe: CAM, red, o código de la laptop.
+
+> ⚠️ El CAM sirve **un solo cliente a la vez**. Mientras pruebas el stream en el
+> navegador, NINGÚN otro proceso (otro tab, `main.py`, un test) puede estar conectado.
+> Cerrar todo lo demás antes de cada prueba.
+
+| Paso | Acción (la hace el usuario) | Qué observar / reportar |
+|---|---|---|
+| **1** | **Power-cycle del CAM** (desenchufar/enchufar, esperar ~10 s). Luego abrir en el navegador de la laptop `http://192.168.0.22:81/stream` | ¿Se ve video, sale spinner infinito, o error? Reportar cuál. |
+| **2** | Si paso 1 falla: ver la **IP real del CAM** en el admin del router (clientes DHCP) o en el monitor serie Arduino al bootear | ¿La IP es `192.168.0.22` u otra? Anotar la real. |
+| **3** | Con el CAM confirmado en navegador, **cerrar el navegador** y correr el test aislado: `python tests/test_2b_stream_only.py` | ¿Conecta y muestra frames, o timeout? Pegar la salida. |
+| **4** | Si el test aislado falla pero el navegador anduvo: el agente prepara un **probe TCP mínimo** (solo `socket.connect` + primer JPEG, sin OpenCV/MediaPipe) para medir el `connect` | Correr el probe que genere el agente y pegar resultado. |
+| **5** | Si aislado anda pero `main.py` no: correr `python main.py` y observar el orden de los logs | ¿En qué línea se cuelga? Pegar los primeros ~15 logs. |
+
+Cada paso confirma o descarta una hipótesis:
+- Paso 1 ✅ → CAM y red OK; el problema vive en el código/contención de la laptop.
+- Paso 1 ❌ → problema de CAM/red; el código no es la causa (pasos 2).
+- Paso 3 ✅ pero 5 ❌ → contención con el socket de control u orden de arranque.
+
+> Objetivos siguientes (NO empezar hasta cerrar el 1): **Obj 2** seguimiento fluido por
+> WiFi (FPS + lag ≈ cable) · **Obj 3** estabilidad 15 min sin caídas · **Obj 4** (opcional)
+> audio del DevKit por WiFi. Detalle de cada uno se agrega aquí cuando llegue su turno.
+
+---
+
 ## 1. Topología — qué va por dónde
 
 | Enlace | Dispositivo | Puerto | Transporte | Editable |
