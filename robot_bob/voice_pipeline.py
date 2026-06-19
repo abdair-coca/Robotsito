@@ -951,6 +951,8 @@ class VoicePipeline:
                 max_tokens=SOLILOQUIO_LLM_MAX_TOK,
             )
             txt = (resp.choices[0].message.content or '').strip()
+            if txt:
+                console.print(f'[dim][soliloquio-LLM] generada: {txt}[/]')
             return txt or None
         except Exception as e:
             console.print(f'[dim][soliloquio] LLM falló, uso banco: {e}[/]')
