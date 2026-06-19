@@ -74,9 +74,12 @@ class StateMachine:
 
         # Umbral para considerar a Bob "dormido" (cabeza baja, sin movimiento) y
         # para gatillar el "despertar" cuando aparece una cara nueva.
-        # Coincide aproximadamente con el momento en que el firmware del OLED
-        # ya tiene el párpado bien bajo (~20 s de ESPERANDO continuo).
-        self.SLEEP_THR_S      = 20.0
+        # Se lee de config.SLEEP_THR_S (fallback 20 s) para que sea tuneable.
+        try:
+            from config import SLEEP_THR_S as _SLEEP_THR
+        except Exception:
+            _SLEEP_THR = 20.0
+        self.SLEEP_THR_S      = float(_SLEEP_THR)
         self.STARTLE_DUR_S    = 1.5  # duración del gesto de despertar (lento + CURIOSO)
         # Alias retrocompatible con código que aún use STARTLE_THR_S
         self.STARTLE_THR_S    = self.SLEEP_THR_S
