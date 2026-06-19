@@ -110,6 +110,13 @@ class StateMachine:
         # Fallos de STT consecutivos → a los 2, mensaje empático y reintento.
         self.stt_fail_streak: int = 0
 
+        # ── Guard de OLED expresivo (featuresAction Fase B) ────────────────
+        # Soliloquio y muecas escriben el OLED por su cuenta; este guard evita
+        # que se pisen. Flag = ocupado explícito (soliloquio); timestamp =
+        # ocupado con auto-expiración (muecas, que conocen su duración).
+        self._oled_busy_flag  = False
+        self._oled_busy_until = 0.0
+
     # ── Propiedades ────────────────────────────────────────────────────────────
 
     @property
@@ -132,6 +139,21 @@ class StateMachine:
                 RobotState.SPEAKING,
                 RobotState.CONVERSATION_IDLE,
             )
+
+    def oled_ocupar(self, ms: float = 0.0) -> None:
+        """Marca el OLED como ocupado por una animación expresiva.
+        ms>0 → ocupado con auto-expiración (muecas). ms=0 → flag explícito (soliloquio)."""
+        if ms > 0:
+            self._oled_busy_until = max(self._oled_busy_until,
+                                        time.monotonic() + ms / 1000.0)
+        else:
+            self._oled_busy_flag = True
+
+    def oled_liberar(self) -> None:
+        self._oled_busy_flag = False
+
+    def oled_ocupado(self) -> bool:
+        return self._oled_busy_flag or (time.monotonic() < self._oled_busy_until)
 
     def startle_active(self) -> bool:
         """True si está corriendo el gesto de despertar (sorpresa lenta + CURIOSO)."""

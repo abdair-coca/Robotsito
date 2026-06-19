@@ -17,6 +17,7 @@ Ejemplo:
 
 from __future__ import annotations
 
+import random
 import threading
 import time
 from typing import Optional
@@ -279,3 +280,31 @@ def react_to_bob_text(serial_mgr, sm, texto: str) -> None:
         return
     if is_happy(texto):
         pulse_emotion(serial_mgr, sm, EMO_HAPPY_RESPONSE, PULSE_FAST)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MUECAS (featuresAction.md Fase B) — caras espontáneas sin voz
+# ═══════════════════════════════════════════════════════════════════════════
+# Secuencias cortas de emociones que Bob "hace" estando solo, para parecer vivo.
+# Usan pulse_sequence (no bloquea, restaura el OLED del estado al terminar).
+
+MUECA_SEQUENCES: list[list[tuple[str, int]]] = [
+    [('TRAVIESO', 400), ('FELIZ', 350)],          # guiño pícaro
+    [('SORPRENDIDO', 300), ('CURIOSO', 550)],     # doble toma
+    [('PENSANDO', 600), ('CONFUNDIDO', 350)],     # se queda pensando
+    [('CURIOSO', 450), ('TRAVIESO', 400)],        # curioso y pícaro
+    [('MUY_FELIZ', 300), ('FELIZ', 400)],         # chispa de alegría
+    [('CONFUNDIDO', 400), ('PENSANDO', 500)],     # "¿eh?"
+    [('AMOR', 350), ('FELIZ', 350)],              # suspiro tierno
+]
+
+
+def mueca_duracion_ms(seq) -> int:
+    return sum(ms for _, ms in seq)
+
+
+def random_mueca(serial_mgr, sm) -> int:
+    """Dispara una mueca aleatoria (no bloquea). Devuelve su duración en ms."""
+    seq = random.choice(MUECA_SEQUENCES)
+    pulse_sequence(serial_mgr, sm, seq)
+    return mueca_duracion_ms(seq)

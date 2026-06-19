@@ -26,12 +26,21 @@ import random
 import threading
 import time
 from state_machine import RobotState
+from expression_engine import random_mueca
 from facial_tracker import (
     PAN_MIN as _PAN_MIN, PAN_MAX as _PAN_MAX,
     TILT_MIN as _TILT_MIN, TILT_MAX as _TILT_MAX,
     GANANCIA_PAN, GANANCIA_TILT, SIGNO_PAN, SIGNO_TILT,
     ZONA_MUERTA_X, ZONA_MUERTA_Y, ADELANTO_MAX,
 )
+
+# Config de muecas (en config.py, gitignoreado). Fallback por si falta.
+try:
+    from config import (MUECA_ENABLED, MUECA_HEAD_ENABLED, MUECA_HEAD_AMPL,
+                        MUECA_COOLDOWN_S, P_MUECA)
+except Exception:
+    MUECA_ENABLED, MUECA_HEAD_ENABLED = False, False
+    MUECA_HEAD_AMPL, MUECA_COOLDOWN_S, P_MUECA = 6.0, 8.0, 0.30
 
 # Límites servo (deben coincidir con facial_tracker.py)
 PAN_MIN,  PAN_MAX  = 20,  160
@@ -99,6 +108,13 @@ class BehaviorEngine:
         self._desvio_hasta   = 0.0
         self._prox_desvio    = time.monotonic() + random.uniform(4.0, 8.0)
 
+        # Muecas (Fase B): scheduler + micro-gesto de cabeza
+        self._mueca_next_eval  = time.monotonic() + 1.0
+        self._mueca_last       = 0.0
+        self._mueca_head_until = 0.0
+        self._mueca_pan_off    = 0.0
+        self._mueca_tilt_off   = 0.0
+
         self._hilo = threading.Thread(target=self._loop, daemon=True, name='behavior-engine')
         self._hilo.start()
 
@@ -117,10 +133,37 @@ class BehaviorEngine:
             det    = self._tracker.ultimo_det
 
             self._tick(estado, det, t0)
+            self._maybe_mueca(estado, t0)
 
             elapsed = time.monotonic() - t0
             if elapsed < TICK_S:
                 self._detener.wait(TICK_S - elapsed)
+
+    def _maybe_mueca(self, estado: RobotState, ahora: float) -> None:
+        """Dispara muecas espontáneas (cara + micro-gesto de cabeza) cuando Bob
+        está solo en IDLE. Evalúa ~1 Hz. No bloquea."""
+        if not MUECA_ENABLED or ahora < self._mueca_next_eval:
+            return
+        self._mueca_next_eval = ahora + 1.0
+        # Solo solo y libre; no pisar otro OLED expresivo (soliloquio).
+        if estado != RobotState.IDLE or self._sm.en_conversacion:
+            return
+        if self._sm.oled_ocupado():
+            return
+        if ahora - self._mueca_last < MUECA_COOLDOWN_S:
+            return
+        if random.random() > P_MUECA:
+            return
+
+        dur_ms = random_mueca(self._sm._serial, self._sm)
+        self._sm.oled_ocupar(dur_ms)
+        self._mueca_last = ahora
+
+        # Micro-gesto de cabeza suave (se salta dormido: brownout + romper pose).
+        if MUECA_HEAD_ENABLED and not self._sm.is_asleep():
+            self._mueca_pan_off    = random.uniform(-MUECA_HEAD_AMPL, MUECA_HEAD_AMPL)
+            self._mueca_tilt_off   = random.uniform(-MUECA_HEAD_AMPL, MUECA_HEAD_AMPL)
+            self._mueca_head_until = ahora + dur_ms / 1000.0
 
     def _tick(self, estado: RobotState, det, ahora: float) -> None:
         alpha    = self.alpha.get(estado, 0.08)
@@ -223,6 +266,11 @@ class BehaviorEngine:
 
         self._pan_obj  = self._wp_pan
         self._tilt_obj = self._wp_tilt
+
+        # Micro-gesto de cabeza de una mueca activa (Fase B): nudge suave.
+        if ahora < self._mueca_head_until:
+            self._pan_obj  = _clamp(self._pan_obj  + self._mueca_pan_off,  PAN_MIN, PAN_MAX)
+            self._tilt_obj = _clamp(self._tilt_obj + self._mueca_tilt_off, TILT_MIN, TILT_MAX)
 
     def _tick_presence(self, det, ahora: float) -> None:
         """Tracking con desvíos ocasionales de mirada."""

@@ -907,6 +907,7 @@ class VoicePipeline:
         if not any(ch.isalnum() for ch in clean):
             return
         self._muted.set()
+        self._sm.oled_ocupar()          # bloquea muecas mientras Bob habla solo
         try:
             if emo:
                 self._serial.cmd_estado(emo)
@@ -915,6 +916,7 @@ class VoicePipeline:
         except Exception as e:
             console.print(f'[red][soliloquio] error: {e}[/]')
         finally:
+            self._sm.oled_liberar()
             self._restaurar_oled()
             time.sleep(SOLILOQUIO_SETTLE_MS / 1000.0)
             self._muted.clear()
