@@ -4,8 +4,9 @@ Archivo de contexto para que cualquier LLM pueda trabajar en este proyecto sin
 descubrir todo desde cero. **El sistema actual y canónico es `robot_bob/`.** Todo
 lo demás en el repo es base histórica de la que nació Bob — ver §8.
 
-> Última actualización: 2026-06-18. Si modificas arquitectura o config, actualiza
+> Última actualización: 2026-06-19. Si modificas arquitectura o config, actualiza
 > este archivo y corre `graphify update .` para mantener el grafo al día.
+> (Plan de locomoción con motores DC: §10.)
 
 ---
 
@@ -228,3 +229,85 @@ edites a menos que el usuario lo pida. **Atención:** algunas siguen siendo
   `graphify query "..."` / `graphify path "A" "B"` / `graphify explain "concepto"`.
   Tras modificar código, `graphify update .` (AST, sin costo de API).
 - **Secretos:** nunca hardcodear claves; van en `.env` (ver §6).
+
+---
+
+## 10. PLAN — Locomoción con motores DC (pendiente de implementar)
+
+Objetivo: que Bob **se desplace** (no solo mueva la cabeza pan/tilt). Tracción
+diferencial (tipo tanque) con **2 motores DC** vía un **puente H dual (L298N o similar)**.
+
+### Cableado dado por el usuario
+| Señal | Pin ESP32 | Driver |
+|---|---|---|
+| IN1 | GPIO19 | dirección motor izquierdo (A) |
+| IN2 | GPIO21 | dirección motor izquierdo (A) |
+| IN3 | GPIO22 | dirección motor derecho (B) |
+| IN4 | GPIO23 | dirección motor derecho (B) |
+| GND | GND | tierra común |
+
+- Motor izquierdo → OUT1 / OUT2 (lo manejan IN1/IN2).
+- Motor derecho → OUT3 / OUT4 (lo manejan IN3/IN4).
+- Tabla de verdad por motor: `IN_a=1,IN_b=0`→adelante · `0,1`→atrás · `0,0`→libre (stop) · `1,1`→freno.
+
+### ⚠️ Bloqueantes a resolver ANTES de codear (Fase 0)
+
+1. **Conflicto de pines OLED ↔ motor.** GPIO21 y GPIO22 ya son el **I2C del OLED
+   SH1106** (§2). No se pueden usar para IN2/IN3 con el OLED conectado ahí. Opciones:
+   - **(A)** Mover el OLED a otros pines I2C libres (ej. SDA=GPIO32, SCL=GPIO33) y
+     actualizar el `I2C(...)` del firmware + recablear. (Recomendado: deja el cableado
+     de motores como lo hizo el usuario.)
+   - **(B)** Mover IN2/IN3 a GPIOs libres (ej. 18, 5, 17, 16) y recablear los motores.
+   - Decisión del usuario. **Sin esto, OLED y motores no funcionan juntos.**
+2. **Alimentación separada (brownout).** Los motores DC tiran mucha más corriente que
+   los servos (picos de arranque/stall). **Deben alimentarse de una fuente/batería
+   aparte** (no del 5V del ESP32), con **GND común**. Con el brownout que ya hay por
+   servos+WiFi (ver §3 / Objetivo 2), motores sobre el riel del ESP32 = reset seguro.
+3. **ENA/ENB (velocidad).** El usuario dio solo IN1–IN4. El L298N tiene ENA/ENB:
+   - Si están **jumpeados a HIGH** → solo on/off (adelante/atrás/girar/parar, **sin
+     control de velocidad**). Plan base asume esto.
+   - Para **velocidad variable** hacen falta 2 pines PWM más (ENA, ENB). Extensión opcional.
+
+### Arquitectura de software (sigue el patrón existente)
+
+Reusar el canal de control de texto (USB COM3 / TCP 5007) y el `SerialManager` como
+**único dueño**. NO abrir los pines desde la laptop — todo va por el firmware.
+
+1. **Firmware `Esp32/main.py`:**
+   - Inicializar los 4 pines como `Pin(..., Pin.OUT)`.
+   - `mover_motores(izq, der)` con `izq,der ∈ {-1,0,1}` → setea IN1–IN4 por la tabla de verdad.
+   - Comando nuevo en el parser `aplicar_cmd` (mismo formato de texto que `H:`/`ESTADO:`):
+     `M:<izq>,<der>\n` (ej. `M:1,1`=adelante, `M:-1,-1`=atrás, `M:1,-1`=giro, `M:0,0`=stop).
+   - **Watchdog de seguridad:** si no llega comando de motor en ~400 ms, **parar los
+     motores** (evita que Bob se escape si se corta la conexión WiFi/USB). Crítico.
+   - Parar motores al boot y en cualquier error.
+2. **`robot_bob/serial_manager.py`:** agregar `cmd_motor(izq, der)` con su prioridad en
+   la cola priorizada (sugerido: MOTOR alta, junto a SERVO) + throttle. Mismo patrón que
+   `cmd_servo`/`cmd_estado`. Enviar `M:<izq>,<der>\n`.
+3. **Control (nuevo `robot_bob/locomotion.py` o dentro de `behavior.py`):** decide cuándo
+   moverse. Arrancar con **control manual por teclado** (test), luego comportamientos:
+   acercarse a una cara lejana, deambular en IDLE, retroceder si la cara está muy cerca.
+4. **`config.py`:** `MOTORES_ENABLED` (default False hasta validar), velocidades, watchdog
+   timeout, y los pines documentados (los pines reales viven en el firmware).
+
+### Fases (gateadas — test + feedback entre cada una)
+
+- **Fase 0:** Resolver pines (OLED vs motor) + fuente separada para motores. **Bloqueante.**
+- **Fase 1 (firmware):** `mover_motores()` + comando `M:` en el parser + watchdog. Test en
+  Thonny: mandar `M:1,1`/`M:0,0` con las **ruedas en el aire** (sin tocar piso) y ver giro/parada.
+- **Fase 2 (laptop):** `SerialManager.cmd_motor` + script de teclado (`tests/test_motor.py`)
+  para manejar a Bob manualmente. Validar dirección de cada rueda (corregir signos si va al revés).
+- **Fase 3 (integración):** comportamiento autónomo mínimo (acercarse / deambular) en `behavior.py`.
+- **Fase 4 (pulido):** rampas de arranque/parada para no tironear; giros suaves; parar al cerrar
+  (`main.py` finally) y al entrar en sueño.
+
+### Seguridad (no opcional)
+- Watchdog que para si no hay comandos.
+- Parar motores en el `finally` de `main.py` y al cerrar `SerialManager`.
+- Probar siempre primero con las ruedas levantadas del piso.
+- Límite de velocidad/tiempo de marcha para que no se aleje de la laptop (depende de WiFi/USB).
+
+> Nota: esta capacidad **levanta el techo de "presencia física"** que hoy limita varias
+> features de `featuresGoal.md` (baile, seguir movimientos, etc.). Pero arrastra el mismo
+> riesgo de **brownout** que ya es el cuello de botella del proyecto — la fuente separada
+> para motores es condición para que esto sea viable.
