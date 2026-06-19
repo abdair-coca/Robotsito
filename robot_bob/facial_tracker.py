@@ -33,7 +33,7 @@ DET_INTERVAL_S    = 0.07   # ~14 Hz
 
 # Límites y parámetros de servo
 PAN_MIN,  PAN_MAX  = 20,  160
-TILT_MIN, TILT_MAX = 50,  130
+TILT_MIN, TILT_MAX = 40,  130   # TILT_MIN bajo = mira más arriba (límite firmware = 40)
 PAN_HOME  = 90
 TILT_HOME = 90
 

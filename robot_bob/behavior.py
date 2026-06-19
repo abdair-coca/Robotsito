@@ -44,11 +44,12 @@ except Exception:
 
 # Config de locomoción (giro del cuerpo hacia la cara, Fase 3). Fallback si falta.
 try:
-    from config import (MOTORES_ENABLED, GIRO_PAN_MARGEN, GIRO_BURST_S,
-                        GIRO_COOLDOWN_S, GIRO_INVERTIR)
+    from config import (MOTORES_ENABLED, GIRO_PAN_THRESHOLD, GIRO_BURST_S,
+                        GIRO_COOLDOWN_S, GIRO_INVERTIR, MOTOR_DEBUG)
 except Exception:
     MOTORES_ENABLED = False
-    GIRO_PAN_MARGEN, GIRO_BURST_S, GIRO_COOLDOWN_S, GIRO_INVERTIR = 12, 0.45, 0.6, False
+    GIRO_PAN_THRESHOLD, GIRO_BURST_S, GIRO_COOLDOWN_S, GIRO_INVERTIR = 45, 0.40, 0.5, False
+    MOTOR_DEBUG = False
 
 # Comandos de giro sobre el eje (izq, der) para mover_motores del firmware.
 _GIRO_IZQ = (-1, 1)
@@ -56,7 +57,7 @@ _GIRO_DER = (1, -1)
 
 # Límites servo (deben coincidir con facial_tracker.py)
 PAN_MIN,  PAN_MAX  = 20,  160
-TILT_MIN, TILT_MAX = 50,  130
+TILT_MIN, TILT_MAX = 40,  130   # TILT_MIN bajo = mira más arriba (límite firmware = 40)
 PAN_HOME  = 90
 TILT_HOME = 90
 
@@ -181,15 +182,18 @@ class BehaviorEngine:
         if ahora < self._giro_cooldown_hasta:
             return
 
-        # ¿pan saturado y cara aún corrida hacia ese lado?
-        cx    = det[0]
-        err_x = cx - self._tracker.cx_centro
-        pan   = self._tracker.pan_actual
-        giro  = None
-        if pan <= PAN_MIN + GIRO_PAN_MARGEN and err_x > ZONA_MUERTA_X:
+        # Si la cabeza (pan) se desvió mucho del centro, girar el cuerpo para
+        # reencarar a la persona → la cabeza vuelve sola hacia el centro.
+        desvio = self._tracker.pan_actual - PAN_HOME
+        giro   = None
+        if desvio > GIRO_PAN_THRESHOLD:
             giro = _GIRO_DER if GIRO_INVERTIR else _GIRO_IZQ
-        elif pan >= PAN_MAX - GIRO_PAN_MARGEN and err_x < -ZONA_MUERTA_X:
+        elif desvio < -GIRO_PAN_THRESHOLD:
             giro = _GIRO_IZQ if GIRO_INVERTIR else _GIRO_DER
+
+        if MOTOR_DEBUG:
+            print('[giro] pan=%.0f desvio=%+.0f -> %s' % (
+                self._tracker.pan_actual, desvio, giro))
 
         if giro is not None:
             self._giro_dir   = giro
