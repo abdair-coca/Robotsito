@@ -17,6 +17,14 @@ from machine import ADC, DAC, Pin, PWM
 import network, usocket, utime, struct, gc, sys, select
 import _thread
 from config import SSID, PASSWORD
+# IP estática opcional. Si el config del dispositivo define STATIC_IP, el ESP32
+# fija SIEMPRE esa IP (ej. 192.168.0.23) en vez de depender de DHCP — así la
+# laptop (robot_bob/config.py CONTROL_IP) siempre la encuentra. Si no está
+# definida, se cae a DHCP (comportamiento viejo).
+try:
+    from config import STATIC_IP, GATEWAY, SUBNET, DNS
+except Exception:
+    STATIC_IP = GATEWAY = SUBNET = DNS = None
 
 # OLED — opcional: si el módulo no está, se omite el hilo OLED.
 # Usamos el nuevo API tick() / do_blink() / do_wink() del módulo.
@@ -144,6 +152,16 @@ def conectar_wifi():
         wlan.config(txpower=13)
     except Exception:
         pass
+    # Fijar IP estática ANTES de conectar (si el config la define).
+    if STATIC_IP:
+        try:
+            wlan.ifconfig((STATIC_IP,
+                           SUBNET  or '255.255.255.0',
+                           GATEWAY or '192.168.0.1',
+                           DNS     or '8.8.8.8'))
+            print('IP estática fijada:', STATIC_IP)
+        except Exception as e:
+            print('No se pudo fijar IP estática, usando DHCP:', e)
     if wlan.isconnected():
         ip = wlan.ifconfig()[0]
         print('Ya conectado. IP:', ip)
