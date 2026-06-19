@@ -65,7 +65,12 @@ TICK_S = 0.05  # 20 Hz — más suave para los servos sin saturar CPU
 
 # Offset vertical: la cámara apunta al centro del bbox (cuello/boca).
 # La gente espera contacto visual a los ojos → subimos la mirada N grados.
-EYE_CONTACT_OFFSET_TILT = -8.0  # tilt negativo = mirar más arriba
+# (tilt negativo = mirar más arriba). Tuneable en config.py.
+try:
+    from config import EYE_CONTACT_OFFSET_TILT, IDLE_TILT_CENTER, IDLE_TILT_SPREAD
+except Exception:
+    EYE_CONTACT_OFFSET_TILT = -22.0
+    IDLE_TILT_CENTER, IDLE_TILT_SPREAD = 62.0, 16.0
 
 # Postura de sueño: cabeza baja (mentón al pecho)
 SLEEP_TILT  = TILT_HOME + 15.0   # 105° — dentro del rango TILT_MAX=130
@@ -333,7 +338,10 @@ class BehaviorEngine:
             # Pausa terminó → elegir waypoint NUEVO amplio (no microvariación)
             self._en_pausa = False
             self._wp_pan  = _clamp(random.gauss(PAN_HOME,  35), PAN_MIN  + 10, PAN_MAX  - 10)
-            self._wp_tilt = _clamp(random.gauss(TILT_HOME, 25), TILT_MIN + 5,  TILT_MAX - 5)
+            # Búsqueda sesgada hacia arriba: centra en IDLE_TILT_CENTER y no baja
+            # más allá del nivel (TILT_HOME) → no se queda mirando el piso.
+            self._wp_tilt = _clamp(random.gauss(IDLE_TILT_CENTER, IDLE_TILT_SPREAD),
+                                   TILT_MIN + 2, TILT_HOME)
         else:
             # En tránsito hacia waypoint — chequear si llegamos
             dist = math.hypot(self._tracker.pan_actual - self._wp_pan,
