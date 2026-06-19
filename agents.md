@@ -28,7 +28,7 @@ sistema emocional en `robot_bob/InteractiveGoal.md`; etapas de construcción en
 
 | Componente | Ubicación | Función |
 |---|---|---|
-| ESP32 DevKit | COM3 / IP `192.168.0.23` | OLED SH1106 (I2C 21/22), servos pan/tilt (GPIO13/12), mic MAX9814 (GPIO34), speaker PAM8403 (GPIO25) |
+| ESP32 DevKit | COM3 / IP `192.168.0.23` | OLED SH1106 (I2C **32/33**), servos pan/tilt (GPIO13/12), mic MAX9814 (GPIO34), speaker PAM8403 (GPIO25), motores DC L298N IN1-4 (GPIO19/21/22/23) |
 | ESP32-CAM | IP `192.168.0.22` | Stream MJPEG en `:81/stream` |
 | Laptop | local | Toda la lógica Python (visión, IA, audio) |
 
@@ -47,7 +47,8 @@ código de la laptop. Archivos:
 | `Esp32/config.py` | **No está en el repo** (gitignoreado, vive en el dispositivo). Define `SSID`, `PASSWORD` y, opcionalmente, `STATIC_IP`/`GATEWAY`/`SUBNET`/`DNS`. |
 
 El protocolo de texto del puerto 5007 es **idéntico** al serial USB:
-`H:<pan>,V:<tilt>\n` (servos), `ESTADO:<NOMBRE>\n` (OLED), `SIGUIENDO:<dx>,<dy>\n`.
+`H:<pan>,V:<tilt>\n` (servos), `ESTADO:<NOMBRE>\n` (OLED), `SIGUIENDO:<dx>,<dy>\n`,
+`M:<izq>,<der>\n` (motores DC, valores en {-1,0,1}).
 La laptop solo escribe, nunca lee — el firmware no responde por TCP a propósito.
 
 > **IP estática (clave para WiFi):** el firmware fija `STATIC_IP` antes de conectar
@@ -236,6 +237,13 @@ edites a menos que el usuario lo pida. **Atención:** algunas siguen siendo
 
 Objetivo: que Bob **se desplace** (no solo mueva la cabeza pan/tilt). Tracción
 diferencial (tipo tanque) con **2 motores DC** vía un **puente H dual (L298N o similar)**.
+
+> **Estado (2026-06-19):** Fase 0 ✅ (OLED movido a I2C 32/33 → 21/22 libres; motores
+> alimentados por cargador aparte, GND común; ENA/ENB jumpeados → sin velocidad por ahora).
+> **Fase 1 ✅ implementada** en `Esp32/main.py`: `mover_motores()`, comando `M:<izq>,<der>`
+> en el parser, y watchdog que para a los 400 ms sin comando. **Falta:** jumpers para
+> terminar el cableado físico, re-subir el firmware y testear (Fase 2). El control desde
+> la laptop (`SerialManager.cmd_motor`) aún NO existe — es lo próximo.
 
 ### Cableado dado por el usuario
 | Señal | Pin ESP32 | Driver |
