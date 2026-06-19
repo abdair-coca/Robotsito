@@ -148,6 +148,9 @@ class BehaviorEngine:
         # Solo solo y libre; no pisar otro OLED expresivo (soliloquio).
         if estado != RobotState.IDLE or self._sm.en_conversacion:
             return
+        # Dormido no hace muecas (rompería la pose/ilusión de sueño).
+        if self._sm.is_asleep():
+            return
         if self._sm.oled_ocupado():
             return
         if ahora - self._mueca_last < MUECA_COOLDOWN_S:
@@ -158,6 +161,7 @@ class BehaviorEngine:
         dur_ms = random_mueca(self._sm._serial, self._sm)
         self._sm.oled_ocupar(dur_ms)
         self._mueca_last = ahora
+        print('[mueca]')
 
         # Micro-gesto de cabeza suave (se salta dormido: brownout + romper pose).
         if MUECA_HEAD_ENABLED and not self._sm.is_asleep():
