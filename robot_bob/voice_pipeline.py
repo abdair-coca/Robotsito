@@ -25,6 +25,7 @@ import tempfile
 import threading
 import time
 import wave
+from datetime import datetime
 from collections import deque
 from typing import Optional, List, Dict, Iterator
 
@@ -62,6 +63,7 @@ from config import (
     TTS_SEND_CHUNK_BYTES,
     SOLILOQUIO_ENABLED, SOLO_IDLE_MIN_S, PRESENCE_NUDGE_S,
     P_SOLILOQUIO, SOLILOQUIO_COOLDOWN_S, SOLILOQUIO_SETTLE_MS, BANCO_SOLILOQUIO,
+    SOLILOQUIO_USA_LLM, SOLILOQUIO_LLM_RATIO, SOLILOQUIO_LLM_MAX_TOK,
 )
 from wake_word import WakeWordDetector
 from expression_engine import (
@@ -133,6 +135,22 @@ AUTO_OPENERS = [
     '¡Hola! ¿Eres de Potosí o de visita?',
     '¡Hey! ¿Qué opinas de los robots conversacionales?',
 ]
+
+# Prompt para soliloquios generados por LLM (Fase C). Pide UNA frase corta,
+# hablable, con su tag [EMO:X]. Barato (pocos tokens) y con temperatura alta
+# para variedad.
+SOLILOQUIO_LLM_PROMPT = (
+    "Eres Bob, un robot sociable en una feria de la Universidad Autónoma Tomás "
+    "Frías (UATF), en Potosí, Bolivia. Ahora estás SOLO, nadie te habla.\n"
+    "Di UNA sola frase corta (máximo 12 palabras) que dirías en voz alta para ti "
+    "mismo: un pensamiento, una queja liviana, una curiosidad o una broma con "
+    "actitud. Tono de compañero de la facu, boliviano, divertido.\n"
+    "La frase DEBE empezar con un tag de emoción entre corchetes: [EMO:FELIZ], "
+    "[EMO:CURIOSO], [EMO:TRAVIESO], [EMO:PENSANDO], [EMO:TRISTE], [EMO:MUY_FELIZ], "
+    "[EMO:CONFUNDIDO] o [EMO:AMOR].\n"
+    "Texto plano hablable: sin comillas, sin markdown, sin emojis, sin acotaciones. "
+    "Solo la frase con su tag."
+)
 
 # Filtro pasa-banda de voz (pre-calculado, reutilizable)
 _VOICE_BANDPASS = butter(4, [80, 3500], btype='band', fs=SAMPLE_RATE, output='sos')
@@ -893,15 +911,50 @@ class VoicePipeline:
 
             if random.random() > P_SOLILOQUIO:
                 continue
-            frases = BANCO_SOLILOQUIO.get(categoria)
-            if not frases:
-                continue
             # Última verificación: pudo entrar una conversación en este segundo.
             if self._sm.en_conversacion:
                 continue
 
-            self.decir_soliloquio(random.choice(frases))
+            frase = self._elegir_frase_soliloquio(categoria, est)
+            if not frase:
+                continue
+            self.decir_soliloquio(frase)
             t_ultimo = time.monotonic()
+
+    def _elegir_frase_soliloquio(self, categoria: str, estado) -> Optional[str]:
+        """Mezcla LLM/banco: con prob LLM_RATIO pide una frase nueva al LLM;
+        si falla o no toca, devuelve una del banco local."""
+        if SOLILOQUIO_USA_LLM and random.random() < SOLILOQUIO_LLM_RATIO:
+            frase = self._soliloquio_llm(categoria, estado)
+            if frase:
+                return frase
+        frases = BANCO_SOLILOQUIO.get(categoria)
+        return random.choice(frases) if frases else None
+
+    def _soliloquio_llm(self, categoria: str, estado) -> Optional[str]:
+        """Genera UNA frase de soliloquio con Groq. Devuelve None si falla."""
+        from state_machine import RobotState
+        hora = datetime.now().strftime('%H:%M')
+        if estado == RobotState.PRESENCE:
+            situacion = ("Hay alguien cerca mirándote pero aún no te habla; "
+                         "tírale una frase para romper el hielo.")
+        else:
+            situacion = "No hay nadie a la vista; esperas que llegue gente."
+        contexto = (f"Categoría: {categoria}. Son las {hora}. {situacion} "
+                    f"Tu ánimo (de -1 a 1) está en {self._sm.mood:+.1f}.")
+        try:
+            resp = self._client.chat.completions.create(
+                model=GROQ_LLM_MODEL,
+                messages=[{'role': 'system', 'content': SOLILOQUIO_LLM_PROMPT},
+                          {'role': 'user',   'content': contexto}],
+                temperature=1.0,
+                max_tokens=SOLILOQUIO_LLM_MAX_TOK,
+            )
+            txt = (resp.choices[0].message.content or '').strip()
+            return txt or None
+        except Exception as e:
+            console.print(f'[dim][soliloquio] LLM falló, uso banco: {e}[/]')
+            return None
 
     def decir_soliloquio(self, frase: str) -> None:
         """Dice UNA frase espontánea: muta el mic (anti-eco), pone el OLED según
