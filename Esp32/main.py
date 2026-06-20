@@ -148,7 +148,10 @@ ena = PWM(Pin(16), freq=1000)
 enb = PWM(Pin(4),  freq=1000)
 ena.duty(0)
 enb.duty(0)
-MOTOR_MAX_DUTY = 1023            # duty máx de PWM (resolución por defecto)
+MOTOR_MAX_DUTY     = 1023        # duty máx de PWM (resolución por defecto)
+# Piso de velocidad: estos motores no arrancan por debajo de ~60% (zumban sin
+# girar). Cualquier velocidad NO nula se sube a este mínimo útil.
+MOTOR_MIN_VEL_PCT  = 60
 
 # Watchdog: si no llega comando de motor en este tiempo, parar (seguridad —
 # que Bob no se escape si se corta la conexión WiFi/USB).
@@ -166,6 +169,8 @@ def _set_motor(in_a, in_b, en, vel):
     mag = vel if vel >= 0 else -vel
     if mag > 100:
         mag = 100
+    elif 0 < mag < MOTOR_MIN_VEL_PCT:
+        mag = MOTOR_MIN_VEL_PCT       # piso: que arranque de verdad
     en.duty(int(mag * MOTOR_MAX_DUTY // 100))
 
 def mover_motores(izq, der):
