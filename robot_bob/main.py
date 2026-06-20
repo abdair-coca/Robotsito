@@ -58,6 +58,10 @@ from state_machine  import StateMachine, RobotState
 from facial_tracker import FacialTracker, PAN_HOME, TILT_HOME
 from voice_pipeline import VoicePipeline
 from behavior       import BehaviorEngine
+try:
+    from config import MEMORIA_ENABLED
+except Exception:
+    MEMORIA_ENABLED = False
 
 
 def main() -> None:
@@ -109,7 +113,22 @@ def main() -> None:
             print(f'[audio]   Fallback automático a laptop (mic + speaker).')
             audio_io = None
 
-    voice = VoicePipeline(serial_mgr, sm, audio_io=audio_io)
+    # ── Memoria persistente (P1): reconocimiento facial + SQLite ───────────────
+    face_id = memoria = None
+    if MEMORIA_ENABLED:
+        try:
+            from face_id import FaceID
+            from memory import Memoria
+            face_id = FaceID()                  # carga InsightFace en hilo de fondo
+            memoria = Memoria()
+            print(f'[memoria] activa. Personas en la base: {memoria.total_personas()}')
+        except Exception as e:
+            print(f'[memoria] desactivada (no se pudo iniciar): {e}')
+            face_id = memoria = None
+
+    voice = VoicePipeline(serial_mgr, sm, audio_io=audio_io,
+                          face_id=face_id, memoria=memoria,
+                          get_frame=tracker.leer_frame)
     voice.iniciar_wake_monitor()
     voice.iniciar_soliloquio_monitor()   # Bob habla solo cuando está libre
 
@@ -208,8 +227,24 @@ def main() -> None:
                           (80, 80, 80), 1)
 
             cv2.imshow('Robot Bob', frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            tecla = cv2.waitKey(1) & 0xFF
+            if tecla == ord('q'):
                 break
+            elif tecla == ord('e') and memoria is not None and face_id is not None:
+                # Enrolado manual (tecla E): registra/renombra la cara actual.
+                emb, edad = (face_id.analizar(frame) if face_id.listo else (None, None))
+                if emb is None:
+                    print('[enrolar] no hay cara o InsightFace aún no cargó.')
+                else:
+                    nombre = input('[enrolar] nombre de la persona: ').strip()
+                    if nombre:
+                        m = memoria.reconocer(emb)
+                        if m:
+                            memoria.actualizar(m[0], nombre=nombre)
+                            print(f'[enrolar] actualizado id={m[0]} → {nombre}')
+                        else:
+                            pid = memoria.registrar(nombre, emb, edad)
+                            print(f'[enrolar] nuevo id={pid} → {nombre}')
 
             # Cap a TARGET_FPS — cede CPU al hilo stream-reader.
             elapsed = time.monotonic() - t_inicio_ciclo
@@ -224,6 +259,11 @@ def main() -> None:
         if audio_io is not None:
             try:
                 audio_io.close()
+            except Exception:
+                pass
+        if memoria is not None:
+            try:
+                memoria.cerrar()
             except Exception:
                 pass
         cv2.destroyAllWindows()

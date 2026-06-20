@@ -14,6 +14,7 @@ Dependencias externas: voicechatLap/config.py y voicechatLap/wake_word.py
 from __future__ import annotations
 
 import io as _io
+import json
 import os
 import random
 import re
@@ -77,6 +78,12 @@ try:
     from config import WAKE_MIN_LEVEL
 except Exception:
     WAKE_MIN_LEVEL = 1.3
+
+# Memoria persistente (P1).
+try:
+    from config import MEMORIA_ENABLED
+except Exception:
+    MEMORIA_ENABLED = False
 from wake_word import WakeWordDetector
 from expression_engine import (
     pulse_emotion, react_to_user_text, react_to_bob_text,
@@ -245,6 +252,23 @@ def _intent_giro(texto: str):
         return 'buscar'
     return None
 
+# Extracción del nombre cuando el usuario se presenta.
+_RE_NOMBRE = re.compile(
+    r'\b(?:me llamo|mi nombre es|me dicen|soy)\s+([a-záéíóúñ]{2,20})', re.IGNORECASE)
+_NO_NOMBRE = {'de', 'un', 'una', 'el', 'la', 'muy', 'yo', 'estudiante', 'ingeniero',
+              'ingeniera', 'profe', 'profesor', 'doctor', 'el', 'tu', 'su', 'que',
+              'bien', 'mal', 'feliz', 'triste', 'de', 'del', 'para', 'medio'}
+
+def _extraer_nombre(texto: str):
+    """Devuelve un nombre si el usuario se presentó ('me llamo X'), o None."""
+    m = _RE_NOMBRE.search(texto)
+    if not m:
+        return None
+    n = m.group(1).strip()
+    if n.lower() in _NO_NOMBRE:
+        return None
+    return n.capitalize()
+
 def _is_exit(text: str) -> bool:
     return text.lower().strip(' .,!?¿¡') in EXIT_PHRASES
 
@@ -311,15 +335,28 @@ class VoicePipeline:
     state_machine: StateMachine (para notificar transiciones)
     """
 
-    def __init__(self, serial_mgr, state_machine, audio_io=None):
+    def __init__(self, serial_mgr, state_machine, audio_io=None,
+                 face_id=None, memoria=None, get_frame=None):
         """
         audio_io: instancia opcional de AudioIO (voicechatLap.audio_io) ya conectada.
-                  Si USE_ROBOT_MIC o USE_ROBOT_SPEAKER son True y audio_io está,
-                  se rutea el audio por TCP al ESP32 en lugar de laptop.
+        face_id / memoria / get_frame: para la memoria persistente (P1). face_id da
+                  el embedding de la cara, memoria lo busca/guarda, get_frame() devuelve
+                  el frame actual de la cámara. Si faltan, la memoria queda desactivada.
         """
         self._serial = serial_mgr
         self._sm     = state_machine
         self._audio_io = audio_io
+        self._face_id  = face_id
+        self._memoria  = memoria
+        self._get_frame = get_frame
+
+        # Estado de identidad de la conversación actual (P1).
+        self._convo_persona       = None     # id en la base, o None
+        self._convo_emb           = None     # embedding facial de esta charla
+        self._convo_edad          = None
+        self._persona_nombre      = None
+        self._nombre_pendiente    = None
+        self._system_prompt_actual = SYSTEM_PROMPT
 
         self._client = Groq(api_key=GROQ_API_KEY)
         self._vad    = webrtcvad.Vad(VAD_AGGRESSIVENESS)
@@ -386,6 +423,97 @@ class VoicePipeline:
                                    greeting=greeting,
                                    trigger=trigger)
 
+    # ── Memoria persistente (P1) ───────────────────────────────────────────────
+
+    def _memoria_activa(self) -> bool:
+        return bool(MEMORIA_ENABLED and self._face_id and self._memoria and self._get_frame)
+
+    def _identificar(self) -> None:
+        """Al arrancar la charla: reconoce la cara y personaliza el prompt/saludo."""
+        self._convo = []                     # historial fresco por conversación
+        self._convo_persona = None
+        self._convo_emb     = None
+        self._convo_edad    = None
+        self._persona_nombre = None
+        self._nombre_pendiente = None
+        self._system_prompt_actual = SYSTEM_PROMPT
+        if not self._memoria_activa() or not self._face_id.listo:
+            return
+        try:
+            emb, edad = self._face_id.analizar(self._get_frame())
+        except Exception as e:
+            console.print(f'[dim][memoria] análisis falló: {e}[/]')
+            return
+        self._convo_emb  = emb
+        self._convo_edad = edad
+        if emb is None:
+            return
+        m = self._memoria.reconocer(emb)
+        if m:
+            pid, nombre, score = m
+            self._convo_persona  = pid
+            self._persona_nombre = nombre
+            self._memoria.marcar_visto(pid)
+            console.print(f'[bold magenta][memoria][/] reconocido: {nombre} (score {score:.2f})')
+            self._system_prompt_actual = (
+                SYSTEM_PROMPT + '\n\n═══ MEMORIA (ya conocés a esta persona) ═══\n'
+                + self._memoria.contexto(pid)
+                + '\nSaludala con calidez por su nombre y, si viene al caso, mencioná algo '
+                  'que recuerdes de ella. No repitas que sos un robot de feria.')
+        else:
+            console.print('[bold magenta][memoria][/] persona desconocida')
+            self._system_prompt_actual = (
+                SYSTEM_PROMPT + '\n\n═══ MEMORIA ═══\nNo conocés a esta persona todavía. '
+                'En algún momento de la charla preguntale su nombre con naturalidad.')
+
+    def _resumir_conversacion(self):
+        """LLM resume la charla → (resumen, gustos, temas). None si falla."""
+        turns = [m for m in self._convo if m['role'] in ('user', 'assistant')]
+        if not turns:
+            return None, None, None
+        transcript = '\n'.join(
+            f"{'Usuario' if m['role'] == 'user' else 'Bob'}: {m['content']}"
+            for m in turns[-12:])
+        sys_p = ('Sos un extractor de memoria. Resumí la charla entre Bob (robot) y una '
+                 'persona. Devolvé SOLO un JSON, sin markdown: '
+                 '{"resumen": "una frase en pasado de qué hablaron", '
+                 '"gustos": "gustos/intereses mencionados o cadena vacía", '
+                 '"temas": "temas de los que hablaron o cadena vacía"}.')
+        try:
+            resp = self._client.chat.completions.create(
+                model=GROQ_LLM_MODEL,
+                messages=[{'role': 'system', 'content': sys_p},
+                          {'role': 'user', 'content': transcript}],
+                temperature=0.3, max_tokens=140)
+            txt = (resp.choices[0].message.content or '').strip()
+            mt = re.search(r'\{.*\}', txt, re.DOTALL)
+            if mt:
+                d = json.loads(mt.group(0))
+                res = (d.get('resumen') or '').strip() or None
+                gus = (d.get('gustos') or '').strip() or None
+                tem = (d.get('temas') or '').strip() or None
+                return res, gus, tem
+        except Exception as e:
+            console.print(f'[dim][memoria] resumen falló: {e}[/]')
+        return None, None, None
+
+    def _cerrar_memoria(self) -> None:
+        """Al terminar la charla: registra (si nuevo) y guarda recuerdo + gustos/temas."""
+        if not self._memoria_activa() or self._convo_emb is None:
+            return
+        pid = self._convo_persona
+        if pid is None:
+            pid = self._memoria.registrar(self._nombre_pendiente, self._convo_emb,
+                                          self._convo_edad)
+            self._convo_persona = pid
+            console.print(f'[bold magenta][memoria][/] persona nueva guardada '
+                          f'(id={pid}, nombre={self._nombre_pendiente})')
+        resumen, gustos, temas = self._resumir_conversacion()
+        if resumen:
+            self._memoria.agregar_episodio(pid, resumen)
+        self._memoria.actualizar(pid, gustos=gustos, temas=temas)
+        console.print(f'[dim][memoria] guardado recuerdo para id={pid}: {resumen}[/]')
+
     def _run_conversation(self, pending_audio: Optional[bytes] = None,
                           pending_text: Optional[str] = None,
                           greeting: bool = False,
@@ -407,9 +535,21 @@ class VoicePipeline:
         es_primer_turno = True
         n_turnos = 0  # contador de turnos para el bonus de mood (charla fluye)
 
+        # ── Identidad (memoria P1): reconocer la cara y personalizar ──────────
+        self._identificar()
+
         # ── Saludo / opener al arrancar conversación ──────────────────────────
         if greeting:
-            if trigger == 'auto':
+            if self._persona_nombre:
+                # Persona conocida → saludo personalizado por su nombre.
+                n = self._persona_nombre
+                saludo = random.choice([
+                    f'¡Hola {n}! ¡Qué bueno verte de nuevo!',
+                    f'¡{n}! ¿Cómo andás?',
+                    f'¡Mirá quién volvió! ¿Qué contás, {n}?'])
+                console.print(f'[bold magenta][saludo memoria][/] {saludo}')
+                pulse_emotion(self._serial, self._sm, 'FELIZ', PULSE_FAST)
+            elif trigger == 'auto':
                 saludo = random.choice(AUTO_OPENERS)
                 console.print(f'[bold magenta][opener auto][/] {saludo}')
                 pulse_emotion(self._serial, self._sm, EMO_AUTO_OPENER, PULSE_FAST)
@@ -418,7 +558,7 @@ class VoicePipeline:
                 console.print(f'[bold magenta][saludo wake][/] {saludo}')
                 pulse_emotion(self._serial, self._sm, EMO_GREETING_PLAYED, PULSE_FAST)
             self._sm.iniciar_hablando()
-            self._hablar(saludo)
+            self._hablar(saludo, 'FELIZ' if self._persona_nombre else None)
             # Si no hay payload pendiente, volvemos a LISTENING para grabar
             if not pending_text:
                 self._sm.iniciar_escuchando()
@@ -473,6 +613,20 @@ class VoicePipeline:
                 break
 
             console.print(f'[bold cyan]Usuario:[/] {texto}')
+
+            # ── Memoria: ¿se presentó? ("me llamo X") → guardar nombre ─────────
+            if self._memoria_activa():
+                nombre = _extraer_nombre(texto)
+                if nombre and nombre != self._persona_nombre:
+                    self._persona_nombre = nombre
+                    self._nombre_pendiente = nombre
+                    if self._convo_persona is not None:
+                        self._memoria.actualizar(self._convo_persona, nombre=nombre)
+                    elif self._convo_emb is not None:
+                        # registrar ya para asociar cara↔nombre desde este momento
+                        self._convo_persona = self._memoria.registrar(
+                            nombre, self._convo_emb, self._convo_edad)
+                    console.print(f'[bold magenta][memoria][/] nombre aprendido: {nombre}')
 
             # Reaccionar emocionalmente a lo que dijo el usuario
             # (AMOR / TRISTE / CONFUNDIDO según contenido)
@@ -533,6 +687,10 @@ class VoicePipeline:
             es_primer_turno = False
 
         # ── 6. Fin de conversación ─────────────────────────────────────────────
+        try:
+            self._cerrar_memoria()   # guarda recuerdo + perfil de la persona
+        except Exception as e:
+            console.print(f'[dim][memoria] cierre falló: {e}[/]')
         self._sm.fin_turno()
 
     # ── Grabación ────────────────────────────────────────────────────────────
@@ -724,7 +882,7 @@ class VoicePipeline:
 
     def _stream_llm(self, texto: str) -> Iterator[str]:
         self._convo.append({'role': 'user', 'content': texto})
-        messages = [{'role': 'system', 'content': SYSTEM_PROMPT}] + self._convo
+        messages = [{'role': 'system', 'content': self._system_prompt_actual}] + self._convo
 
         try:
             stream = self._client.chat.completions.create(
