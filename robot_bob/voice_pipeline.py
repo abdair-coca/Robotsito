@@ -71,6 +71,12 @@ try:
     from config import TTS_RATE_BASE, TTS_PITCH_BASE, TTS_EMO_PROSODY
 except Exception:
     TTS_RATE_BASE, TTS_PITCH_BASE, TTS_EMO_PROSODY = "+0%", "+0Hz", {}
+
+# Gate de energía del wake monitor (silencio → no transcribir).
+try:
+    from config import WAKE_MIN_LEVEL
+except Exception:
+    WAKE_MIN_LEVEL = 1.3
 from wake_word import WakeWordDetector
 from expression_engine import (
     pulse_emotion, react_to_user_text, react_to_bob_text,
@@ -1085,7 +1091,10 @@ class VoicePipeline:
                 collected.extend(chunk)
         if not collected:
             return None
-        return _uint8_to_wav(bytes(collected))
+        raw = bytes(collected)
+        if _rms_uint8(raw) < 4.0:        # silencio → no transcribir
+            return None
+        return _uint8_to_wav(raw)
 
     def _grabar_wake_laptop(self) -> Optional[bytes]:
         """Graba 3 s desde el mic local. Devuelve WAV int16 @ 16 kHz."""
@@ -1118,6 +1127,14 @@ class VoicePipeline:
             return None
 
         raw = b''.join(collected)
+        # Gate de energía: si la ventana es silencio, NO transcribir (Whisper
+        # alucina "Gracias." con silencio y quema llamadas a Groq).
+        arr = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+        if arr.size:
+            level = float(np.sqrt(np.mean(arr * arr))) / 32767.0 * 100.0
+            if level < WAKE_MIN_LEVEL:
+                return None
+
         buf = _io.BytesIO()
         with wave.open(buf, 'wb') as wf:
             wf.setnchannels(1)
