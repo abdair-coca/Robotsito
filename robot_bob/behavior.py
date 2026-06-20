@@ -46,13 +46,15 @@ except Exception:
 try:
     from config import (MOTORES_ENABLED, GIRO_VELOCIDAD, GIRO_PAN_THRESHOLD,
                         GIRO_BURST_S, GIRO_COOLDOWN_S, GIRO_INVERTIR, MOTOR_DEBUG,
-                        GIRO_IDLE_ENABLED, GIRO_IDLE_COOLDOWN_S, GIRO_IDLE_PROB)
+                        GIRO_IDLE_ENABLED, GIRO_IDLE_COOLDOWN_S, GIRO_IDLE_PROB,
+                        SCAN_MAX_BURSTS, SCAN_DIR_BURSTS, SCAN_LOOK_S)
 except Exception:
     MOTORES_ENABLED = False
     GIRO_VELOCIDAD = 70
     GIRO_PAN_THRESHOLD, GIRO_BURST_S, GIRO_COOLDOWN_S, GIRO_INVERTIR = 30, 0.40, 0.4, False
     MOTOR_DEBUG = False
     GIRO_IDLE_ENABLED, GIRO_IDLE_COOLDOWN_S, GIRO_IDLE_PROB = True, 6.0, 0.4
+    SCAN_MAX_BURSTS, SCAN_DIR_BURSTS, SCAN_LOOK_S = 14, 4, 0.5
 
 # Comandos de giro sobre el eje (izq, der) para mover_motores del firmware.
 _GIRO_IZQ = (-1, 1)
@@ -143,6 +145,12 @@ class BehaviorEngine:
         # Pivots de búsqueda en IDLE
         self._giro_idle_last      = 0.0
         self._giro_idle_next_eval = 0.0
+        # Escaneo (buscar al que habla)
+        self._scan_activo  = False
+        self._scan_dir     = _GIRO_DER
+        self._scan_bursts  = 0
+        self._scan_max     = 0
+        self._scan_next    = 0.0
 
         self._hilo = threading.Thread(target=self._loop, daemon=True, name='behavior-engine')
         self._hilo.start()
@@ -198,10 +206,64 @@ class BehaviorEngine:
         except Exception:
             pass
 
+    def _maybe_scan(self, det, ahora: float) -> bool:
+        """Escaneo: al oír 'Bob' sin cara (o por comando), gira en ráfagas buscando
+        al que habla. Para apenas detecta una cara, o tras ~una vuelta sin éxito."""
+        if not MOTORES_ENABLED:
+            return False
+
+        # ¿Pedido nuevo de escaneo? (lo pone el wake sin cara o un comando de voz)
+        req = self._sm.scan_request
+        if req and not self._scan_activo:
+            self._sm.scan_request = None
+            self._scan_activo = True
+            self._scan_bursts = 0
+            self._scan_next   = ahora
+            der = _GIRO_DER if not GIRO_INVERTIR else _GIRO_IZQ
+            izq = _GIRO_IZQ if not GIRO_INVERTIR else _GIRO_DER
+            if req == 'derecha':
+                self._scan_dir, self._scan_max = der, SCAN_DIR_BURSTS
+            elif req == 'izquierda':
+                self._scan_dir, self._scan_max = izq, SCAN_DIR_BURSTS
+            else:  # 'buscar'
+                self._scan_dir, self._scan_max = der, SCAN_MAX_BURSTS
+
+        if not self._scan_activo:
+            return False
+
+        # Cara encontrada → fin del escaneo (el tracking toma el control).
+        if det is not None:
+            self._scan_activo = False
+            self._parar_giro()
+            return False
+
+        # Ráfaga activa → seguir alimentando el watchdog del firmware.
+        if self._giro_dir is not None:
+            if ahora < self._giro_hasta:
+                try:
+                    self._sm._serial.cmd_motor(*self._giro_dir)
+                except Exception:
+                    pass
+                return True
+            # Fin de la ráfaga → parar y "mirar" un momento antes de seguir.
+            self._parar_giro()
+            self._scan_next = ahora + SCAN_LOOK_S
+            return True
+
+        # Entre ráfagas: esperar a mirar; luego otra ráfaga o rendirse.
+        if ahora < self._scan_next:
+            return True
+        if self._scan_bursts >= self._scan_max:
+            self._scan_activo = False     # dio ~una vuelta sin encontrar → parar
+            return False
+        self._scan_bursts += 1
+        self._arrancar_giro(self._scan_dir, ahora)
+        return True
+
     def _maybe_girar_cuerpo(self, det, ahora: float) -> None:
         """PRESENCE: si el pan se desvió del centro, gira el cuerpo para reencarar a
         la persona → la cabeza vuelve sola al centro. NO traslada."""
-        if not MOTORES_ENABLED or self._giro_tick(ahora):
+        if not MOTORES_ENABLED or self._scan_activo or self._giro_tick(ahora):
             return
         desvio = self._tracker.pan_actual - PAN_HOME
         base   = None
@@ -218,7 +280,8 @@ class BehaviorEngine:
     def _maybe_girar_idle(self, ahora: float) -> None:
         """IDLE: pivots de 'mirar alrededor' cada tanto, para que Bob use el cuerpo
         (no solo la cabeza) estando solo. En el lugar, en ráfagas cortas."""
-        if not (MOTORES_ENABLED and GIRO_IDLE_ENABLED) or self._giro_tick(ahora):
+        if not (MOTORES_ENABLED and GIRO_IDLE_ENABLED) or self._scan_activo \
+                or self._giro_tick(ahora):
             return
         if self._sm.is_asleep():
             return
@@ -279,7 +342,8 @@ class BehaviorEngine:
             self._thinking_prev = False
 
         # Seguridad: solo se permite girar en PRESENCE o IDLE; en charla/pensar, parar.
-        if self._giro_dir is not None and estado not in (
+        # (El escaneo es excepción: gira en cualquier estado hasta encontrar cara.)
+        if self._giro_dir is not None and not self._scan_activo and estado not in (
                 RobotState.PRESENCE, RobotState.IDLE):
             self._parar_giro()
 
@@ -324,6 +388,9 @@ class BehaviorEngine:
                                            max_paso_pan=0.6, max_paso_tilt=0.6)
             return
         self._asleep_prev = False
+
+        # Escaneo: busca al que habla girando (corre en cualquier estado).
+        self._maybe_scan(det, ahora)
 
         if estado == RobotState.IDLE and det is None:
             self._tick_idle(ahora)

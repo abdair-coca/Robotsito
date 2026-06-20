@@ -101,6 +101,11 @@ class StateMachine:
         # Determina qué lista de frases usar en voice_pipeline.
         self.conversation_trigger: str | None = None
 
+        # Escaneo: 'buscar' | 'derecha' | 'izquierda' | None. Lo pone el wake (sin
+        # cara) o un comando de voz; lo consume y ejecuta BehaviorEngine.
+        self.scan_request: str | None = None
+        self._cara_visible: bool = False
+
         # ── Mood drift (InteractiveGoal Fase A) ────────────────────────────
         # Estado de ánimo acumulado DENTRO de la conversación actual.
         # Rango [-1.0, +1.0]. Se resetea al volver a IDLE.
@@ -202,6 +207,7 @@ class StateMachine:
     def notificar_cara(self, detectada: bool) -> None:
         """Llamar en cada frame con True si hay cara, False si no."""
         ahora = time.monotonic()
+        self._cara_visible = detectada
         with self._lock:
             estado = self._estado
 
@@ -238,6 +244,9 @@ class StateMachine:
             self.greeting_pending = True
             self.conversation_trigger = 'wake'
             self.pending_text = (payload or '').strip() or None
+            # Oyó "Bob" pero no ve a nadie → buscar al que habla girando.
+            if not self._cara_visible:
+                self.scan_request = 'buscar'
             self._transicionar(RobotState.LISTENING)
 
     def iniciar_escuchando(self) -> None:

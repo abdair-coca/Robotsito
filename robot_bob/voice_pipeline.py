@@ -222,6 +222,29 @@ def _es_alucinacion(texto: str) -> bool:
         return True
     return t in _ALUCINACIONES
 
+# Comandos de voz para que Bob gire buscando al que habla.
+_GIRO_DER_KW = ('a la derecha', 'tu derecha', 'a tu derecha', 'por la derecha',
+                'hacia la derecha')
+_GIRO_IZQ_KW = ('a la izquierda', 'tu izquierda', 'a tu izquierda', 'por la izquierda',
+                'hacia la izquierda')
+_GIRO_BUSCAR_KW = ('date la vuelta', 'date vuelta', 'da la vuelta', 'date media vuelta',
+                   'date la media vuelta', 'voltea', 'volteate', 'voltéate', 'gira',
+                   'girate', 'gírate', 'date la vueltita', 'estoy detras', 'estoy detrás',
+                   'detras de ti', 'detrás de ti', 'atras de ti', 'atrás de ti',
+                   'aca atras', 'acá atrás', 'aqui atras', 'aquí atrás', 'mira atras',
+                   'mira atrás', 'date la vue')
+
+def _intent_giro(texto: str):
+    """Devuelve 'derecha' | 'izquierda' | 'buscar' | None según el comando de voz."""
+    t = texto.lower()
+    if any(k in t for k in _GIRO_DER_KW):
+        return 'derecha'
+    if any(k in t for k in _GIRO_IZQ_KW):
+        return 'izquierda'
+    if any(k in t for k in _GIRO_BUSCAR_KW):
+        return 'buscar'
+    return None
+
 def _is_exit(text: str) -> bool:
     return text.lower().strip(' .,!?¿¡') in EXIT_PHRASES
 
@@ -478,6 +501,18 @@ class VoicePipeline:
                 texto = ww.payload
 
             if not texto.strip():
+                es_primer_turno = False
+                continue
+
+            # ── Comando de giro: "date la vuelta", "a tu derecha", etc. ─────────
+            intent = _intent_giro(texto)
+            if intent:
+                self._sm.scan_request = intent
+                self._sm.iniciar_hablando()
+                ack = random.choice(['¡Voy para allá!', '¡Ya te busco!',
+                                     '¡Me doy la vuelta!', '¡A ver dónde estás!'])
+                console.print(f'[bold green]Bob[/] [dim](giro:{intent})[/]: {ack}')
+                self._hablar(ack, 'TRAVIESO')
                 es_primer_turno = False
                 continue
 
