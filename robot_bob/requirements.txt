@@ -22,6 +22,10 @@ imageio-ffmpeg>=0.4.9
 # LLM / STT (Groq API)
 groq>=0.9.0
 
+# Reconocimiento facial / memoria persistente (P1)
+insightface>=1.0
+onnxruntime>=1.16
+
 # Reproducción local
 pygame>=2.5
 

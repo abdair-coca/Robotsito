@@ -5,3 +5,5 @@ venv/
 __pycache__/
 *.pyc
 venv311
+memory.db
+.insightface/
