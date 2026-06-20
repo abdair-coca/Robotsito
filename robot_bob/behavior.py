@@ -206,6 +206,15 @@ class BehaviorEngine:
         except Exception:
             pass
 
+    def _tick_scan_head(self, ahora: float) -> None:
+        """Barrido de cabeza mientras el cuerpo gira buscando: tilt arriba↔nivel
+        (cubre alturas) + pan oscilando suave (cubre entre ráfagas del cuerpo)."""
+        t_pan  = math.sin(2.0 * math.pi * (ahora % 3.0) / 3.0)          # -1..1, ciclo 3 s
+        t_tilt = 0.5 - 0.5 * math.cos(2.0 * math.pi * (ahora % 2.0) / 2.0)  # 0..1, ciclo 2 s
+        lo_tilt = TILT_MIN + 6
+        self._pan_obj  = _clamp(PAN_HOME + 22.0 * t_pan, PAN_MIN, PAN_MAX)
+        self._tilt_obj = _clamp(lo_tilt + (TILT_HOME - lo_tilt) * t_tilt, TILT_MIN, TILT_MAX)
+
     def _maybe_scan(self, det, ahora: float) -> bool:
         """Escaneo: al oír 'Bob' sin cara (o por comando), gira en ráfagas buscando
         al que habla. Para apenas detecta una cara, o tras ~una vuelta sin éxito."""
@@ -391,6 +400,13 @@ class BehaviorEngine:
 
         # Escaneo: busca al que habla girando (corre en cualquier estado).
         self._maybe_scan(det, ahora)
+        if self._scan_activo and det is None:
+            # La cabeza también barre mientras el cuerpo gira (más cobertura).
+            self._tick_scan_head(ahora)
+            self._tracker.set_objetivo(self._pan_obj, self._tilt_obj)
+            self._tracker.actualizar_servo(None, suavizado=0.85,
+                                           max_paso_pan=2.0, max_paso_tilt=2.0)
+            return
 
         if estado == RobotState.IDLE and det is None:
             self._tick_idle(ahora)
