@@ -91,9 +91,9 @@ class SerialManager:
         self._encolar(_PRIO_ESTADO, ('estado', estado))
 
     def cmd_motor(self, izq: int, der: int) -> None:
-        """Enviar dirección de los motores DC. izq/der en {-1,0,1}.
-        El firmware tiene watchdog (400 ms): repetir el comando para sostener
-        el movimiento."""
+        """Enviar velocidad de los motores DC. izq/der en [-100,100]
+        (signo = dirección, magnitud = velocidad PWM). El firmware tiene
+        watchdog (400 ms): repetir el comando para sostener el movimiento."""
         self._encolar(_PRIO_MOTOR, ('motor', izq, der))
 
     def cmd_siguiendo(self, dx: float, dy: float) -> None:
@@ -226,8 +226,8 @@ class SerialManager:
 
             if tipo == 'motor':
                 _, izq, der = item
-                izq = 1 if izq > 0 else (-1 if izq < 0 else 0)
-                der = 1 if der > 0 else (-1 if der < 0 else 0)
+                izq = int(max(-100, min(100, izq)))   # velocidad con signo
+                der = int(max(-100, min(100, der)))
                 cmd = (izq, der)
                 # Throttle + dedup: pero el cambio de dirección SIEMPRE pasa
                 # (responsivo); la repetición (para el watchdog) se throttlea.

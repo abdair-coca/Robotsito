@@ -44,10 +44,11 @@ except Exception:
 
 # Config de locomoción (giro del cuerpo hacia la cara, Fase 3). Fallback si falta.
 try:
-    from config import (MOTORES_ENABLED, GIRO_PAN_THRESHOLD, GIRO_BURST_S,
-                        GIRO_COOLDOWN_S, GIRO_INVERTIR, MOTOR_DEBUG)
+    from config import (MOTORES_ENABLED, GIRO_VELOCIDAD, GIRO_PAN_THRESHOLD,
+                        GIRO_BURST_S, GIRO_COOLDOWN_S, GIRO_INVERTIR, MOTOR_DEBUG)
 except Exception:
     MOTORES_ENABLED = False
+    GIRO_VELOCIDAD = 70
     GIRO_PAN_THRESHOLD, GIRO_BURST_S, GIRO_COOLDOWN_S, GIRO_INVERTIR = 45, 0.40, 0.5, False
     MOTOR_DEBUG = False
 
@@ -190,17 +191,19 @@ class BehaviorEngine:
         # Si la cabeza (pan) se desvió mucho del centro, girar el cuerpo para
         # reencarar a la persona → la cabeza vuelve sola hacia el centro.
         desvio = self._tracker.pan_actual - PAN_HOME
-        giro   = None
+        base   = None
         if desvio > GIRO_PAN_THRESHOLD:
-            giro = _GIRO_DER if GIRO_INVERTIR else _GIRO_IZQ
+            base = _GIRO_DER if GIRO_INVERTIR else _GIRO_IZQ
         elif desvio < -GIRO_PAN_THRESHOLD:
-            giro = _GIRO_IZQ if GIRO_INVERTIR else _GIRO_DER
+            base = _GIRO_IZQ if GIRO_INVERTIR else _GIRO_DER
 
         if MOTOR_DEBUG:
             print('[giro] pan=%.0f desvio=%+.0f -> %s' % (
-                self._tracker.pan_actual, desvio, giro))
+                self._tracker.pan_actual, desvio, base))
 
-        if giro is not None:
+        if base is not None:
+            # Escalar el sentido (±1) por la velocidad PWM configurada.
+            giro = (base[0] * GIRO_VELOCIDAD, base[1] * GIRO_VELOCIDAD)
             self._giro_dir   = giro
             self._giro_hasta = ahora + GIRO_BURST_S
             serial.cmd_motor(*giro)

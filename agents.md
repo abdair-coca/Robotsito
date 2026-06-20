@@ -28,7 +28,7 @@ sistema emocional en `robot_bob/InteractiveGoal.md`; etapas de construcción en
 
 | Componente | Ubicación | Función |
 |---|---|---|
-| ESP32 DevKit | COM3 / IP `192.168.0.23` | OLED SH1106 (I2C **32/33**), servos pan/tilt (GPIO13/12), mic MAX9814 (GPIO34), speaker PAM8403 (GPIO25), motores DC L298N IN1-4 (GPIO19/21/22/23) |
+| ESP32 DevKit | COM3 / IP `192.168.0.23` | OLED SH1106 (I2C **32/33**), servos pan/tilt (GPIO13/12), mic MAX9814 (GPIO34), speaker PAM8403 (GPIO25), motores DC L298N IN1-4 (GPIO19/21/22/23) + ENA/ENB PWM (GPIO16/4) |
 | ESP32-CAM | IP `192.168.0.22` | Stream MJPEG en `:81/stream` |
 | Laptop | local | Toda la lógica Python (visión, IA, audio) |
 
@@ -48,7 +48,7 @@ código de la laptop. Archivos:
 
 El protocolo de texto del puerto 5007 es **idéntico** al serial USB:
 `H:<pan>,V:<tilt>\n` (servos), `ESTADO:<NOMBRE>\n` (OLED), `SIGUIENDO:<dx>,<dy>\n`,
-`M:<izq>,<der>\n` (motores DC, valores en {-1,0,1}).
+`M:<izq>,<der>\n` (motores DC, valores en [-100,100]: signo=dirección, magnitud=velocidad PWM).
 La laptop solo escribe, nunca lee — el firmware no responde por TCP a propósito.
 
 > **IP estática (clave para WiFi):** el firmware fija `STATIC_IP` antes de conectar
@@ -245,7 +245,9 @@ diferencial (tipo tanque) con **2 motores DC** vía un **puente H dual (L298N o 
 > - **Fase 3 (autónomo):** `behavior._maybe_girar_cuerpo` — Bob **gira sobre su eje** (no traslada)
 >   en ráfagas cortas (`GIRO_BURST_S`) + cooldown cuando el pan se satura y la cara sigue corrida.
 >   Config: `MOTORES_ENABLED`, `GIRO_*`, `GIRO_INVERTIR` (flip si gira al lado equivocado).
-> - **Pendiente:** control de velocidad (ENA/ENB + PWM), y traslación solo con sensores (no hay aún).
+> - **Velocidad ✅:** ENA=GPIO16, ENB=GPIO4 por PWM. El comando `M:` ahora lleva velocidad con
+>   signo [-100,100]; `mover_motores` setea dirección (IN) + duty (EN). `GIRO_VELOCIDAD` en config.
+> - **Pendiente:** traslación (adelante/atrás autónomo) solo con sensores de obstáculo/borde (no hay aún).
 
 ### Cableado dado por el usuario
 | Señal | Pin ESP32 | Driver |

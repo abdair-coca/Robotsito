@@ -143,30 +143,42 @@ m_in2 = Pin(21, Pin.OUT, value=0)
 m_in3 = Pin(22, Pin.OUT, value=0)
 m_in4 = Pin(23, Pin.OUT, value=0)
 
+# Control de velocidad: ENA = GPIO16 (motor izq), ENB = GPIO4 (motor der), por PWM.
+ena = PWM(Pin(16), freq=1000)
+enb = PWM(Pin(4),  freq=1000)
+ena.duty(0)
+enb.duty(0)
+MOTOR_MAX_DUTY = 1023            # duty máx de PWM (resolución por defecto)
+
 # Watchdog: si no llega comando de motor en este tiempo, parar (seguridad —
 # que Bob no se escape si se corta la conexión WiFi/USB).
 MOTOR_WATCHDOG_MS = 400
 _t_ultimo_motor   = utime.ticks_ms()
 
-def _set_motor(in_a, in_b, direccion):
-    """direccion: 1 adelante, -1 atrás, 0 stop (rueda libre)."""
-    if direccion > 0:
+def _set_motor(in_a, in_b, en, vel):
+    """vel en [-100, 100]: signo = dirección, magnitud = velocidad (PWM)."""
+    if vel > 0:
         in_a.value(1); in_b.value(0)
-    elif direccion < 0:
+    elif vel < 0:
         in_a.value(0); in_b.value(1)
     else:
         in_a.value(0); in_b.value(0)
+    mag = vel if vel >= 0 else -vel
+    if mag > 100:
+        mag = 100
+    en.duty(int(mag * MOTOR_MAX_DUTY // 100))
 
 def mover_motores(izq, der):
-    """izq, der en {-1, 0, 1}. Si una rueda gira al revés, invertir su cableado
-    OUT o el signo desde la laptop."""
+    """izq, der en [-100, 100] (velocidad con signo). Si una rueda gira al revés,
+    invertir su cableado OUT o el signo desde la laptop."""
     global _t_ultimo_motor
-    _set_motor(m_in1, m_in2, izq)
-    _set_motor(m_in3, m_in4, der)
+    _set_motor(m_in1, m_in2, ena, izq)
+    _set_motor(m_in3, m_in4, enb, der)
     _t_ultimo_motor = utime.ticks_ms()
 
 def parar_motores():
     m_in1.value(0); m_in2.value(0); m_in3.value(0); m_in4.value(0)
+    ena.duty(0); enb.duty(0)
 
 parar_motores()
 print('Motores DC inicializados (parados)')
@@ -535,7 +547,7 @@ if OLED_DISPONIBLE:
 #   H:90,V:45               -> mover servos
 #   ESTADO:FELIZ            -> sobrescribir el estado (afecta el OLED)
 #   SIGUIENDO:0.12,-0.34    -> coord normalizadas del rostro a seguir
-#   M:1,-1                  -> motores izq,der en {-1,0,1} (atrás/stop/adelante)
+#   M:70,-70                -> motores izq,der en [-100,100] (signo=dir, magnitud=velocidad PWM)
 
 def aplicar_cmd(cmd):
     """Procesa UN comando de texto (sin salto de línea). Devuelve respuesta str."""
@@ -561,8 +573,8 @@ def aplicar_cmd(cmd):
         partes = cmd.split(':', 1)[1].split(',')
         izq = int(partes[0])
         der = int(partes[1])
-        izq = 1 if izq > 0 else (-1 if izq < 0 else 0)
-        der = 1 if der > 0 else (-1 if der < 0 else 0)
+        izq = max(-100, min(100, izq))   # velocidad con signo
+        der = max(-100, min(100, der))
         mover_motores(izq, der)
         return 'OK M:%d,%d\n' % (izq, der)
     return 'ERR comando desconocido\n'
