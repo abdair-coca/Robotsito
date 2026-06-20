@@ -45,12 +45,14 @@ except Exception:
 # Config de locomoción (giro del cuerpo hacia la cara, Fase 3). Fallback si falta.
 try:
     from config import (MOTORES_ENABLED, GIRO_VELOCIDAD, GIRO_PAN_THRESHOLD,
-                        GIRO_BURST_S, GIRO_COOLDOWN_S, GIRO_INVERTIR, MOTOR_DEBUG)
+                        GIRO_BURST_S, GIRO_COOLDOWN_S, GIRO_INVERTIR, MOTOR_DEBUG,
+                        GIRO_IDLE_ENABLED, GIRO_IDLE_COOLDOWN_S, GIRO_IDLE_PROB)
 except Exception:
     MOTORES_ENABLED = False
     GIRO_VELOCIDAD = 70
-    GIRO_PAN_THRESHOLD, GIRO_BURST_S, GIRO_COOLDOWN_S, GIRO_INVERTIR = 45, 0.40, 0.5, False
+    GIRO_PAN_THRESHOLD, GIRO_BURST_S, GIRO_COOLDOWN_S, GIRO_INVERTIR = 30, 0.40, 0.4, False
     MOTOR_DEBUG = False
+    GIRO_IDLE_ENABLED, GIRO_IDLE_COOLDOWN_S, GIRO_IDLE_PROB = True, 6.0, 0.4
 
 # Comandos de giro sobre el eje (izq, der) para mover_motores del firmware.
 _GIRO_IZQ = (-1, 1)
@@ -138,6 +140,9 @@ class BehaviorEngine:
         self._giro_dir            = None   # (izq,der) en ráfaga, o None
         self._giro_hasta          = 0.0    # fin de la ráfaga actual
         self._giro_cooldown_hasta = 0.0    # hasta cuándo no re-evaluar
+        # Pivots de búsqueda en IDLE
+        self._giro_idle_last      = 0.0
+        self._giro_idle_next_eval = 0.0
 
         self._hilo = threading.Thread(target=self._loop, daemon=True, name='behavior-engine')
         self._hilo.start()
@@ -168,45 +173,64 @@ class BehaviorEngine:
             if elapsed < TICK_S:
                 self._detener.wait(TICK_S - elapsed)
 
-    def _maybe_girar_cuerpo(self, det, ahora: float) -> None:
-        """Gira el cuerpo sobre su eje, en ráfagas cortas, cuando el pan se queda
-        sin recorrido y la cara sigue corrida hacia ese lado. NO traslada."""
-        if not MOTORES_ENABLED:
-            return
-        serial = self._sm._serial
-
-        # En ráfaga: seguir enviando (alimenta el watchdog de 400 ms del firmware).
+    def _giro_tick(self, ahora: float) -> bool:
+        """Maneja la ráfaga de giro activa (alimenta el watchdog) y su transición a
+        cooldown. Devuelve True si hay ráfaga o cooldown en curso (no disparar otra)."""
         if self._giro_dir is not None:
             if ahora < self._giro_hasta:
-                serial.cmd_motor(*self._giro_dir)
-                return
-            # Fin de la ráfaga → parar y entrar en cooldown (deja re-detectar la cara).
+                try:
+                    self._sm._serial.cmd_motor(*self._giro_dir)
+                except Exception:
+                    pass
+                return True
             self._parar_giro()
             self._giro_cooldown_hasta = ahora + GIRO_COOLDOWN_S
-            return
+            return True
+        return ahora < self._giro_cooldown_hasta
 
-        if ahora < self._giro_cooldown_hasta:
-            return
+    def _arrancar_giro(self, base, ahora: float) -> None:
+        """Arranca una ráfaga de giro en el sentido `base` (±1,±1), a GIRO_VELOCIDAD."""
+        giro = (base[0] * GIRO_VELOCIDAD, base[1] * GIRO_VELOCIDAD)
+        self._giro_dir   = giro
+        self._giro_hasta = ahora + GIRO_BURST_S
+        try:
+            self._sm._serial.cmd_motor(*giro)
+        except Exception:
+            pass
 
-        # Si la cabeza (pan) se desvió mucho del centro, girar el cuerpo para
-        # reencarar a la persona → la cabeza vuelve sola hacia el centro.
+    def _maybe_girar_cuerpo(self, det, ahora: float) -> None:
+        """PRESENCE: si el pan se desvió del centro, gira el cuerpo para reencarar a
+        la persona → la cabeza vuelve sola al centro. NO traslada."""
+        if not MOTORES_ENABLED or self._giro_tick(ahora):
+            return
         desvio = self._tracker.pan_actual - PAN_HOME
         base   = None
         if desvio > GIRO_PAN_THRESHOLD:
             base = _GIRO_DER if GIRO_INVERTIR else _GIRO_IZQ
         elif desvio < -GIRO_PAN_THRESHOLD:
             base = _GIRO_IZQ if GIRO_INVERTIR else _GIRO_DER
-
         if MOTOR_DEBUG:
             print('[giro] pan=%.0f desvio=%+.0f -> %s' % (
                 self._tracker.pan_actual, desvio, base))
-
         if base is not None:
-            # Escalar el sentido (±1) por la velocidad PWM configurada.
-            giro = (base[0] * GIRO_VELOCIDAD, base[1] * GIRO_VELOCIDAD)
-            self._giro_dir   = giro
-            self._giro_hasta = ahora + GIRO_BURST_S
-            serial.cmd_motor(*giro)
+            self._arrancar_giro(base, ahora)
+
+    def _maybe_girar_idle(self, ahora: float) -> None:
+        """IDLE: pivots de 'mirar alrededor' cada tanto, para que Bob use el cuerpo
+        (no solo la cabeza) estando solo. En el lugar, en ráfagas cortas."""
+        if not (MOTORES_ENABLED and GIRO_IDLE_ENABLED) or self._giro_tick(ahora):
+            return
+        if self._sm.is_asleep():
+            return
+        if ahora < self._giro_idle_next_eval:
+            return
+        self._giro_idle_next_eval = ahora + 1.0
+        if ahora - self._giro_idle_last < GIRO_IDLE_COOLDOWN_S:
+            return
+        if random.random() > GIRO_IDLE_PROB:
+            return
+        self._arrancar_giro(random.choice((_GIRO_IZQ, _GIRO_DER)), ahora)
+        self._giro_idle_last = ahora
 
     def _parar_giro(self) -> None:
         if self._giro_dir is not None:
@@ -254,9 +278,9 @@ class BehaviorEngine:
         if estado != RobotState.THINKING:
             self._thinking_prev = False
 
-        # Seguridad: si dejamos de estar en PRESENCE-con-cara, parar cualquier giro.
-        if self._giro_dir is not None and not (
-                estado == RobotState.PRESENCE and det is not None):
+        # Seguridad: solo se permite girar en PRESENCE o IDLE; en charla/pensar, parar.
+        if self._giro_dir is not None and estado not in (
+                RobotState.PRESENCE, RobotState.IDLE):
             self._parar_giro()
 
         # ── Despertar: cara nueva tras >SLEEP_THR_S sin presencia ──────────────
@@ -303,6 +327,8 @@ class BehaviorEngine:
 
         if estado in (RobotState.IDLE, RobotState.PRESENCE) and det is None:
             self._tick_idle(ahora)
+            if estado == RobotState.IDLE:
+                self._maybe_girar_idle(ahora)   # pivots de "mirar alrededor"
 
         elif estado == RobotState.PRESENCE and det is not None:
             self._tick_presence(det, ahora)

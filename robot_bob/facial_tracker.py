@@ -55,6 +55,14 @@ try:
 except Exception:
     SERVO_EMA_ALPHA = 0.5
 
+# Cámara montada al revés en la cabeza → rotar el frame 180° tras decodificar.
+# La rotación cancela el flip físico: la imagen queda derecha y el tracking
+# mantiene los mismos signos de servo.
+try:
+    from config import ROTAR_CAMARA_180
+except Exception:
+    ROTAR_CAMARA_180 = False
+
 
 # ── LectorStream (socket TCP crudo — evita crash FFmpeg) ──────────────────────
 
@@ -150,7 +158,10 @@ class LectorStream:
         jpg = bytes(buf[ini:fin + 2])
         del buf[:fin + 2]
         try:
-            return cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
+            img = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
+            if img is not None and ROTAR_CAMARA_180:
+                img = cv2.rotate(img, cv2.ROTATE_180)
+            return img
         except Exception:
             return None
 
