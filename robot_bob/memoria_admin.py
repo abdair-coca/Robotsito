@@ -31,27 +31,28 @@ def _con():
 
 def listar(con):
     filas = con.execute(
-        'SELECT id, nombre, edad, gustos, temas, relacion, ultima_vez, '
-        '(embedding IS NOT NULL) FROM personas ORDER BY id').fetchall()
+        'SELECT id, nombre, edad, amistad, interacciones, ultima_vez, gustos '
+        'FROM personas ORDER BY id').fetchall()
     if not filas:
         print('(base vacía)')
         return
-    print(f'{"id":<4}{"nombre":<16}{"edad":<6}{"última vez":<18}{"cara":<6}gustos / temas')
-    print('-' * 86)
-    for pid, nom, edad, gus, tem, rel, ult, tiene_emb in filas:
-        gt = ' | '.join(x for x in (gus, tem) if x)
+    print(f'{"id":<4}{"nombre":<16}{"edad":<6}{"amist":<7}{"vistas":<8}{"última vez":<18}gustos')
+    print('-' * 90)
+    for pid, nom, edad, amistad, inter, ult, gus in filas:
         print(f'{pid:<4}{(nom or "(sin nombre)"):<16}{str(edad or "-"):<6}'
-              f'{(ult or "-"):<18}{("sí" if tiene_emb else "no"):<6}{gt[:40]}')
+              f'{str(amistad or 0):<7}{str(inter or 0):<8}{(ult or "-"):<18}{(gus or "")[:30]}')
     print(f'\nTotal: {len(filas)} persona(s).')
 
 
 def mostrar(con, pid):
-    p = con.execute('SELECT id,nombre,edad,gustos,temas,relacion,primera_vez,ultima_vez '
-                    'FROM personas WHERE id=?', (pid,)).fetchone()
+    p = con.execute('SELECT id,nombre,edad,gustos,temas,relacion,primera_vez,ultima_vez,'
+                    'amistad,confianza,interacciones FROM personas WHERE id=?',
+                    (pid,)).fetchone()
     if not p:
         print(f'No existe persona id={pid}')
         return
-    campos = ['id', 'nombre', 'edad', 'gustos', 'temas', 'relacion', 'primera_vez', 'ultima_vez']
+    campos = ['id', 'nombre', 'edad', 'gustos', 'temas', 'relacion', 'primera_vez',
+              'ultima_vez', 'amistad', 'confianza', 'interacciones']
     print('── Persona ──')
     for k, v in zip(campos, p):
         print(f'  {k:<12}: {v}')

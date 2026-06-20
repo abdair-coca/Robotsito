@@ -459,7 +459,9 @@ class VoicePipeline:
                 SYSTEM_PROMPT + '\n\n═══ MEMORIA (ya conocés a esta persona) ═══\n'
                 + self._memoria.contexto(pid)
                 + '\nSaludala con calidez por su nombre y, si viene al caso, mencioná algo '
-                  'que recuerdes de ella. No repitas que sos un robot de feria.')
+                  'que recuerdes de ella. No repitas que sos un robot de feria.'
+                  '\nAdaptá tu cercanía a esa relación: con un amigo cercano sé confianzudo, '
+                  'cariñoso y bromista; con un conocido reciente, cordial y un poco más medido.')
         else:
             console.print('[bold magenta][memoria][/] persona desconocida')
             self._system_prompt_actual = (
@@ -512,7 +514,15 @@ class VoicePipeline:
         if resumen:
             self._memoria.agregar_episodio(pid, resumen)
         self._memoria.actualizar(pid, gustos=gustos, temas=temas)
-        console.print(f'[dim][memoria] guardado recuerdo para id={pid}: {resumen}[/]')
+
+        # ── Relación social (P2): la charla sube amistad/confianza ─────────────
+        turns = len([m for m in self._convo if m['role'] == 'user'])
+        mood  = self._sm.mood                       # ánimo final de la charla
+        d_amistad   = int(5 + mood * 8 + min(turns, 5) * 1.5)
+        d_confianza = int(3 + (5 if self._persona_nombre else 0) + min(turns, 5))
+        self._memoria.registrar_interaccion(pid, d_amistad, d_confianza)
+        console.print(f'[dim][memoria] id={pid}: recuerdo guardado | '
+                      f'amistad {d_amistad:+d}, confianza {d_confianza:+d}[/]')
 
     def _run_conversation(self, pending_audio: Optional[bytes] = None,
                           pending_text: Optional[str] = None,

@@ -40,6 +40,17 @@ class Memoria:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             persona_id INTEGER, texto TEXT, fecha TEXT)''')
         self._con.commit()
+        self._migrar()
+
+    def _migrar(self) -> None:
+        """Agrega columnas nuevas a bases viejas (P2: relaciones sociales)."""
+        cols = {r[1] for r in self._con.execute('PRAGMA table_info(personas)')}
+        for col, ddl in (('amistad', 'INTEGER DEFAULT 0'),
+                         ('confianza', 'INTEGER DEFAULT 0'),
+                         ('interacciones', 'INTEGER DEFAULT 0')):
+            if col not in cols:
+                self._con.execute(f'ALTER TABLE personas ADD COLUMN {col} {ddl}')
+        self._con.commit()
 
     @staticmethod
     def _ahora() -> str:
@@ -100,6 +111,34 @@ class Memoria:
                               (embedding.tobytes(), pid))
             self._con.commit()
 
+    def registrar_interaccion(self, pid: int, d_amistad: int, d_confianza: int) -> None:
+        """Suma una interacción y ajusta amistad/confianza (clamp 0..100)."""
+        with self._lock:
+            self._con.execute(
+                'UPDATE personas SET interacciones = interacciones + 1, '
+                'amistad   = MAX(0, MIN(100, amistad   + ?)), '
+                'confianza = MAX(0, MIN(100, confianza + ?)) WHERE id=?',
+                (int(d_amistad), int(d_confianza), pid))
+            self._con.commit()
+
+    def nivel_relacion(self, pid: int):
+        """Devuelve (etiqueta, amistad, interacciones) para describir la relación."""
+        with self._lock:
+            r = self._con.execute('SELECT amistad, interacciones FROM personas WHERE id=?',
+                                  (pid,)).fetchone()
+        if not r:
+            return ('desconocido', 0, 0)
+        amistad, inter = (r[0] or 0), (r[1] or 0)
+        if inter <= 0 or amistad < 10:
+            nivel = 'alguien que recién conocés'
+        elif amistad < 30:
+            nivel = 'un conocido'
+        elif amistad < 60:
+            nivel = 'un amigo'
+        else:
+            nivel = 'un amigo cercano, de confianza'
+        return (nivel, amistad, inter)
+
     def agregar_episodio(self, pid: int, texto: str) -> None:
         if not texto:
             return
@@ -132,6 +171,8 @@ class Memoria:
             return ''
         _, nombre, edad, gustos, temas, relacion, primera, ultima = p
         l = [f'Estás hablando con {nombre or "alguien que ya conociste antes"}.']
+        nivel, amistad, inter = self.nivel_relacion(pid)
+        l.append(f'Para vos es {nivel} (lo viste {inter} veces, amistad {amistad}/100).')
         if edad:     l.append(f'Edad aproximada: {edad}.')
         if gustos:   l.append(f'Le gusta: {gustos}.')
         if temas:    l.append(f'Temas favoritos: {temas}.')
