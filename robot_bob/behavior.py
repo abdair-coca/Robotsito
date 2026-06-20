@@ -325,10 +325,15 @@ class BehaviorEngine:
             return
         self._asleep_prev = False
 
-        if estado in (RobotState.IDLE, RobotState.PRESENCE) and det is None:
+        if estado == RobotState.IDLE and det is None:
             self._tick_idle(ahora)
-            if estado == RobotState.IDLE:
-                self._maybe_girar_idle(ahora)   # pivots de "mirar alrededor"
+            self._maybe_girar_idle(ahora)       # pivots de "mirar alrededor"
+
+        elif estado == RobotState.PRESENCE and det is None:
+            # Cara perdida un instante (p.ej. al inclinar arriba): MANTENER la
+            # última posición de cabeza en vez de deambular → re-engancha rápido.
+            self._pan_obj  = self._tracker.pan_actual
+            self._tilt_obj = self._tracker.tilt_actual
 
         elif estado == RobotState.PRESENCE and det is not None:
             self._tick_presence(det, ahora)
@@ -388,8 +393,9 @@ class BehaviorEngine:
             self._pan_obj  = _clamp(self._pan_obj  + self._mueca_pan_off,  PAN_MIN, PAN_MAX)
             self._tilt_obj = _clamp(self._tilt_obj + self._mueca_tilt_off, TILT_MIN, TILT_MAX)
 
-    def _tick_presence(self, det, ahora: float) -> None:
-        """Tracking con desvíos ocasionales de mirada."""
+    def _tick_presence(self, det, ahora: float, con_desvio: bool = True) -> None:
+        """Tracking con desvíos ocasionales de mirada. con_desvio=False → mirada
+        firme a la cara (se usa al hablar, para no perder el rostro)."""
         cx, cy, *_ = det
         # Calcular posición "real" que seguiría al tracking
         err_x = cx - self._tracker.cx_centro
@@ -401,8 +407,13 @@ class BehaviorEngine:
         pan_real  = _clamp(self._tracker.pan_obj  + d_pan,  _PAN_MIN, _PAN_MAX)
         tilt_real = _clamp(self._tracker.tilt_obj + d_tilt, _TILT_MIN, _TILT_MAX)
 
-        # Desvío de mirada
-        if self._desvio_activo:
+        # Desvío de mirada (desactivado al hablar → cabeza firme).
+        if not con_desvio:
+            self._desvio_activo   = False
+            self._desvio_pan_off  = 0.0
+            self._desvio_tilt_off = 0.0
+            self._prox_desvio     = ahora + random.uniform(3.0, 8.0)
+        elif self._desvio_activo:
             if ahora > self._desvio_hasta:
                 self._desvio_activo   = False
                 self._desvio_pan_off  = 0.0
@@ -441,9 +452,10 @@ class BehaviorEngine:
         # Resto de los ticks: no tocar nada → servo se mantiene
 
     def _tick_speaking(self, det, ahora: float) -> None:
-        """Tracking lento + desvíos más frecuentes."""
+        """Al hablar: mirada firme a la cara (sin desvíos) para no perder el rostro.
+        Si pierde la cara, mantiene la última posición."""
         if det is not None:
-            self._tick_presence(det, ahora)
+            self._tick_presence(det, ahora, con_desvio=False)
         else:
             self._pan_obj  = self._tracker.pan_actual
             self._tilt_obj = self._tracker.tilt_actual

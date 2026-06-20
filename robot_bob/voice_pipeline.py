@@ -208,6 +208,20 @@ def _is_happy(text: str) -> bool:
     words = set(text.lower().split())
     return bool(words & HAPPY_KEYWORDS)
 
+# Frases que Whisper alucina con silencio/ruido — se ignoran en el wake monitor.
+_ALUCINACIONES = {
+    'gracias', 'muchas gracias', 'gracias por ver el video', 'gracias por ver',
+    'no', 'si', 'ya', 'eh', 'ah', 'mmm', 'chau', 'ok', 'okay', 'a', 'y', 'the',
+}
+
+def _es_alucinacion(texto: str) -> bool:
+    t = texto.lower().strip(' .,!?¿¡')
+    if not t:
+        return True
+    if 'amara' in t or 'subtitul' in t or 'suscrib' in t:
+        return True
+    return t in _ALUCINACIONES
+
 def _is_exit(text: str) -> bool:
     return text.lower().strip(' .,!?¿¡') in EXIT_PHRASES
 
@@ -1058,6 +1072,8 @@ class VoicePipeline:
             texto = self._transcribir(audio)
             if not texto:
                 continue
+            if _es_alucinacion(texto):
+                continue   # silencio/ruido alucinado por Whisper → ignorar
 
             ww = self._wake.detect(texto)
             if ww.detected:
