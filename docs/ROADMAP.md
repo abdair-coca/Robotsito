@@ -26,6 +26,21 @@ Orden recomendado: **P1 → P2 → P3 → P7 → P9 → P5 → P6 → P4 → P8 
 (las primeras son software puro sobre el cerebro de la laptop; las últimas dependen de
 CPU/visión/firmware pero siguen siendo 100% alcanzables con el alcance ya recortado).
 
+### Estado de avance (2026-06-24)
+
+| Prioridad | Estado |
+|---|---|
+| **P1 Memoria persistente** | ✅ hecho (cara↔nombre, SQLite, integrada, `memoria_admin`) |
+| **P2 Relaciones sociales** | ✅ hecho (amistad/confianza/historial) |
+| **"Actitud"** (soliloquio + muecas, out-of-chat) | ✅ hecho (ver [FEATURES.md](FEATURES.md)) |
+| Red / portabilidad (discovery + mDNS + multi-WiFi) | ✅ hecho (ver [NETWORK.md](NETWORK.md)) |
+| **P3 Expresividad** | 🔣 parcial — faltan estados internos (Energía/Motivación/…) + caras OLED nuevas |
+| **P7 Autónomo avanzado** | 🔣 parcial — falta conversación autónoma sobre P1 (retomar temas) |
+| P9 Asistente · P5 Juegos · P6 Música · P4 Visión · P8 Físico · P10 Dev | ❌ pendiente |
+
+> **Foco actual:** terminar **P7** (conversación autónoma sobre la memoria) y **P3**
+> (estados internos + expresividad).
+
 ## Prioridad 1 — Memoria Persistente
 
 ### Reconocimiento de Personas (usuarios enrolados, de cerca)
@@ -151,3 +166,21 @@ cabeza de 2 ejes (pan/tilt) + ojos OLED.
 
 > Estos vuelven a la mesa si se resuelven sus límites: **fuente ≥2 A** (baile/movimiento),
 > **brazos/servos extra** (gestos físicos), o **cámara de mayor resolución** (OCR/emociones).
+
+---
+
+# Mejoras futuras (funcionan pero se pueden pulir) — no bloquean la demo
+
+## Voz (TTS)
+
+**Estado:** edge-tts `es-BO-MarceloNeural` + prosodia por emoción (`TTS_EMO_PROSODY`),
+estilo caricaturesco. Funciona y suena menos plano, pero sigue siendo voz neural.
+
+Para mejorar:
+- Motor más humano si hay presupuesto/setup: **ElevenLabs** (la más natural, cupo gratis
+  chico para feria continua) o **Piper** (local, offline, gratis — evaluar voces es_*).
+- Afinar `TTS_EMO_PROSODY` con pruebas reales (¿muy caricaturesco? ¿muy rápido?).
+- Probar `es-BO-SofiaNeural` u otras voces y comparar A/B.
+- Para el parlante 8 kHz u8: revisar `TTS_FFMPEG_FILTERS` para que la voz aguda no
+  sature/aliasee al bajar a 8 bits (hoy se usa el parlante de la laptop).
+- Variar `volume`/énfasis por emoción además de rate/pitch (más expresividad).

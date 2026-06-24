@@ -6,7 +6,8 @@ ojos y la cabeza. Objetivo emocional: que un transeúnte que pasa y lo escucha
 "hablando solo" sienta que hay **alguien** ahí, no una máquina en espera.
 
 > Esto EXTIENDE la capa out-of-chat (idle/presencia sin conversación). NO toca el núcleo
-> de conversación ya validado (ver `InteractiveGoal.md`). Es comportamiento autónomo nuevo.
+> de conversación ya validado (sistema emocional en [ARCHITECTURE.md](ARCHITECTURE.md) §5).
+> Es comportamiento autónomo nuevo.
 
 ---
 

@@ -227,7 +227,7 @@ Pruebas que validan cada componente sin dependencias cruzadas.
 
 ```
 robot_bob/
-├── AgentsGoal.md           ← este archivo
+├── AgentsGoal.md           ← este archivo (hoy en docs/HISTORY.md)
 ├── requirements.txt        ← dependencias Python 3.11
 ├── serial_manager.py       ← Fase 1
 ├── state_machine.py        ← Fase 2
