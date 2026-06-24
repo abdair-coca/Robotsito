@@ -100,9 +100,9 @@ def main() -> None:
     audio_io = None
     if USE_ROBOT_MIC or USE_ROBOT_SPEAKER:
         try:
-            # Cargar AudioIO desde voicechatLap
+            # Cargar AudioIO desde shared/voicechatLap
             sys.path.append(os.path.abspath(
-                os.path.join(os.path.dirname(__file__), '..', 'voicechatLap')))
+                os.path.join(os.path.dirname(__file__), '..', 'shared', 'voicechatLap')))
             from audio_io import AudioIO
             print(f'[audio] Conectando al ESP32 audio TCP...')
             audio_io = AudioIO()

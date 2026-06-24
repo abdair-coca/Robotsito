@@ -50,7 +50,7 @@ BAUD          = 115200
 IP_ESPCAM     = '192.168.0.22'
 URL_STREAM    = f'http://{IP_ESPCAM}:81/stream'
 MODELO        = os.path.join(os.path.dirname(__file__), '..', '..',
-                             'Esp32ThinkerAICam', 'blaze_face_short_range.tflite')
+                             'firmware', 'Esp32ThinkerAICam', 'blaze_face_short_range.tflite')
 
 T_PERMANENCIA_MIN    = 3.0
 P_CONVERSACION       = 0.35

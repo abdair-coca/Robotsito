@@ -78,7 +78,7 @@ Si el ESP32 aparece como `COM4` o `COM5`, cambiar `PUERTO_SERIAL` en `main.py` y
    print(f'[wake-debug] transcrito: "{texto}"')
    ```
 
-4. **Bajar el umbral fuzzy:** en `voicechatLap/config.py` cambiar `WAKE_FUZZY_THR = 78` a `65` (más tolerante).
+4. **Bajar el umbral fuzzy:** en `shared/voicechatLap/config.py` cambiar `WAKE_FUZZY_THR = 78` a `65` (más tolerante).
 
 ## Síntoma: "Servos se mueven bruscos / robóticos"
 

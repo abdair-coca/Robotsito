@@ -69,7 +69,7 @@ Si alguna línea no aparece en orden, hay un problema. Detener con Ctrl+C y diag
 |-------|----------------|--------|
 | `SerialException: port already in use` | Otro programa con COM3 | Cerrar Arduino IDE / monitor serial |
 | `No llegan frames de la cámara` | ESP32-CAM no encendida o IP errónea | Verificar LED + ping 192.168.0.22 |
-| `Groq API error` durante warmup | API key inválida o sin internet | Revisar `voicechatLap/config.py` y conexión |
+| `Groq API error` durante warmup | API key inválida o sin internet | Revisar `shared/voicechatLap/config.py` y conexión |
 | Cuelgue al iniciar | Stream del ESP32-CAM saturado | Reiniciar ESP32-CAM físicamente |
 
 ## Después de cerrar

@@ -32,7 +32,7 @@ python tests/test_3_voice.py
 1. **Esperar al usuario** entre tests. No correr el siguiente hasta que confirme que el anterior funcionó visualmente.
 2. **Q en la ventana de video** o **Ctrl+C en terminal** cierra limpiamente. No matar el proceso con TaskKill.
 3. **Test 2 falla con reconexiones** → correr test 2b primero. Si 2b funciona, el problema es CPU/GIL. Si 2b también falla, es del ESP32-CAM.
-4. **Test 3 requiere internet** para Groq API. Si falla con timeout, verificar conexión y `GROQ_API_KEY` en `voicechatLap/config.py`.
+4. **Test 3 requiere internet** para Groq API. Si falla con timeout, verificar conexión y `GROQ_API_KEY` en `shared/voicechatLap/config.py`.
 
 ## Criterios de éxito por test
 
@@ -58,4 +58,4 @@ python tests/test_3_voice.py
 
 - Test 1: verificar que no haya otro programa con COM3 abierto (Arduino IDE, PuTTY)
 - Test 2: ver `bob-diagnose` para árbol de decisión
-- Test 3: revisar `voicechatLap/config.py` (API key, USE_ROBOT_MIC, USE_ROBOT_SPEAKER)
+- Test 3: revisar `shared/voicechatLap/config.py` (API key, USE_ROBOT_MIC, USE_ROBOT_SPEAKER)

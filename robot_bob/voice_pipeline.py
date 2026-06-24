@@ -43,7 +43,7 @@ from rich.console import Console
 # tenga prioridad sobre voicechatLap/config.py al hacer `from config import ...`.
 # Esto deja que Abdair edite robot_bob/config.py como la única fuente de verdad
 # y que wake_word.py y audio_io.py sigan siendo importables.
-_VOICECHAT_DIR = os.path.join(os.path.dirname(__file__), '..', 'voicechatLap')
+_VOICECHAT_DIR = os.path.join(os.path.dirname(__file__), '..', 'shared', 'voicechatLap')
 if _VOICECHAT_DIR not in sys.path:
     sys.path.append(os.path.abspath(_VOICECHAT_DIR))
 
