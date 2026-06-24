@@ -59,6 +59,15 @@ PORT_ROLE: Dict[int, str] = {
 }
 SCAN_PORTS = tuple(PORT_ROLE.keys())
 
+# Puerto canónico por rol (para verificación rápida y sonda mDNS).
+ROLE_PORT = {"cam": 81, "control": 5007, "audio": 5005}
+
+# Hostnames mDNS (.local) que anuncia el firmware. Si la placa hace
+# MDNS.begin("bob-cam"), Windows 10+ resuelve "bob-cam.local" sin importar la IP
+# ni la subred — vía instantánea, sin escaneo. Solo la CAM lo trae por ahora;
+# extensible a los DevKit cuando les agregues mDNS.
+HOSTNAMES = {"cam": "bob-cam.local"}
+
 # OUIs Espressif comunes (prefijo MAC en mayúsculas, separador ':'). Pista de
 # confianza, NO un filtro duro. Lista parcial pero representativa.
 ESPRESSIF_OUI: Set[str] = {
@@ -99,6 +108,28 @@ def local_ipv4() -> Optional[str]:
 def subnet_base(ip: str) -> str:
     """'192.168.0.37' -> '192.168.0'  (asume /24, lo normal en casa/feria)."""
     return ip.rsplit(".", 1)[0]
+
+
+def mdns_ip(host: str, timeout: float = 1.5) -> Optional[str]:
+    """
+    Resuelve un hostname mDNS ('bob-cam.local') a IP. Devuelve None si no
+    resuelve. gethostbyname bloquea, así que corre en un hilo con timeout para
+    no colgar el arranque si la placa no anuncia mDNS.
+    """
+    box = {}
+
+    def _lookup():
+        try:
+            box["ip"] = socket.gethostbyname(host)
+        except OSError:
+            box["ip"] = None
+
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        try:
+            ex.submit(_lookup).result(timeout=timeout)
+        except Exception:
+            return None
+    return box.get("ip")
 
 
 # ── Escaneo de puertos ───────────────────────────────────────────────────────
@@ -222,16 +253,14 @@ def verify_cache(timeout: float = 0.3) -> bool:
     cache = load_cache()
     if not cache or not cache.get("roles"):
         return False
-    expected = {v: k for k, v in PORT_ROLE.items()}  # rol -> un puerto (último gana, ok)
-    role_port = {"cam": 81, "control": 5007, "audio": 5006}
     for role, info in cache["roles"].items():
         ip = info.get("ip")
-        port = role_port.get(role)
+        port = ROLE_PORT.get(role)
         if not ip or port is None:
             continue
         if not _probe(ip, port, timeout):
-            # 5006 puede estar cerrado si solo mic; reintenta 5005 para audio
-            if role == "audio" and _probe(ip, 5005, timeout):
+            # audio: 5005 (mic) puede estar cerrado; reintenta 5006 (speaker)
+            if role == "audio" and _probe(ip, 5006, timeout):
                 continue
             return False
     return True
@@ -251,6 +280,21 @@ def discover(subnet: Optional[str] = None, timeout: float = 0.3,
     t0 = time.time()
     scan = scan_subnet(subnet, timeout=timeout)
     roles = classify(scan)
+
+    # mDNS gana al escaneo para roles con hostname: más confiable y sobrevive a
+    # cambios de subred. Si bob-cam.local resuelve y su puerto abre, fija esa IP.
+    arp = arp_table()
+    for role, host in HOSTNAMES.items():
+        ip = mdns_ip(host)
+        port = ROLE_PORT[role]
+        if ip and _probe(ip, port, timeout):
+            mac = arp.get(ip)
+            roles[role] = {"ip": ip, "ports": sorted(scan.get(ip, {port})),
+                           "mac": mac, "espressif": is_espressif(mac),
+                           "via": "mdns"}
+            if verbose:
+                print(f"[discovery] {host} -> {ip} (mDNS)")
+
     save_cache(roles, subnet)
     if verbose:
         print(f"[discovery] listo en {time.time()-t0:.1f}s — "
@@ -272,6 +316,21 @@ def resolve(auto_scan: bool = True, timeout: float = 0.3) -> Dict[str, str]:
         return {ROLE_CONFIG_KEY[r]: info["ip"]
                 for r, info in roles.items() if r in ROLE_CONFIG_KEY}
     return cache_ips()
+
+
+def resolve_mdns_only(timeout: float = 1.5) -> Dict[str, str]:
+    """
+    Solo mDNS, sin escaneo: resuelve los roles con hostname (.local).
+    Útil como vía ultrarrápida si todas las placas anuncian mDNS. Devuelve
+    {config_key: ip} de lo que pudo resolver.
+    """
+    out: Dict[str, str] = {}
+    for role, host in HOSTNAMES.items():
+        ip = mdns_ip(host, timeout)
+        key = ROLE_CONFIG_KEY.get(role)
+        if ip and key and _probe(ip, ROLE_PORT[role], 0.5):
+            out[key] = ip
+    return out
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
