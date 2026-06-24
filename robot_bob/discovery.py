@@ -68,6 +68,16 @@ ROLE_PORT = {"cam": 81, "control": 5007, "audio": 5005}
 # extensible a los DevKit cuando les agregues mDNS.
 HOSTNAMES = {"cam": "bob-cam.local"}
 
+# MACs conocidas de las placas de Bob -> roles que sirve cada una. ARP responde
+# a nivel L2 SIEMPRE (lo maneja el stack WiFi del ESP32, no la app), así que
+# mapear por MAC es mucho más confiable que sondear el puerto — clave para el
+# DevKit MicroPython, que atiende TCP de forma intermitente (su loop de audio
+# bloquea el accept). Si cambias de placa, actualiza la MAC aquí.
+KNOWN_MAC_ROLES = {
+    "F8:B3:B7:A7:14:60": ("cam",),                # ESP32-CAM AI-Thinker
+    "EC:E3:34:22:A6:6C": ("control", "audio"),    # DevKit: servos+OLED y audio
+}
+
 # OUIs Espressif comunes (prefijo MAC en mayúsculas, separador ':'). Pista de
 # confianza, NO un filtro duro. Lista parcial pero representativa.
 ESPRESSIF_OUI: Set[str] = {
@@ -143,6 +153,15 @@ def _probe(ip: str, port: int, timeout: float) -> bool:
         return False
     finally:
         s.close()
+
+
+def _probe_retry(ip: str, port: int, timeout: float = 1.2, tries: int = 3) -> bool:
+    """Como _probe pero con reintentos y timeout generoso. Para placas lentas
+    (MicroPython del DevKit, que bajo carga tarda >1s en aceptar TCP)."""
+    for _ in range(tries):
+        if _probe(ip, port, timeout):
+            return True
+    return False
 
 
 def scan_subnet(base: str, ports=SCAN_PORTS, timeout: float = 0.3,
@@ -253,16 +272,20 @@ def verify_cache(timeout: float = 0.3) -> bool:
     cache = load_cache()
     if not cache or not cache.get("roles"):
         return False
+    arp = arp_table()
     for role, info in cache["roles"].items():
         ip = info.get("ip")
-        port = ROLE_PORT.get(role)
-        if not ip or port is None:
-            continue
-        if not _probe(ip, port, timeout):
-            # audio: 5005 (mic) puede estar cerrado; reintenta 5006 (speaker)
-            if role == "audio" and _probe(ip, 5006, timeout):
-                continue
+        if not ip:
             return False
+        # Presente en ARP = alcanzable a nivel L2: señal de vida fiable aunque el
+        # TCP de la placa esté intermitente (DevKit). Si el ARP aún no lo tiene,
+        # caemos a un probe TCP paciente.
+        if ip in arp:
+            continue
+        port = ROLE_PORT.get(role)
+        if port and _probe_retry(ip, port, timeout=max(timeout, 1.0), tries=2):
+            continue
+        return False
     return True
 
 
@@ -279,11 +302,20 @@ def discover(subnet: Optional[str] = None, timeout: float = 0.3,
         print(f"[discovery] escaneando {subnet}.1-254 puertos {SCAN_PORTS} ...")
     t0 = time.time()
     scan = scan_subnet(subnet, timeout=timeout)
+
+    # Resolución por MAC vía ARP: el escaneo SYN de arriba ya pobló el ARP de la
+    # laptop. Para cada MAC conocida presente, asignamos sus roles aunque su
+    # puerto TCP no haya contestado (el DevKit MicroPython atiende intermitente,
+    # pero ARP responde siempre a nivel L2). Esto hace al DevKit fiable de hallar.
+    arp = arp_table()
+    for ip, mac in arp.items():
+        for role in KNOWN_MAC_ROLES.get(mac, ()):
+            scan.setdefault(ip, set()).add(ROLE_PORT[role])
+
     roles = classify(scan)
 
     # mDNS gana al escaneo para roles con hostname: más confiable y sobrevive a
     # cambios de subred. Si bob-cam.local resuelve y su puerto abre, fija esa IP.
-    arp = arp_table()
     for role, host in HOSTNAMES.items():
         ip = mdns_ip(host)
         port = ROLE_PORT[role]
