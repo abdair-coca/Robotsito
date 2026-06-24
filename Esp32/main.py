@@ -17,6 +17,18 @@ from machine import ADC, DAC, Pin, PWM
 import network, usocket, utime, struct, gc, sys, select
 import _thread
 from config import SSID, PASSWORD
+# Multi-WiFi opcional. Si el config del device define una lista REDES en orden
+# de preferencia, p.ej:
+#   REDES = [("Familia Coca Carlo","clave"), ("HotspotCelu","clave")]
+# el ESP32 prueba cada una y conecta a la que esté disponible — así NO se
+# reconfigura al cambiar de lugar (casa -> feria -> celu). Si no está definida,
+# cae a la red única SSID/PASSWORD de siempre.
+try:
+    from config import REDES
+except Exception:
+    REDES = None
+if not REDES:
+    REDES = [(SSID, PASSWORD)]
 # IP estática opcional. Si el config del dispositivo define STATIC_IP, el ESP32
 # fija SIEMPRE esa IP (ej. 192.168.0.23) en vez de depender de DHCP — así la
 # laptop (robot_bob/config.py CONTROL_IP) siempre la encuentra. Si no está
@@ -211,8 +223,11 @@ def conectar_wifi():
         wlan.config(txpower=8)
     except Exception:
         pass
-    # Fijar IP estática ANTES de conectar (si el config la define).
-    if STATIC_IP:
+    # Fijar IP estática ANTES de conectar (si el config la define). Con MÁS de
+    # una red en REDES la saltamos: una IP estática solo vale en UNA subred y
+    # rompería la conexión en otra red (hotspot, feria). En ese caso usamos DHCP
+    # y la laptop encuentra al ESP32 con discovery.py (escaneo de puertos).
+    if STATIC_IP and len(REDES) <= 1:
         try:
             wlan.ifconfig((STATIC_IP,
                            SUBNET  or '255.255.255.0',
@@ -225,16 +240,47 @@ def conectar_wifi():
         ip = wlan.ifconfig()[0]
         print('Ya conectado. IP:', ip)
         return ip
-    print('Conectando al WiFi...')
-    wlan.connect(SSID, PASSWORD)
-    for _ in range(30):
-        if wlan.isconnected():
-            ip = wlan.ifconfig()[0]
-            print('Conectado! IP del ESP32:', ip)
+    # Escanea las redes en el aire y prueba las de REDES en orden de preferencia.
+    try:
+        visibles = set()
+        for ap in wlan.scan():
+            try:
+                visibles.add(ap[0].decode())
+            except Exception:
+                pass
+    except Exception:
+        visibles = None   # si el scan falla, probamos a ciegas
+
+    def _intentar(ssid, pwd, intentos=20):
+        print('Conectando a', ssid, '...')
+        try:
+            wlan.connect(ssid, pwd)
+        except Exception as e:
+            print('  error al iniciar conexión:', e)
+            return None
+        for _ in range(intentos):
+            if wlan.isconnected():
+                ip = wlan.ifconfig()[0]
+                print('\nConectado a', ssid, '! IP del ESP32:', ip)
+                return ip
+            utime.sleep(0.5)
+            print('.', end='')
+        print(' (sin éxito en', ssid, ')')
+        return None
+
+    for ssid, pwd in REDES:
+        if visibles is not None and ssid not in visibles:
+            continue   # no está en el aire ahora; no perder tiempo
+        ip = _intentar(ssid, pwd)
+        if ip:
             return ip
-        utime.sleep(0.5)
-        print('.', end='')
-    raise RuntimeError('No se pudo conectar al WiFi')
+
+    # Fallback ciego: si nada de REDES estaba visible (o el scan falló),
+    # intenta la primera de la lista directo por si el scan se equivocó.
+    ip = _intentar(REDES[0][0], REDES[0][1], intentos=30)
+    if ip:
+        return ip
+    raise RuntimeError('No se pudo conectar a ninguna red de REDES')
 
 
 # ══════════════════════════════════════════════════════════════════
