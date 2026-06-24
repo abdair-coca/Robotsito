@@ -69,7 +69,7 @@ ESPRESSIF_OUI: Set[str] = {
     "AC:67:B2", "B4:E6:2D", "B8:D6:1A", "BC:DD:C2", "C4:4F:33", "C8:2B:96",
     "C8:C9:A3", "CC:50:E3", "D8:A0:1D", "D8:BF:C0", "DC:4F:22", "E0:98:06",
     "E8:9F:6D", "E8:DB:84", "EC:62:60", "EC:E3:34", "EC:FA:BC", "F0:08:D1",
-    "F4:CF:A2", "FC:F5:C4",
+    "F4:CF:A2", "F8:B3:B7", "FC:F5:C4",
 }
 
 CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "devices.json")
