@@ -41,6 +41,14 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Optional, Set
 
+# La consola de Windows suele venir en cp1252; forzamos UTF-8 para que →/—/í no
+# salgan como '?'. Mismo truco que main.py. Silencioso si la consola no deja.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 # ── Mapa puerto -> rol ───────────────────────────────────────────────────────
 # El rol "audio" se sirve por 5005 (mic) y/o 5006 (speaker); cualquiera basta.
 PORT_ROLE: Dict[int, str] = {
@@ -60,8 +68,8 @@ ESPRESSIF_OUI: Set[str] = {
     "98:F4:AB", "A0:20:A6", "A0:B7:65", "A4:7B:9D", "A4:CF:12", "AC:0B:FB",
     "AC:67:B2", "B4:E6:2D", "B8:D6:1A", "BC:DD:C2", "C4:4F:33", "C8:2B:96",
     "C8:C9:A3", "CC:50:E3", "D8:A0:1D", "D8:BF:C0", "DC:4F:22", "E0:98:06",
-    "E8:9F:6D", "E8:DB:84", "EC:62:60", "EC:FA:BC", "F0:08:D1", "F4:CF:A2",
-    "FC:F5:C4",
+    "E8:9F:6D", "E8:DB:84", "EC:62:60", "EC:E3:34", "EC:FA:BC", "F0:08:D1",
+    "F4:CF:A2", "FC:F5:C4",
 }
 
 CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "devices.json")
