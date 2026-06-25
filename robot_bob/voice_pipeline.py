@@ -84,6 +84,12 @@ try:
     from config import MEMORIA_ENABLED
 except Exception:
     MEMORIA_ENABLED = False
+# Backend del LLM (charla): "ollama" local o "groq" nube. Import guardado por si
+# un config viejo no lo define.
+try:
+    from config import LLM_BACKEND, OLLAMA_BASE_URL, OLLAMA_MODEL
+except Exception:
+    LLM_BACKEND, OLLAMA_BASE_URL, OLLAMA_MODEL = "groq", "http://localhost:11434/v1", "qwen2.5:7b"
 from wake_word import WakeWordDetector
 from expression_engine import (
     pulse_emotion, react_to_user_text, react_to_bob_text,
@@ -358,7 +364,27 @@ class VoicePipeline:
         self._nombre_pendiente    = None
         self._system_prompt_actual = SYSTEM_PROMPT
 
-        self._client = Groq(api_key=GROQ_API_KEY)
+        self._client = Groq(api_key=GROQ_API_KEY)   # STT (Whisper) SIEMPRE en Groq
+
+        # Cliente de CHAT: local (Ollama, sin tokens) o Groq. La API
+        # chat.completions es OpenAI-compatible en ambos. Si Ollama no responde
+        # al arrancar, cae solo a Groq.
+        if LLM_BACKEND == "ollama":
+            from openai import OpenAI
+            self._llm = OpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
+            self._llm_model = OLLAMA_MODEL
+            try:
+                self._llm.models.list()   # ping a Ollama
+                console.print(f"[dim][llm] Ollama OK → {self._llm_model}[/]")
+            except Exception as _e:
+                console.print(f"[yellow][llm] Ollama no responde ({_e}); fallback a Groq[/]")
+                self._llm = self._client
+                self._llm_model = GROQ_LLM_MODEL
+        else:
+            self._llm = self._client
+            self._llm_model = GROQ_LLM_MODEL
+            console.print(f"[dim][llm] backend Groq → {self._llm_model}[/]")
+
         self._vad    = webrtcvad.Vad(VAD_AGGRESSIVENESS)
         self._convo: List[Dict[str, str]] = []
         self._detener = threading.Event()
@@ -482,8 +508,8 @@ class VoicePipeline:
                  '"gustos": "gustos/intereses mencionados o cadena vacía", '
                  '"temas": "temas de los que hablaron o cadena vacía"}.')
         try:
-            resp = self._client.chat.completions.create(
-                model=GROQ_LLM_MODEL,
+            resp = self._llm.chat.completions.create(
+                model=self._llm_model,
                 messages=[{'role': 'system', 'content': sys_p},
                           {'role': 'user', 'content': transcript}],
                 temperature=0.3, max_tokens=140)
@@ -895,8 +921,8 @@ class VoicePipeline:
         messages = [{'role': 'system', 'content': self._system_prompt_actual}] + self._convo
 
         try:
-            stream = self._client.chat.completions.create(
-                model=GROQ_LLM_MODEL,
+            stream = self._llm.chat.completions.create(
+                model=self._llm_model,
                 messages=messages,
                 temperature=TEMPERATURE,
                 max_tokens=MAX_TOKENS,
@@ -1206,8 +1232,8 @@ class VoicePipeline:
             contexto += (" No repitas ni parafrasees estas frases que ya dijiste: "
                          + " | ".join(self._soliloquio_reciente))
         try:
-            resp = self._client.chat.completions.create(
-                model=GROQ_LLM_MODEL,
+            resp = self._llm.chat.completions.create(
+                model=self._llm_model,
                 messages=[{'role': 'system', 'content': SOLILOQUIO_LLM_PROMPT},
                           {'role': 'user',   'content': contexto}],
                 temperature=1.0,

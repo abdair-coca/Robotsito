@@ -22,6 +22,10 @@ imageio-ffmpeg>=0.4.9
 # LLM / STT (Groq API)
 groq>=0.9.0
 
+# LLM local opcional vía Ollama (API OpenAI-compatible). Ver LLM_BACKEND en config.
+# Requiere Ollama instalado aparte + `ollama pull qwen2.5:7b`.
+openai>=1.40
+
 # Reconocimiento facial / memoria persistente (P1)
 insightface>=1.0
 onnxruntime>=1.16
