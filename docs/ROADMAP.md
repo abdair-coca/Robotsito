@@ -34,7 +34,7 @@ CPU/visión/firmware pero siguen siendo 100% alcanzables con el alcance ya recor
 | **P2 Relaciones sociales** | ✅ hecho (amistad/confianza/historial) |
 | **"Actitud"** (soliloquio + muecas, out-of-chat) | ✅ hecho (ver [FEATURES.md](FEATURES.md)) |
 | Red / portabilidad (discovery + mDNS + multi-WiFi) | ✅ hecho (ver [NETWORK.md](NETWORK.md)) |
-| **P3 Expresividad** | 🔣 parcial — faltan estados internos (Energía/Motivación/…) + caras OLED nuevas |
+| **P3 Expresividad** | 🔣 parcial — tags EMO nuevos expuestos (ORGULLOSO/ENOJADO/SOSPECHANDO/MUY_TRISTE). Faltan estados internos (Energía/Motivación/…); caras OLED nuevas (vergüenza) requieren tocar firmware → diferido |
 | **P7 Autónomo avanzado** | 🔣 parcial — falta conversación autónoma sobre P1 (retomar temas) |
 | P9 Asistente · P5 Juegos · P6 Música · P4 Visión · P8 Físico · P10 Dev | ❌ pendiente |
 

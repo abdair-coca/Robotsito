@@ -91,8 +91,11 @@ IDLE → PRESENCE → LISTENING → THINKING → SPEAKING → CONVERSATION_IDLE 
    en `voice_pipeline` lo extrae antes del TTS y lo manda al OLED.
 
 Tags (subconjunto de las 21 emociones del firmware OLED): `FELIZ`, `MUY_FELIZ`,
-`CURIOSO`, `TRAVIESO`, `PENSANDO`, `SORPRENDIDO`, `CONFUNDIDO`, `TRISTE`, `AMOR`,
-`HABLANDO` (default). El formato `[EMO:X]` es **obligatorio** y vive en `SYSTEM_PROMPT`.
+`CURIOSO`, `TRAVIESO`, `PENSANDO`, `SORPRENDIDO`, `CONFUNDIDO`, `TRISTE`, `MUY_TRISTE`,
+`AMOR`, `ORGULLOSO`, `ENOJADO`, `SOSPECHANDO`, `HABLANDO` (default). El formato
+`[EMO:X]` es **obligatorio** y vive en `SYSTEM_PROMPT`. Cada tag mapea 1:1 a un estado
+OLED que ya existe en el firmware (`.mpy`); exponer uno nuevo = agregarlo a
+`SYSTEM_PROMPT` + `TTS_EMO_PROSODY` (sin tocar firmware si la cara ya existe).
 
 ---
 
