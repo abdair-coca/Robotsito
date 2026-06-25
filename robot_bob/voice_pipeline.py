@@ -525,6 +525,51 @@ class VoicePipeline:
                 self._system_prompt_base + '\n\n═══ MEMORIA ═══\nNo conocés a esta persona todavía. '
                 'En algún momento de la charla preguntale su nombre con naturalidad.')
 
+    def _opener_memoria(self):
+        """
+        P7 — Conversación autónoma sobre P1: arma un saludo que RETOMA un tema de
+        una charla anterior con esta persona reconocida (ej: "la última vez me
+        hablabas de tu robot, ¿cómo va?"). Usa el LLM ya configurado (local o
+        Groq). Devuelve (texto_limpio, emo) o None si no hay nada que retomar o
+        el LLM falla — el caller cae al saludo normal.
+        """
+        pid = self._convo_persona
+        if pid is None:
+            return None
+        eps = self._memoria.episodios(pid, 3)
+        p   = self._memoria.persona(pid)
+        temas = (p[4] if p else '') or ''          # columna temas
+        if not eps and not temas:
+            return None                            # sin recuerdos → saludo normal
+        nombre = self._persona_nombre or 'esta persona'
+        nivel, _, _ = self._memoria.nivel_relacion(pid)
+        recuerdos = '; '.join(t for t, _ in eps) if eps else ''
+        ctx = (f"Vas a saludar a {nombre} ({nivel}). "
+               f"Temas favoritos suyos: {temas or 'ninguno registrado'}. "
+               f"Recuerdos de charlas pasadas: {recuerdos or 'ninguno'}.")
+        sys_p = (
+            "Eres Bob, un robot sociable de feria. Vas a saludar a alguien que YA "
+            "conoces. Saluda retomando con calidez UNO de sus temas o recuerdos de "
+            "una charla anterior, como un amigo que retoma la conversación "
+            "(ej: 'la última vez me hablabas de tu robot, ¿cómo va eso?'). "
+            "UNA sola frase corta y hablable, que empiece con un tag de emoción "
+            "[EMO:FELIZ], [EMO:CURIOSO], [EMO:TRAVIESO] o [EMO:AMOR]. "
+            "Sin comillas, sin markdown, sin emojis.")
+        try:
+            resp = self._llm.chat.completions.create(
+                model=self._llm_model,
+                messages=[{'role': 'system', 'content': sys_p},
+                          {'role': 'user',   'content': ctx}],
+                temperature=0.8, max_tokens=60)
+            txt = (resp.choices[0].message.content or '').strip()
+        except Exception as e:
+            console.print(f'[dim][P7] opener memoria falló: {e}[/]')
+            return None
+        emo, clean = _extract_emo_tag(txt)
+        if not clean or not any(c.isalnum() for c in clean):
+            return None
+        return clean, (emo or 'FELIZ')
+
     def _resumir_conversacion(self):
         """LLM resume la charla → (resumen, gustos, temas). None si falla."""
         turns = [m for m in self._convo if m['role'] in ('user', 'assistant')]
@@ -607,13 +652,25 @@ class VoicePipeline:
 
         # ── Saludo / opener al arrancar conversación ──────────────────────────
         if greeting:
-            if self._persona_nombre:
-                # Persona conocida → saludo personalizado por su nombre.
+            saludo, saludo_emo = None, None
+            # P7: si reconocemos a la persona y hay recuerdos, abrimos retomando
+            # un tema de una charla anterior en vez del saludo genérico.
+            recall = self._opener_memoria() if self._convo_persona is not None else None
+            if recall:
+                saludo, saludo_emo = recall
+                console.print(f'[bold magenta][P7 opener memoria][/] ({saludo_emo}) {saludo}')
+                self._serial.cmd_estado(saludo_emo)
+                # Registrar lo dicho para que el LLM continúe el hilo del tema.
+                self._convo.append({'role': 'assistant',
+                                    'content': f'[EMO:{saludo_emo}] {saludo}'})
+            elif self._persona_nombre:
+                # Persona conocida sin recuerdos útiles → saludo por su nombre.
                 n = self._persona_nombre
                 saludo = random.choice([
                     f'¡Hola {n}! ¡Qué bueno verte de nuevo!',
                     f'¡{n}! ¿Cómo andás?',
                     f'¡Mirá quién volvió! ¿Qué contás, {n}?'])
+                saludo_emo = 'FELIZ'
                 console.print(f'[bold magenta][saludo memoria][/] {saludo}')
                 pulse_emotion(self._serial, self._sm, 'FELIZ', PULSE_FAST)
             elif trigger == 'auto':
@@ -625,7 +682,7 @@ class VoicePipeline:
                 console.print(f'[bold magenta][saludo wake][/] {saludo}')
                 pulse_emotion(self._serial, self._sm, EMO_GREETING_PLAYED, PULSE_FAST)
             self._sm.iniciar_hablando()
-            self._hablar(saludo, 'FELIZ' if self._persona_nombre else None)
+            self._hablar(saludo, saludo_emo)
             # Si no hay payload pendiente, volvemos a LISTENING para grabar
             if not pending_text:
                 self._sm.iniciar_escuchando()
