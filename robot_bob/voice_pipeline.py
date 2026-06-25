@@ -90,6 +90,18 @@ try:
     from config import LLM_BACKEND, OLLAMA_BASE_URL, OLLAMA_MODEL
 except Exception:
     LLM_BACKEND, OLLAMA_BASE_URL, OLLAMA_MODEL = "groq", "http://localhost:11434/v1", "qwen2.5:7b"
+# Prompt corto y estricto para el LLM local (modelo chico). Si un config viejo
+# no lo define, cae al prompt normal.
+try:
+    from config import SYSTEM_PROMPT_LOCAL
+except Exception:
+    SYSTEM_PROMPT_LOCAL = SYSTEM_PROMPT
+# Tope de frases por turno del guard. config.py está gitignoreado (por-máquina);
+# si un config viejo no lo define, default a 2.
+try:
+    from config import MAX_FRASES_TURNO
+except Exception:
+    MAX_FRASES_TURNO = 2
 from wake_word import WakeWordDetector
 from expression_engine import (
     pulse_emotion, react_to_user_text, react_to_bob_text,
@@ -119,6 +131,18 @@ def _extract_emo_tag(text: str) -> tuple:
             emo = cand
     clean = _EMO_TAG_RE.sub('', text).strip()
     return emo, clean
+
+
+def _ensure_emo_tag(sent: str) -> str:
+    """
+    Garantiza que la frase abra con un tag [EMO:X] válido. Si el LLM (típico en
+    modelos locales chicos) no puso ninguno, antepone [EMO:HABLANDO] (neutral)
+    para que el OLED no quede sin emoción. Si ya hay un tag válido, no toca nada.
+    """
+    for m in _EMO_TAG_RE.finditer(sent):
+        if m.group(1).upper() in _VALID_EMOS:
+            return sent
+    return '[EMO:HABLANDO] ' + sent
 
 FFMPEG  = imageio_ffmpeg.get_ffmpeg_exe()
 console = Console()
@@ -369,12 +393,14 @@ class VoicePipeline:
         # Cliente de CHAT: local (Ollama, sin tokens) o Groq. La API
         # chat.completions es OpenAI-compatible en ambos. Si Ollama no responde
         # al arrancar, cae solo a Groq.
+        self._usando_ollama = False
         if LLM_BACKEND == "ollama":
             from openai import OpenAI
             self._llm = OpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
             self._llm_model = OLLAMA_MODEL
             try:
                 self._llm.models.list()   # ping a Ollama
+                self._usando_ollama = True
                 console.print(f"[dim][llm] Ollama OK → {self._llm_model}[/]")
             except Exception as _e:
                 console.print(f"[yellow][llm] Ollama no responde ({_e}); fallback a Groq[/]")
@@ -384,6 +410,11 @@ class VoicePipeline:
             self._llm = self._client
             self._llm_model = GROQ_LLM_MODEL
             console.print(f"[dim][llm] backend Groq → {self._llm_model}[/]")
+
+        # Prompt base según el backend efectivo: el local es corto y estricto
+        # (modelos chicos no obedecen el prompt largo). Groq usa el completo.
+        self._system_prompt_base = SYSTEM_PROMPT_LOCAL if self._usando_ollama else SYSTEM_PROMPT
+        self._system_prompt_actual = self._system_prompt_base
 
         self._vad    = webrtcvad.Vad(VAD_AGGRESSIVENESS)
         self._convo: List[Dict[str, str]] = []
@@ -462,7 +493,7 @@ class VoicePipeline:
         self._convo_edad    = None
         self._persona_nombre = None
         self._nombre_pendiente = None
-        self._system_prompt_actual = SYSTEM_PROMPT
+        self._system_prompt_actual = self._system_prompt_base
         if not self._memoria_activa() or not self._face_id.listo:
             return
         try:
@@ -482,7 +513,7 @@ class VoicePipeline:
             self._memoria.marcar_visto(pid)
             console.print(f'[bold magenta][memoria][/] reconocido: {nombre} (score {score:.2f})')
             self._system_prompt_actual = (
-                SYSTEM_PROMPT + '\n\n═══ MEMORIA (ya conocés a esta persona) ═══\n'
+                self._system_prompt_base + '\n\n═══ MEMORIA (ya conocés a esta persona) ═══\n'
                 + self._memoria.contexto(pid)
                 + '\nSaludala con calidez por su nombre y, si viene al caso, mencioná algo '
                   'que recuerdes de ella. No repitas que sos un robot de feria.'
@@ -491,7 +522,7 @@ class VoicePipeline:
         else:
             console.print('[bold magenta][memoria][/] persona desconocida')
             self._system_prompt_actual = (
-                SYSTEM_PROMPT + '\n\n═══ MEMORIA ═══\nNo conocés a esta persona todavía. '
+                self._system_prompt_base + '\n\n═══ MEMORIA ═══\nNo conocés a esta persona todavía. '
                 'En algún momento de la charla preguntale su nombre con naturalidad.')
 
     def _resumir_conversacion(self):
@@ -932,20 +963,56 @@ class VoicePipeline:
             console.print(f'[red][voice] LLM error: {e}[/]')
             return
 
-        buf   = ''
-        full  = ''
+        # Guard: corta el turno al llegar a MAX_FRASES_TURNO frases y garantiza
+        # que cada frase abra con un tag [EMO:X] válido. Los modelos locales
+        # chicos se pasan de frases y olvidan los tags; esto lo fuerza pase lo
+        # que pase. Guardamos en el historial SOLO lo dicho (refuerza brevedad).
+        #
+        # _split_sentence parte también en ¿/¡, dejando fragmentos sin contenido
+        # hablable (solo un tag o un signo de apertura). Esos NO cuentan como
+        # frase y se arrastran al fragmento siguiente, para no perder su tag ni
+        # truncar la respuesta a media frase.
+        def _hablable(s: str) -> bool:
+            return any(c.isalnum() for c in _EMO_TAG_RE.sub('', s))
+
+        buf       = ''
+        dicho     = []     # frases efectivamente habladas
+        pendiente = ''     # prefijo (tag/signo de apertura) para la próxima frase
+        n_frases  = 0
+        corte     = False
         for chunk in stream:
             delta = (chunk.choices[0].delta.content or '') if chunk.choices else ''
-            buf  += delta
-            full += delta
+            buf += delta
             while True:
                 sent, buf = _split_sentence(buf)
                 if sent is None:
                     break
+                sent = pendiente + sent
+                pendiente = ''
+                if not _hablable(sent):
+                    pendiente = sent        # arrastrar tag/signo al siguiente
+                    continue
+                sent = _ensure_emo_tag(sent)
+                dicho.append(sent)
                 yield sent
-        if buf.strip():
-            yield buf.strip()
-        self._convo.append({'role': 'assistant', 'content': full})
+                n_frases += 1
+                if n_frases >= MAX_FRASES_TURNO:
+                    corte = True
+                    break
+            if corte:
+                break
+        if corte:
+            try:
+                stream.close()              # no seguir generando server-side
+            except Exception:
+                pass
+        else:
+            tail = (pendiente + buf).strip()
+            if _hablable(tail):
+                sent = _ensure_emo_tag(tail)
+                dicho.append(sent)
+                yield sent
+        self._convo.append({'role': 'assistant', 'content': ' '.join(dicho)})
 
     # ── TTS + Reproducción ────────────────────────────────────────────────────
 
