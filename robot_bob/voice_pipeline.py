@@ -125,8 +125,13 @@ from expression_engine import (
 # El LLM prefija cada frase con [EMO:X]. Lo extraemos para el OLED y lo
 # quitamos del texto antes del TTS (no debe leerse en voz alta).
 _EMO_TAG_RE = re.compile(r'\[EMO:([A-ZÁÉÍÓÚÜÑ_]+)\]', re.IGNORECASE)
-_VALID_EMOS = {'FELIZ', 'MUY_FELIZ', 'CURIOSO', 'TRAVIESO', 'PENSANDO',
-               'SORPRENDIDO', 'CONFUNDIDO', 'TRISTE', 'AMOR', 'HABLANDO'}
+# Debe coincidir con los estados que el firmware (oled_ojos.py ESTADOS) sabe
+# dibujar. Si un tag no está aquí, _extract_emo_tag lo descarta y el OLED cae al
+# fallback por keyword (la emoción no se muestra).
+_VALID_EMOS = {'FELIZ', 'MUY_FELIZ', 'EMOCIONADO', 'CURIOSO', 'TRAVIESO',
+               'PENSANDO', 'SORPRENDIDO', 'ASUSTADO', 'CONFUNDIDO', 'AVERGONZADO',
+               'TRISTE', 'MUY_TRISTE', 'ENOJADO', 'SOSPECHANDO', 'ORGULLOSO',
+               'AMOR', 'HABLANDO'}
 
 
 def _extract_emo_tag(text: str) -> tuple:

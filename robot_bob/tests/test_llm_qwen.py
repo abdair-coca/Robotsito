@@ -47,9 +47,9 @@ except Exception:
 
 # Tags válidos — espejo de _VALID_EMOS en voice_pipeline.py + los de P3.
 VALID_EMOS = {
-    'FELIZ', 'MUY_FELIZ', 'CURIOSO', 'TRAVIESO', 'PENSANDO', 'SORPRENDIDO',
-    'CONFUNDIDO', 'TRISTE', 'MUY_TRISTE', 'AMOR', 'HABLANDO',
-    'ORGULLOSO', 'ENOJADO', 'SOSPECHANDO',
+    'FELIZ', 'MUY_FELIZ', 'EMOCIONADO', 'CURIOSO', 'TRAVIESO', 'PENSANDO',
+    'SORPRENDIDO', 'ASUSTADO', 'CONFUNDIDO', 'AVERGONZADO', 'TRISTE',
+    'MUY_TRISTE', 'AMOR', 'HABLANDO', 'ORGULLOSO', 'ENOJADO', 'SOSPECHANDO',
 }
 EMO_RE   = re.compile(r'\[EMO:([A-ZÁÉÍÓÚÜÑ_]+)\]', re.IGNORECASE)
 SENT_RE  = re.compile(r'[.!?¡¿…\n]+')
