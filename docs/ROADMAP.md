@@ -34,12 +34,13 @@ CPU/visión/firmware pero siguen siendo 100% alcanzables con el alcance ya recor
 | **P2 Relaciones sociales** | ✅ hecho (amistad/confianza/historial) |
 | **"Actitud"** (soliloquio + muecas, out-of-chat) | ✅ hecho (ver [FEATURES.md](FEATURES.md)) |
 | Red / portabilidad (discovery + mDNS + multi-WiFi) | ✅ hecho (ver [NETWORK.md](NETWORK.md)) |
-| **P3 Expresividad** | 🔣 parcial — tags EMO nuevos expuestos (ORGULLOSO/ENOJADO/SOSPECHANDO/MUY_TRISTE). Faltan estados internos (Energía/Motivación/…); caras OLED nuevas (vergüenza) requieren tocar firmware → diferido |
+| **P3 Expresividad** | 🔣 casi — tags EMO nuevos ✅ + estados internos (Energía/Motivación/Curiosidad/Sociabilidad) ✅ (derivan y sesgan tono/iniciativa). Solo faltan las caras OLED nuevas (vergüenza/confundido) → diferidas (firmware) |
 | **P7 Autónomo avanzado** | ✅ hecho — el opener retoma temas de charlas pasadas (memoria P1) vía LLM |
 | P9 Asistente · P5 Juegos · P6 Música · P4 Visión · P8 Físico · P10 Dev | ❌ pendiente |
 
-> **Foco actual:** terminar **P3** (estados internos + expresividad). Las caras OLED
-> nuevas siguen diferidas (requieren firmware).
+> **Foco actual:** P3 software hecho (estados internos). Lo único pendiente de P3
+> son las caras OLED nuevas (firmware, diferidas). Siguiente prioridad: **P9
+> (Asistente personal)** — hora/fecha/clima/recordatorios vía tool-calling del LLM.
 
 ## Prioridad 1 — Memoria Persistente
 
