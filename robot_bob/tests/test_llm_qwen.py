@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from config import (
     SYSTEM_PROMPT, SYSTEM_PROMPT_LOCAL, TEMPERATURE, MAX_TOKENS,
     OLLAMA_BASE_URL, OLLAMA_MODEL,
+    GEMINI_BASE_URL, GEMINI_MODEL, GEMINI_API_KEY,
 )
 
 try:
@@ -79,31 +80,54 @@ def analizar(texto: str) -> dict:
     }
 
 
+def _resolver_backend(backend: str, model_override):
+    """Devuelve (base_url, api_key, model_default, usa_prompt_local)."""
+    if backend == 'gemini':
+        return GEMINI_BASE_URL, GEMINI_API_KEY, (model_override or GEMINI_MODEL), False
+    # ollama (default): prompt local estricto
+    return OLLAMA_BASE_URL, 'ollama', (model_override or OLLAMA_MODEL), True
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument('--model', default=OLLAMA_MODEL, help='modelo Ollama')
+    ap.add_argument('--backend', default='ollama', choices=['ollama', 'gemini'],
+                    help='backend a probar (ollama local o gemini cloud)')
+    ap.add_argument('--model', default=None, help='override del modelo')
     ap.add_argument('--turns', type=int, default=len(TURNS), help='nº de turnos a probar')
     ap.add_argument('--full-prompt', action='store_true',
-                    help='usar el SYSTEM_PROMPT largo en vez del local estricto')
+                    help='forzar el SYSTEM_PROMPT largo')
     args = ap.parse_args()
 
-    system_prompt = SYSTEM_PROMPT if args.full_prompt else SYSTEM_PROMPT_LOCAL
-    etiqueta_prompt = 'SYSTEM_PROMPT (largo)' if args.full_prompt else 'SYSTEM_PROMPT_LOCAL (estricto)'
+    base_url, api_key, model, usa_local = _resolver_backend(args.backend, args.model)
+    if args.full_prompt:
+        usa_local = False
+    system_prompt = SYSTEM_PROMPT_LOCAL if usa_local else SYSTEM_PROMPT
+    etiqueta_prompt = 'SYSTEM_PROMPT_LOCAL (estricto)' if usa_local else 'SYSTEM_PROMPT (largo)'
 
-    print(f"→ Ollama: {OLLAMA_BASE_URL}")
-    print(f"→ Modelo: {args.model}")
+    if args.backend == 'gemini' and not api_key:
+        print("✗ GEMINI_API_KEY vacía. Ponla en robot_bob/.env y reintenta.")
+        return 1
+
+    print(f"→ Backend: {args.backend}  ({base_url})")
+    print(f"→ Modelo: {model}")
     print(f"→ Prompt: {etiqueta_prompt}  ({len(system_prompt)} chars)")
     print(f"→ TEMPERATURE={TEMPERATURE}  MAX_TOKENS={MAX_TOKENS}\n")
 
-    client = OpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
+    args.model = model   # para los mensajes de error de abajo
+    # Gemini 2.5 es "thinking": sin esto se come el max_tokens pensando.
+    extra = {"reasoning_effort": "none"} if args.backend == 'gemini' else {}
+    client = OpenAI(base_url=base_url, api_key=api_key)
     try:
         t0 = time.monotonic()
         client.models.list()
-        print(f"✓ Ollama responde ({(time.monotonic()-t0)*1000:.0f} ms)\n")
+        print(f"✓ {args.backend} responde ({(time.monotonic()-t0)*1000:.0f} ms)\n")
     except Exception as e:
-        print(f"✗ Ollama no responde: {e}")
-        print("  ¿Está corriendo? Abre otra terminal y corre:  ollama serve")
-        print(f"  ¿El modelo está bajado?  ollama pull {args.model}")
+        print(f"✗ {args.backend} no responde: {e}")
+        if args.backend == 'ollama':
+            print("  ¿Está corriendo Ollama?  ollama serve   |   ¿bajado?  ollama pull "
+                  + args.model)
+        else:
+            print("  Revisa GEMINI_API_KEY en robot_bob/.env y la conexión.")
         return 1
 
     convo = []
@@ -123,6 +147,7 @@ def main() -> int:
             stream = client.chat.completions.create(
                 model=args.model, messages=messages,
                 temperature=TEMPERATURE, max_tokens=MAX_TOKENS, stream=True,
+                **extra,
             )
             for chunk in stream:
                 delta = (chunk.choices[0].delta.content or '') if chunk.choices else ''

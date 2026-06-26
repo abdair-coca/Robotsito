@@ -90,6 +90,16 @@ try:
     from config import LLM_BACKEND, OLLAMA_BASE_URL, OLLAMA_MODEL
 except Exception:
     LLM_BACKEND, OLLAMA_BASE_URL, OLLAMA_MODEL = "groq", "http://localhost:11434/v1", "qwen2.5:7b"
+# Backend Gemini (cloud). Guardado por si un config viejo no lo define.
+try:
+    from config import GEMINI_BASE_URL, GEMINI_MODEL, GEMINI_API_KEY
+except Exception:
+    GEMINI_BASE_URL, GEMINI_MODEL, GEMINI_API_KEY = "", "gemini-2.0-flash", ""
+# Recorte de historial por turno (ahorro de tokens). Default 10 si falta.
+try:
+    from config import MAX_HIST_MSGS
+except Exception:
+    MAX_HIST_MSGS = 10
 # Prompt corto y estricto para el LLM local (modelo chico). Si un config viejo
 # no lo define, cae al prompt normal.
 try:
@@ -393,8 +403,23 @@ class VoicePipeline:
         # Cliente de CHAT: local (Ollama, sin tokens) o Groq. La API
         # chat.completions es OpenAI-compatible en ambos. Si Ollama no responde
         # al arrancar, cae solo a Groq.
+        # Params extra por backend para las llamadas al LLM. Gemini 2.5 es modelo
+        # "thinking": sin esto se come el max_tokens pensando y corta la respuesta.
+        self._llm_extra: Dict = {}
         self._usando_ollama = False
-        if LLM_BACKEND == "ollama":
+        if LLM_BACKEND == "gemini":
+            from openai import OpenAI
+            self._llm = OpenAI(base_url=GEMINI_BASE_URL, api_key=GEMINI_API_KEY)
+            self._llm_model = GEMINI_MODEL
+            try:
+                self._llm.models.list()   # ping a Gemini (valida key + red)
+                self._llm_extra = {"reasoning_effort": "none"}   # thinking off
+                console.print(f"[dim][llm] Gemini OK → {self._llm_model}[/]")
+            except Exception as _e:
+                console.print(f"[yellow][llm] Gemini no responde ({_e}); fallback a Groq[/]")
+                self._llm = self._client
+                self._llm_model = GROQ_LLM_MODEL
+        elif LLM_BACKEND == "ollama":
             from openai import OpenAI
             self._llm = OpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
             self._llm_model = OLLAMA_MODEL
@@ -411,8 +436,8 @@ class VoicePipeline:
             self._llm_model = GROQ_LLM_MODEL
             console.print(f"[dim][llm] backend Groq → {self._llm_model}[/]")
 
-        # Prompt base según el backend efectivo: el local es corto y estricto
-        # (modelos chicos no obedecen el prompt largo). Groq usa el completo.
+        # Prompt base según el backend efectivo: solo el modelo local chico usa el
+        # prompt corto y estricto (no obedece el largo). Gemini/Groq usan el completo.
         self._system_prompt_base = SYSTEM_PROMPT_LOCAL if self._usando_ollama else SYSTEM_PROMPT
         self._system_prompt_actual = self._system_prompt_base
 
@@ -560,7 +585,7 @@ class VoicePipeline:
                 model=self._llm_model,
                 messages=[{'role': 'system', 'content': sys_p},
                           {'role': 'user',   'content': ctx}],
-                temperature=0.8, max_tokens=60)
+                temperature=0.8, max_tokens=60, **self._llm_extra)
             txt = (resp.choices[0].message.content or '').strip()
         except Exception as e:
             console.print(f'[dim][P7] opener memoria falló: {e}[/]')
@@ -588,7 +613,7 @@ class VoicePipeline:
                 model=self._llm_model,
                 messages=[{'role': 'system', 'content': sys_p},
                           {'role': 'user', 'content': transcript}],
-                temperature=0.3, max_tokens=140)
+                temperature=0.3, max_tokens=140, **self._llm_extra)
             txt = (resp.choices[0].message.content or '').strip()
             mt = re.search(r'\{.*\}', txt, re.DOTALL)
             if mt:
@@ -1006,7 +1031,10 @@ class VoicePipeline:
 
     def _stream_llm(self, texto: str) -> Iterator[str]:
         self._convo.append({'role': 'user', 'content': texto})
-        messages = [{'role': 'system', 'content': self._system_prompt_actual}] + self._convo
+        # Recorte: solo los últimos N mensajes van al LLM (ahorro de tokens). La
+        # memoria de largo plazo (P1) ya está en el system prompt, no se pierde.
+        hist = self._convo[-MAX_HIST_MSGS:]
+        messages = [{'role': 'system', 'content': self._system_prompt_actual}] + hist
 
         try:
             stream = self._llm.chat.completions.create(
@@ -1015,6 +1043,7 @@ class VoicePipeline:
                 temperature=TEMPERATURE,
                 max_tokens=MAX_TOKENS,
                 stream=True,
+                **self._llm_extra,
             )
         except Exception as e:
             console.print(f'[red][voice] LLM error: {e}[/]')
@@ -1362,6 +1391,7 @@ class VoicePipeline:
                           {'role': 'user',   'content': contexto}],
                 temperature=1.0,
                 max_tokens=SOLILOQUIO_LLM_MAX_TOK,
+                **self._llm_extra,
             )
             txt = (resp.choices[0].message.content or '').strip()
             if txt:
