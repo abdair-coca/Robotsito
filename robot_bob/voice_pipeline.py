@@ -526,11 +526,24 @@ class VoicePipeline:
         self._system_prompt_actual = self._system_prompt_base
         if not self._memoria_activa() or not self._face_id.listo:
             return
-        try:
-            emb, edad = self._face_id.analizar(self._get_frame())
-        except Exception as e:
-            console.print(f'[dim][memoria] análisis falló: {e}[/]')
-            return
+        # Al venir de un wake word, Bob puede estar todavía girando hacia la
+        # persona y el primer frame no tiene cara. Reintentamos hasta ~2.5 s para
+        # darle tiempo a que aparezca antes de decidir que no la conocemos
+        # (así te reconoce cuando te encara, en vez de saludarte como desconocido).
+        RETRY_S = 2.5
+        emb, edad = None, None
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < RETRY_S:
+            try:
+                emb, edad = self._face_id.analizar(self._get_frame())
+            except Exception as e:
+                console.print(f'[dim][memoria] análisis falló: {e}[/]')
+                break
+            if emb is not None:
+                break
+            if self._detener.is_set():
+                break
+            time.sleep(0.2)
         self._convo_emb  = emb
         self._convo_edad = edad
         if emb is None:

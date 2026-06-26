@@ -56,6 +56,14 @@ except Exception:
     GIRO_IDLE_ENABLED, GIRO_IDLE_COOLDOWN_S, GIRO_IDLE_PROB = True, 6.0, 0.4
     SCAN_MAX_BURSTS, SCAN_DIR_BURSTS, SCAN_LOOK_S = 14, 4, 0.5
 
+# Velocidad de giro del cuerpo durante el ESCANEO (buscar al que habla). Más baja
+# que GIRO_VELOCIDAD para que la búsqueda sea suave, no frenética. Import aislado
+# para no romper los otros valores si un config viejo no la define.
+try:
+    from config import SCAN_GIRO_VELOCIDAD
+except Exception:
+    SCAN_GIRO_VELOCIDAD = 45
+
 # Comandos de giro sobre el eje (izq, der) para mover_motores del firmware.
 _GIRO_IZQ = (-1, 1)
 _GIRO_DER = (1, -1)
@@ -196,9 +204,11 @@ class BehaviorEngine:
             return True
         return ahora < self._giro_cooldown_hasta
 
-    def _arrancar_giro(self, base, ahora: float) -> None:
-        """Arranca una ráfaga de giro en el sentido `base` (±1,±1), a GIRO_VELOCIDAD."""
-        giro = (base[0] * GIRO_VELOCIDAD, base[1] * GIRO_VELOCIDAD)
+    def _arrancar_giro(self, base, ahora: float, velocidad: float = None) -> None:
+        """Arranca una ráfaga de giro en el sentido `base` (±1,±1). velocidad=None
+        usa GIRO_VELOCIDAD; el escaneo pasa una más baja para buscar suave."""
+        v = GIRO_VELOCIDAD if velocidad is None else velocidad
+        giro = (base[0] * v, base[1] * v)
         self._giro_dir   = giro
         self._giro_hasta = ahora + GIRO_BURST_S
         try:
@@ -208,11 +218,12 @@ class BehaviorEngine:
 
     def _tick_scan_head(self, ahora: float) -> None:
         """Barrido de cabeza mientras el cuerpo gira buscando: tilt arriba↔nivel
-        (cubre alturas) + pan oscilando suave (cubre entre ráfagas del cuerpo)."""
-        t_pan  = math.sin(2.0 * math.pi * (ahora % 3.0) / 3.0)          # -1..1, ciclo 3 s
-        t_tilt = 0.5 - 0.5 * math.cos(2.0 * math.pi * (ahora % 2.0) / 2.0)  # 0..1, ciclo 2 s
+        (cubre alturas) + pan oscilando suave (cubre entre ráfagas del cuerpo).
+        Ciclos largos y amplitud moderada → búsqueda calmada, no frenética."""
+        t_pan  = math.sin(2.0 * math.pi * (ahora % 5.0) / 5.0)          # -1..1, ciclo 5 s
+        t_tilt = 0.5 - 0.5 * math.cos(2.0 * math.pi * (ahora % 4.0) / 4.0)  # 0..1, ciclo 4 s
         lo_tilt = TILT_MIN + 6
-        self._pan_obj  = _clamp(PAN_HOME + 22.0 * t_pan, PAN_MIN, PAN_MAX)
+        self._pan_obj  = _clamp(PAN_HOME + 16.0 * t_pan, PAN_MIN, PAN_MAX)
         self._tilt_obj = _clamp(lo_tilt + (TILT_HOME - lo_tilt) * t_tilt, TILT_MIN, TILT_MAX)
 
     def _maybe_scan(self, det, ahora: float) -> bool:
@@ -266,7 +277,7 @@ class BehaviorEngine:
             self._scan_activo = False     # dio ~una vuelta sin encontrar → parar
             return False
         self._scan_bursts += 1
-        self._arrancar_giro(self._scan_dir, ahora)
+        self._arrancar_giro(self._scan_dir, ahora, velocidad=SCAN_GIRO_VELOCIDAD)
         return True
 
     def _maybe_girar_cuerpo(self, det, ahora: float) -> None:
@@ -404,8 +415,9 @@ class BehaviorEngine:
             # La cabeza también barre mientras el cuerpo gira (más cobertura).
             self._tick_scan_head(ahora)
             self._tracker.set_objetivo(self._pan_obj, self._tilt_obj)
-            self._tracker.actualizar_servo(None, suavizado=0.85,
-                                           max_paso_pan=2.0, max_paso_tilt=2.0)
+            # Suavizado alto + paso chico → movimiento de cabeza calmado (~20°/s).
+            self._tracker.actualizar_servo(None, suavizado=0.90,
+                                           max_paso_pan=1.0, max_paso_tilt=1.0)
             return
 
         if estado == RobotState.IDLE and det is None:
