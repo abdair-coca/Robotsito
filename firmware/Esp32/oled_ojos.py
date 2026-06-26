@@ -41,10 +41,10 @@ oled = SH1106_I2C(128, 64, i2c)
 # CONFIGURACIÓN GLOBAL
 # ============================================================
 ESTADOS = [
-    'neutral', 'feliz', 'muy_feliz', 'escuchando', 'pensando',
-    'curioso', 'sorprendido', 'confundido', 'triste', 'muy_triste',
-    'enojado', 'sospechando', 'travieso', 'orgulloso', 'dormido',
-    'durmiendo', 'procesando', 'error', 'siguiendo', 'amor', 'hablando'
+    'neutral', 'feliz', 'muy_feliz', 'emocionado', 'escuchando', 'pensando',
+    'curioso', 'sorprendido', 'asustado', 'confundido', 'avergonzado',
+    'triste', 'muy_triste', 'enojado', 'sospechando', 'travieso', 'orgulloso',
+    'dormido', 'durmiendo', 'procesando', 'error', 'siguiendo', 'amor', 'hablando'
 ]
 
 # Mapeo desde nombres UPPERCASE del SerialManager (robot_bob/state_machine.py)
@@ -62,23 +62,23 @@ PRODUCTION_STATES = {
 
 # Estados donde el ojo PUEDE parpadear (excluye dormido, error, etc.)
 # 'hablando' INCLUIDO — durante el habla parpadea más frecuente (ver update_blinks)
-_BLINK_ALLOWED  = ('neutral', 'feliz', 'muy_feliz', 'escuchando', 'pensando',
-                   'curioso', 'sorprendido', 'confundido', 'triste', 'muy_triste',
-                   'enojado', 'sospechando', 'travieso', 'procesando', 'siguiendo',
-                   'hablando')
+_BLINK_ALLOWED  = ('neutral', 'feliz', 'muy_feliz', 'emocionado', 'escuchando',
+                   'pensando', 'curioso', 'sorprendido', 'asustado', 'confundido',
+                   'avergonzado', 'triste', 'muy_triste', 'enojado', 'sospechando',
+                   'travieso', 'procesando', 'siguiendo', 'hablando')
 
 # Estados donde la pupila puede moverse por sacadas
 # 'hablando' INCLUIDO — engagement con el listener vía micro-sacadas
 _SACCADE_ALLOWED = ('neutral', 'escuchando', 'pensando', 'curioso', 'sorprendido',
-                    'sospechando', 'procesando', 'siguiendo', 'feliz', 'muy_feliz',
-                    'travieso', 'orgulloso', 'hablando')
+                    'asustado', 'sospechando', 'procesando', 'siguiendo', 'feliz',
+                    'muy_feliz', 'emocionado', 'travieso', 'orgulloso', 'hablando')
 
 # Estados donde Bob puede ser "espontáneo" (mirada de iniciativa)
 # 'hablando' NO incluido — Bob no se distrae cuando habla
 _INITIATIVE_ALLOWED = ('neutral', 'escuchando', 'curioso', 'siguiendo')
 
 # Estados donde Bob puede guiñar — 'hablando' NO (rompe el ritmo del discurso)
-_WINK_ALLOWED = ('neutral', 'feliz', 'muy_feliz', 'travieso', 'curioso')
+_WINK_ALLOWED = ('neutral', 'feliz', 'muy_feliz', 'emocionado', 'travieso', 'curioso')
 
 # Estados donde pueden ocurrir reacciones inesperadas (quirks)
 # 'hablando' NO — un estornudo a mitad de frase queda raro
@@ -940,6 +940,57 @@ def _draw_eye(cx, cy, rx, ry, side, eye_state, t, qm):
         oled.line(bx - 7, by + 1, bx + 7, by + 1, 1)
         oled.line(bx + 7, by + 1, bx + 14, by + 5, 1)
         draw_arch_brow(cx, cy - 3 + dy_breath, 10, offset_y=-8, peak_height=4)
+
+    elif estado == 'emocionado':
+        # Ojos grandes y redondos con destello de estrella + bounce de euforia.
+        # Distinto de muy_feliz (que cierra el ojo en arco): aquí va bien abierto.
+        bounce_phase = t * 0.007 + random.uniform(-0.05, 0.05)
+        dy_bounce = int(abs(math.sin(bounce_phase)) * 4)
+        fill_superellipse(cx, cy - dy_bounce, rx_eff, ry_current + 3)
+        draw_squircle_pupil(cx, rx_eff, ry_current + 3,
+                            cx + px_off, cy - dy_bounce + py_off, 10, 9)
+        # Destello (glint) dentro de la pupila → mirada brillante de emoción
+        gx, gy = cx - 3, cy - dy_bounce - 3
+        oled.pixel(gx, gy, 1);     oled.pixel(gx + 1, gy, 1)
+        oled.pixel(gx, gy + 1, 1); oled.pixel(gx + 1, gy + 1, 1)
+        oled.pixel(cx + 4, cy - dy_bounce + 3, 1)
+        draw_arch_brow(cx, cy - dy_bounce, ry, offset_y=-9, peak_height=4)
+        # Chispas de entusiasmo al costado, parpadeando
+        if (t // 150) % 2 == 0:
+            spx = cx + (-rx_eff - 5 if side == 'L' else rx_eff + 5)
+            spy = cy - dy_bounce - 6
+            if 0 <= spx < 128 and 0 <= spy < 64:
+                oled.pixel(spx, spy, 1);         oled.pixel(spx, spy + 2, 1)
+                oled.pixel(spx - 1, spy + 1, 1); oled.pixel(spx + 1, spy + 1, 1)
+
+    elif estado == 'asustado':
+        # Ojos muy abiertos temblando, pupila contraída (miedo), cejas altas
+        # e inclinadas hacia adentro. Distinto de sorprendido (más positivo).
+        shake_x = random.randint(-2, 2)
+        shake_y = random.randint(-1, 1)
+        fill_superellipse(cx + shake_x, cy + shake_y, rx_eff, ry_current + 5)
+        draw_squircle_pupil(cx + shake_x, rx_eff, ry_current + 5,
+                            cx + shake_x + px_off, cy + shake_y + py_off, 4, 4)
+        # Cejas altas e inclinadas hacia adentro. offset moderado para que no se
+        # salgan de pantalla (draw_brow descarta y_center < 1).
+        ang = -0.4 if side == 'L' else 0.4
+        draw_brow(cx + shake_x, cy + shake_y, ry, ang, offset_y=-9)
+
+    elif estado == 'avergonzado':
+        # Ojos chicos mirando abajo/al lado + rubor de líneas en la mejilla.
+        look = 3 if side == 'L' else -3
+        fill_superellipse(cx, cy + 2, rx_eff - 3, ry_current - 5)
+        draw_squircle_pupil(cx, rx_eff - 3, ry_current - 5,
+                            cx + look + px_off, cy + 5 + py_off, 7, 5)
+        ang = 0.4 if side == 'L' else -0.4
+        draw_brow(cx, cy + 2, ry - 5, ang, offset_y=-2)
+        # Rubor: 3 líneas diagonales en la mejilla (estilo anime)
+        bx = (cx - rx_eff + 1) if side == 'L' else (cx + rx_eff - 10)
+        by = cy + ry_current - 1
+        for k in range(3):
+            lx = bx + k * 4
+            if 0 <= lx < 124 and by + 4 < 64:
+                oled.line(lx, by, lx + 3, by + 4, 1)
 
     elif estado == 'dormido':
         oled.hline(cx - 15, cy + 3, 31, 1)
