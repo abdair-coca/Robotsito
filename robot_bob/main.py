@@ -176,6 +176,9 @@ def main() -> None:
             if estado == RobotState.CONVERSATION_IDLE:
                 sm.tick_conversation_idle()
 
+            # P3: derivar los estados internos (energía/motivación/curiosidad/sociabilidad)
+            sm.tick_estados_internos()
+
             # ── Notificar cara a la máquina de estados ─────────────────────────
             if det is not None:
                 ultimo_rostro = ahora
@@ -204,6 +207,14 @@ def main() -> None:
             # Stream OK indicator
             stream_color = COLOR_OK if tracker.stream_ok else COLOR_ERR
             cv2.circle(frame, (frame.shape[1] - 20, 20), 8, stream_color, -1)
+
+            # P3: estados internos (E=energía M=motivación C=curiosidad S=sociabilidad)
+            ei = sm.estados_internos()
+            cv2.putText(frame,
+                        f"E:{ei['energia']:.2f} M:{ei['motivacion']:.2f} "
+                        f"C:{ei['curiosidad']:.2f} S:{ei['sociabilidad']:.2f}",
+                        (10, frame.shape[0] - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                        (200, 220, 255), 1)
 
             if det is not None:
                 cx, cy, x, y, w, h = det

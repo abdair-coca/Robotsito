@@ -125,6 +125,19 @@ class StateMachine:
         self._oled_busy_flag  = False
         self._oled_busy_until = 0.0
 
+        # ── Estados internos (P3 — personalidad que deriva) ────────────────
+        # Variables long-lived [0..1] que derivan durante TODA la sesión (a
+        # diferencia del mood, que resetea por conversación). Sesgan la iniciativa
+        # de Bob y se inyectan al prompt del LLM para que su tono cambie con el
+        # tiempo. Se derivan en tick_estados_internos() y se empujan con eventos.
+        self._ei_lock     = threading.Lock()
+        self.energia      = 0.7   # se gasta hablando, se recupera en reposo/sueño
+        self.motivacion   = 0.5   # sube con charlas buenas, baja con rechazo
+        self.curiosidad   = 0.5   # sube con caras nuevas, baja al saciarse charlando
+        self.sociabilidad = 0.5   # sube tras charlar, baja al estar solo mucho rato
+        self._ei_baseline = {'motivacion': 0.5, 'curiosidad': 0.5, 'sociabilidad': 0.5}
+        self._t_ei_tick   = time.monotonic()
+
     # ── Propiedades ────────────────────────────────────────────────────────────
 
     @property
@@ -201,6 +214,86 @@ class StateMachine:
         with self._mood_lock:
             if self.mood < value:
                 self.mood = value
+
+    # ── Estados internos (P3) ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _clamp01(x: float) -> float:
+        return max(0.0, min(1.0, x))
+
+    def tick_estados_internos(self) -> None:
+        """
+        Deriva los estados internos según el tiempo y el estado actual. Barato;
+        llamar desde el loop principal en cada frame (se auto-throttlea a ~4 Hz).
+        """
+        ahora = time.monotonic()
+        dt = ahora - self._t_ei_tick
+        if dt < 0.25:
+            return
+        self._t_ei_tick = ahora
+        with self._lock:
+            est = self._estado
+        dormido = self.is_asleep()
+        with self._ei_lock:
+            # Energía: se gasta conversando, se recupera en reposo (más si duerme).
+            if est in (RobotState.LISTENING, RobotState.THINKING, RobotState.SPEAKING):
+                self.energia -= 0.010 * dt
+            elif dormido:
+                self.energia += 0.020 * dt
+            elif est == RobotState.IDLE:
+                self.energia += 0.008 * dt
+            self.energia = self._clamp01(self.energia)
+
+            # Solo mucho rato (IDLE) → baja sociabilidad por debajo del baseline.
+            if est == RobotState.IDLE:
+                self.sociabilidad -= 0.004 * dt
+
+            # Deriva lenta de motivación/curiosidad/sociabilidad hacia su baseline.
+            for k in ('motivacion', 'curiosidad', 'sociabilidad'):
+                v = getattr(self, k)
+                base = self._ei_baseline[k]
+                setattr(self, k, self._clamp01(v + (base - v) * min(1.0, 0.02 * dt)))
+
+    def ei_evento_charla(self, turnos: int, mood: float) -> None:
+        """Al cerrar una charla: ajusta los estados según cómo fue."""
+        with self._ei_lock:
+            self.sociabilidad = self._clamp01(self.sociabilidad + 0.10 + 0.05 * max(0.0, mood))
+            self.motivacion   = self._clamp01(self.motivacion + 0.08 * mood + 0.02 * min(turnos, 5))
+            self.curiosidad   = self._clamp01(self.curiosidad - 0.10)        # saciada
+            self.energia      = self._clamp01(self.energia - 0.05 - 0.01 * min(turnos, 8))
+
+    def factor_iniciativa(self) -> float:
+        """
+        Escala la probabilidad de iniciar charla según el ánimo interno. ~[0.2..1.5]:
+        motivado + sociable + con energía → más lanzado; cansado/desganado → reservado.
+        """
+        with self._ei_lock:
+            return max(0.2, 0.5 + 0.4 * self.motivacion + 0.4 * self.sociabilidad
+                       + 0.4 * (self.energia - 0.5))
+
+    def estado_interno_prompt(self) -> str:
+        """Una línea para el system prompt del LLM: cómo se siente Bob ahora.
+        Solo menciona los estados marcadamente altos o bajos (resto = neutro)."""
+        def nivel(v, alto, bajo):
+            return alto if v >= 0.66 else (bajo if v <= 0.33 else None)
+        with self._ei_lock:
+            partes = [p for p in (
+                nivel(self.energia,      'con mucha energía',       'algo cansado'),
+                nivel(self.motivacion,   'muy motivado',            'desganado'),
+                nivel(self.curiosidad,   'muy curioso',             'poco curioso'),
+                nivel(self.sociabilidad, 'con ganas de socializar', 'reservado'),
+            ) if p]
+        if not partes:
+            return ''
+        return ('\n\n═══ TU ESTADO INTERNO AHORA ═══\nAhora mismo te sentís '
+                + ', '.join(partes) + '. Que se note sutilmente en tu tono y energía, '
+                'sin mencionarlo explícitamente.')
+
+    def estados_internos(self) -> dict:
+        """Snapshot para HUD/tests."""
+        with self._ei_lock:
+            return {'energia': self.energia, 'motivacion': self.motivacion,
+                    'curiosidad': self.curiosidad, 'sociabilidad': self.sociabilidad}
 
     # ── Transiciones (llamadas desde cualquier hilo) ───────────────────────────
 
@@ -288,7 +381,8 @@ class StateMachine:
         tiempo_cara = ahora - self._t_cara_vista
         cooldown_ok = (ahora - self._t_ultima_conv) > self._cooldown_conv
         if tiempo_cara >= self._t_perm_min and cooldown_ok:
-            if random.random() < self._p_conv:
+            # P3: la probabilidad base se escala por el ánimo interno de Bob.
+            if random.random() < self._p_conv * self.factor_iniciativa():
                 self._t_cara_vista = 0.0  # resetear para no re-disparar
                 self._t_ultima_conv = ahora
                 # Bob inicia solo → opener divertido + ningún payload pendiente
@@ -314,6 +408,9 @@ class StateMachine:
             ausencia = self._t_cambio - self._t_sin_presencia
             if ausencia > self.SLEEP_THR_S:
                 self._startle_hasta = self._t_cambio + self.STARTLE_DUR_S
+            # P3: alguien apareció → sube la curiosidad de Bob.
+            with self._ei_lock:
+                self.curiosidad = self._clamp01(self.curiosidad + 0.15)
         # Marcar inicio de ausencia cuando entramos a IDLE
         if nuevo == RobotState.IDLE:
             self._t_sin_presencia = self._t_cambio

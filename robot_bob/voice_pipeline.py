@@ -836,6 +836,12 @@ class VoicePipeline:
             es_primer_turno = False
 
         # ── 6. Fin de conversación ─────────────────────────────────────────────
+        # P3: la charla ajusta los estados internos (sociabilidad/motivación suben,
+        # energía baja, curiosidad se sacia) según cuántos turnos y qué ánimo hubo.
+        try:
+            self._sm.ei_evento_charla(n_turnos, self._sm.mood)
+        except Exception:
+            pass
         try:
             self._cerrar_memoria()   # guarda recuerdo + perfil de la persona
         except Exception as e:
@@ -1034,7 +1040,11 @@ class VoicePipeline:
         # Recorte: solo los últimos N mensajes van al LLM (ahorro de tokens). La
         # memoria de largo plazo (P1) ya está en el system prompt, no se pierde.
         hist = self._convo[-MAX_HIST_MSGS:]
-        messages = [{'role': 'system', 'content': self._system_prompt_actual}] + hist
+        # P3: inyecta el estado interno actual de Bob (energía/ánimo) para que su
+        # tono derive con el tiempo. Se recalcula por turno → refleja el cansancio
+        # acumulado dentro de una charla larga.
+        sys_content = self._system_prompt_actual + self._sm.estado_interno_prompt()
+        messages = [{'role': 'system', 'content': sys_content}] + hist
 
         try:
             stream = self._llm.chat.completions.create(
