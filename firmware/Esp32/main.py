@@ -60,7 +60,7 @@ PORT_SPK    = 5006
 PORT_CTRL   = 5007       # comandos servos/estado/seguimiento por WiFi
                          # DEBE coincidir con CONTROL_PORT en robot_bob/config.py
 SAMPLE_RATE = 8000
-INTERVAL_US = 1_000_000 // SAMPLE_RATE   # 166.67 µs por muestra
+INTERVAL_US = 1_000_000 // SAMPLE_RATE   # 125 µs por muestra @ 8 kHz
 
 MIC_CHUNK_SIZE  = 256                    # bytes por paquete TCP de mic (32 ms)
 SPK_RECV_SIZE   = 1024                   # bytes pedidos por refill del DAC
@@ -397,9 +397,17 @@ def play_mode(conn_spk, total, recv_buf):
                 received += n
                 play_len = n
                 play_pos = 0
-                # Re-anclamos la base de tiempo para evitar desfases acumulados por la recarga del socket
-                start = _ticks_us()
-                sample_idx = 0
+                # Reloj absoluto CONTINUO entre refills. Antes se re-anclaba en
+                # CADA recarga (cada SPK_RECV_SIZE muestras ≈ 128 ms) → un micro-
+                # salto de timing en cada borde de chunk = zumbido/grano periódico
+                # (~8 Hz) sobre la voz. Ahora el reloj sigue corrido y SOLO se
+                # re-ancla si la red nos atrasó > 50 ms (evita un "chipmunk" de
+                # catch-up tras un parón) o tras 200k muestras (guarda contra el
+                # overflow de ticks_us). Esto quita la interferencia periódica.
+                behind = _ticks_diff(_ticks_us(), start) - sample_idx * INTERVAL_US
+                if behind > 50000 or sample_idx >= 200000:
+                    start = _ticks_us()
+                    sample_idx = 0
 
             # ── busy-wait absoluto sobre el target del sample (evita lentitud) ──
             target_us = sample_idx * INTERVAL_US
