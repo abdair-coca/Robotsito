@@ -1158,8 +1158,11 @@ class VoicePipeline:
             if not self._audio_io.send_audio_body(u8[i:end]):
                 break
             i = end
-            # Pacing: dejar al ESP32 reproducir
-            time.sleep(TTS_SEND_CHUNK_BYTES / SAMPLE_RATE * 0.85)
+            # Pacing: dejar al ESP32 reproducir. Factor < 1.0 manda un poco más
+            # rápido que el playback para no quedarse corto de buffer. Si suben
+            # los chasquidos/cortes (buffer overrun en red lenta), sube hacia
+            # 1.0; si se oye entrecortado por falta de datos, bájalo.
+            time.sleep(TTS_SEND_CHUNK_BYTES / SAMPLE_RATE * 0.90)
         time.sleep(TTS_TAIL_S)
         return None
 
@@ -1171,6 +1174,10 @@ class VoicePipeline:
              '-i', 'pipe:0',
              '-af', TTS_FFMPEG_FILTERS,
              '-ar', str(SAMPLE_RATE), '-ac', '1',
+             # dither_method triangular al bajar a 8 bits: rompe el ruido de
+             # cuantización (grano áspero) y lo vuelve un hiss suave, mucho más
+             # tolerable en el DAC de 8 bits del ESP32.
+             '-dither_method', 'triangular',
              '-acodec', 'pcm_u8', '-f', 'u8', 'pipe:1'],
             input=mp3, capture_output=True, check=False,
         )
