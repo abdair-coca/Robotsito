@@ -9,3 +9,7 @@ memory.db
 .insightface/
 devices.json
 ffmpeg-*.log
+
+# Worktrees de subagentes (venvs completos) y salida de graphify — no versionar
+.claude/worktrees/
+graphify-out/

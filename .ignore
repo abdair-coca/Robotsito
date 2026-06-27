@@ -1,0 +1,11 @@
+# Rutas excluidas de las búsquedas de Claude Code (ripgrep respeta .ignore).
+# No afecta a git ni a `graphify query` (lee graphify-out/ directo).
+# Objetivo: que Grep/Glob no rastreen venvs/artefactos enormes (ahorro de tokens).
+.claude/worktrees/
+graphify-out/
+**/site-packages/
+**/*.venv/
+**/.venv/
+venv/
+venv311/
+__pycache__/
