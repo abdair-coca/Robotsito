@@ -131,6 +131,7 @@ def main() -> None:
                           get_frame=tracker.leer_frame)
     voice.iniciar_wake_monitor()
     voice.iniciar_soliloquio_monitor()   # Bob habla solo cuando está libre
+    voice.iniciar_recordatorio_monitor() # P9: anuncia recordatorios al vencer
 
     # ── 5. BehaviorEngine ──────────────────────────────────────────────────────
     behavior = BehaviorEngine(sm, tracker)

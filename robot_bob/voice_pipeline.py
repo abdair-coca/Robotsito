@@ -112,7 +112,14 @@ try:
     from config import MAX_FRASES_TURNO
 except Exception:
     MAX_FRASES_TURNO = 2
+# P9: recordatorios/temporizadores. Guardado por si un config viejo no lo define.
+try:
+    from config import RECORDATORIOS_ENABLED
+except Exception:
+    RECORDATORIOS_ENABLED = True
 from wake_word import WakeWordDetector
+from assistant import contexto_asistente   # P9: hora/fecha/clima por inyección
+from reminders import parse_recordatorio, ReminderStore   # P9: recordatorios
 from expression_engine import (
     pulse_emotion, react_to_user_text, react_to_bob_text,
     mood_delta_for_user_text, is_love,
@@ -454,6 +461,8 @@ class VoicePipeline:
         self._muted = threading.Event()
         # Anti-repetición de soliloquios: últimas frases dichas (texto sin tag).
         self._soliloquio_reciente: deque = deque(maxlen=5)
+        # P9: recordatorios pendientes (creados en charla, disparados en background).
+        self._recordatorios = ReminderStore()
 
         self._wake = WakeWordDetector(
             wake_word=WAKE_CANONICAL,
@@ -837,6 +846,22 @@ class VoicePipeline:
                 es_primer_turno = False
                 continue
 
+            # ── P9: crear recordatorio ("recuérdame en 5 min que...") ──────────
+            if RECORDATORIOS_ENABLED:
+                rec = parse_recordatorio(texto)
+                if rec:
+                    self._recordatorios.agregar(rec)
+                    self._sm.iniciar_hablando()
+                    ack = random.choice([
+                        f'¡Listo! Te aviso {rec.cuando_str}.',
+                        f'¡Anotado! Te lo recuerdo {rec.cuando_str}.',
+                        f'¡Hecho! {rec.cuando_str} te aviso, tranqui.'])
+                    console.print(f'[bold green]Bob[/] [dim](recordatorio '
+                                  f'{rec.cuando_str}: "{rec.que}")[/]: {ack}')
+                    self._hablar(ack, 'FELIZ')
+                    es_primer_turno = False
+                    continue
+
             # ── 4. Comandos de salida (cualquier turno) ────────────────────────
             if _is_exit(texto):
                 self._hablar('Hasta luego.')
@@ -1061,7 +1086,11 @@ class VoicePipeline:
         # P3: inyecta el estado interno actual de Bob (energía/ánimo) para que su
         # tono derive con el tiempo. Se recalcula por turno → refleja el cansancio
         # acumulado dentro de una charla larga.
-        sys_content = self._system_prompt_actual + self._sm.estado_interno_prompt()
+        # P9: si el turno pide hora/fecha/clima, inyecta datos en vivo al prompt.
+        # contexto_asistente devuelve '' cuando no hay intención de asistente.
+        sys_content = (self._system_prompt_actual
+                       + self._sm.estado_interno_prompt()
+                       + contexto_asistente(texto))
         messages = [{'role': 'system', 'content': sys_content}] + hist
 
         try:
@@ -1336,6 +1365,30 @@ class VoicePipeline:
             return
         threading.Thread(target=self._soliloquio_loop, daemon=True,
                          name='soliloquio').start()
+
+    # ── P9: monitor de recordatorios (dispara proactivamente) ──────────────────
+
+    def iniciar_recordatorio_monitor(self) -> None:
+        """Hilo que cada segundo revisa recordatorios vencidos y los anuncia
+        reusando el camino de soliloquio (anti-eco + OLED + habla)."""
+        if not RECORDATORIOS_ENABLED:
+            return
+        threading.Thread(target=self._recordatorio_loop, daemon=True,
+                         name='recordatorios').start()
+
+    def _recordatorio_loop(self) -> None:
+        while not self._detener.is_set():
+            time.sleep(1.0)
+            if self._detener.is_set():
+                break
+            # No interrumpir una charla en curso ni pisar a Bob hablando solo:
+            # NO sacamos los vencidos de la cola hasta que esté libre (se difieren).
+            if self._sm.en_conversacion or self._muted.is_set():
+                continue
+            for rec in self._recordatorios.vencidos():
+                frase = (f"[EMO:CURIOSO] ¡Ey! Me pediste que te recuerde: {rec.que}.")
+                console.print(f'[bold magenta][recordatorio][/] {rec.que}')
+                self.decir_soliloquio(frase)
 
     def _soliloquio_loop(self) -> None:
         from state_machine import RobotState
