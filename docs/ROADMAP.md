@@ -26,7 +26,7 @@ Orden recomendado: **P1 → P2 → P3 → P7 → P9 → P5 → P6 → P4 → P8 
 (las primeras son software puro sobre el cerebro de la laptop; las últimas dependen de
 CPU/visión/firmware pero siguen siendo 100% alcanzables con el alcance ya recortado).
 
-### Estado de avance (2026-06-24)
+### Estado de avance (2026-06-26)
 
 | Prioridad | Estado |
 |---|---|
@@ -36,11 +36,16 @@ CPU/visión/firmware pero siguen siendo 100% alcanzables con el alcance ya recor
 | Red / portabilidad (discovery + mDNS + multi-WiFi) | ✅ hecho (ver [NETWORK.md](NETWORK.md)) |
 | **P3 Expresividad** | ✅ hecho — estados internos (Energía/Motivación/Curiosidad/Sociabilidad) que derivan y sesgan tono/iniciativa + caras OLED nuevas (emocionado/asustado/avergonzado) en firmware + todos los tags EMO habilitados |
 | **P7 Autónomo avanzado** | ✅ hecho — el opener retoma temas de charlas pasadas (memoria P1) vía LLM |
-| P9 Asistente · P5 Juegos · P6 Música · P4 Visión · P8 Físico · P10 Dev | ❌ pendiente |
+| **P9 Asistente personal** | ✅ hecho — info inmediata (hora/fecha/clima vía wttr.in) por intent+inyección + recordatorios/temporizadores/alarmas con scheduler local y disparo proactivo (reusa el camino de soliloquio). Pendiente opcional: noticias (API). |
+| P5 Juegos · P6 Música · P4 Visión · P8 Físico · P10 Dev | ❌ pendiente |
 
-> **Foco actual:** P3 software hecho (estados internos). Lo único pendiente de P3
-> son las caras OLED nuevas (firmware, diferidas). Siguiente prioridad: **P9
-> (Asistente personal)** — hora/fecha/clima/recordatorios vía tool-calling del LLM.
+> **Foco actual:** P9 (Asistente personal) **hecho** — info inmediata
+> (hora/fecha/clima) + recordatorios/temporizadores proactivos, vía **detección de
+> intención + inyección al system prompt** (no tool-calling nativo): funciona con
+> los 3 backends incluido el LLM local chico y respeta el TTS por frase. Audio del
+> speaker afinado (ver `genesis/decisions/ADR-001` para el salto I2S pendiente).
+> Siguiente prioridad: **P5 (Juegos)** — adivinanzas/trivia (LLM) +
+> piedra-papel-tijera (MediaPipe Hands).
 
 ## Prioridad 1 — Memoria Persistente
 
