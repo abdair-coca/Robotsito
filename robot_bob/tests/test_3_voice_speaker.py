@@ -82,6 +82,7 @@ def main() -> None:
     print('\nInicializando VoicePipeline (Groq, edge-tts)...')
     voice = VoicePipeline(mgr, sm, audio_io=audio)
     voice.iniciar_wake_monitor()
+    voice.iniciar_recordatorio_monitor()   # P9: dispara recordatorios al vencer (banco P9 completo)
 
     print('\n' + '─' * 60)
     print('  ESPERANDO WAKE WORD')

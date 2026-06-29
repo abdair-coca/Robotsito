@@ -1078,6 +1078,25 @@ class VoicePipeline:
 
     # ── LLM ──────────────────────────────────────────────────────────────────
 
+    def _contexto_recordatorios(self) -> str:
+        """P9: si hay recordatorios VENCIDOS, los saca de la cola y devuelve un bloque
+        para que Bob los entregue YA dentro de su respuesta. Así, aunque estés en
+        plena charla (en_conversacion=True, el loop de fondo se difiere), el
+        recordatorio se dispara en el próximo turno en vez de perderse."""
+        if not RECORDATORIOS_ENABLED:
+            return ""
+        vencidos = self._recordatorios.vencidos()
+        if not vencidos:
+            return ""
+        for rec in vencidos:
+            console.print(f'[bold magenta][recordatorio→charla][/] {rec.que}')
+        lineas = "\n".join(f"- {r.que}" for r in vencidos)
+        return ("\n\n═══ RECORDATORIO VENCIDO (ENTREGAR AHORA, OBLIGATORIO) ═══\n"
+                "Se cumplió el tiempo de uno o más recordatorios que el usuario te pidió. "
+                "Antes de responder cualquier otra cosa, AVISALE AHORA MISMO con tu "
+                "personalidad, de forma clara y directa (no lo omitas, no lo pospongas):\n"
+                + lineas)
+
     def _stream_llm(self, texto: str) -> Iterator[str]:
         self._convo.append({'role': 'user', 'content': texto})
         # Recorte: solo los últimos N mensajes van al LLM (ahorro de tokens). La
@@ -1090,7 +1109,8 @@ class VoicePipeline:
         # contexto_asistente devuelve '' cuando no hay intención de asistente.
         sys_content = (self._system_prompt_actual
                        + self._sm.estado_interno_prompt()
-                       + contexto_asistente(texto))
+                       + contexto_asistente(texto)
+                       + self._contexto_recordatorios())
         messages = [{'role': 'system', 'content': sys_content}] + hist
 
         try:
@@ -1381,8 +1401,10 @@ class VoicePipeline:
             time.sleep(1.0)
             if self._detener.is_set():
                 break
-            # No interrumpir una charla en curso ni pisar a Bob hablando solo:
-            # NO sacamos los vencidos de la cola hasta que esté libre (se difieren).
+            # Reparto: si hay charla en curso, los recordatorios vencidos los
+            # entrega _contexto_recordatorios() inyectándolos en el próximo turno
+            # (ver _stream_llm) → NO se pierden aunque sigas hablando. Acá (libre)
+            # solo disparamos cuando NO hay charla ni Bob hablando solo.
             if self._sm.en_conversacion or self._muted.is_set():
                 continue
             for rec in self._recordatorios.vencidos():

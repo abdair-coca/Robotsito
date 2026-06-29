@@ -1,11 +1,12 @@
 """
-test_9_asistente.py — Prueba aislada del P9 (asistente: hora/fecha/clima).
+test_9_asistente.py — Prueba aislada del P9 (asistente: hora/fecha/clima/noticias).
 
 Qué prueba (sin hardware, sin LLM):
-  1. Detección de intención (hora/fecha/clima) y NO-disparo en charla normal.
+  1. Detección de intención (hora/fecha/clima/noticias) y NO-disparo en charla normal.
   2. Formato de hora/fecha en español con una fecha fija.
   3. contexto_asistente() inyecta solo lo pedido.
   4. (best-effort, red) obtener_clima() de la ciudad configurada.
+  4b. (best-effort, red) obtener_noticias() del RSS de Google News.
 
 Ejecutar:
   cd robot_bob
@@ -23,7 +24,7 @@ import assistant as A
 
 def main() -> None:
     print('═' * 60)
-    print('  TEST P9 — Asistente (hora / fecha / clima)')
+    print('  TEST P9 — Asistente (hora / fecha / clima / noticias)')
     print('═' * 60)
     fallos = 0
 
@@ -68,6 +69,34 @@ def main() -> None:
     print(f'\n  obtener_clima("{A.CLIMA_CIUDAD}") (red)...')
     clima = A.obtener_clima()
     print(f'  → {clima!r}  ' + ('(OK)' if clima else '(sin red / no disponible — no es fallo)'))
+
+    # 4b. Noticias: intención + inyección + fetch en vivo (best-effort)
+    print('\n  --- noticias ---')
+    casos_n = [
+        ("¿cuáles son las últimas noticias?", True),
+        ("dame las noticias de hoy",          True),
+        ("qué hay de nuevo en el mundo",      True),
+        ("¿qué hora es?",                     False),
+        ("cuéntame un chiste",                False),
+    ]
+    for texto, en in casos_n:
+        gn = A._quiere_noticias(texto.lower())
+        ok = gn == en
+        print(f'  [{"OK" if ok else "FALLO"}] "{texto}" → noticias={gn}')
+        if not ok:
+            fallos += 1
+    # Inyección: charla normal NO debe traer noticias
+    if "Titulares" in A.contexto_asistente("hola, ¿cómo estás?", fija):
+        print('  [FALLO] charla normal NO debe inyectar noticias'); fallos += 1
+    # Fetch en vivo (red puede fallar → no es fallo)
+    print(f'  obtener_noticias() (red)...')
+    noticias = A.obtener_noticias()
+    if noticias:
+        print(f'  → {len(noticias)} titular(es) (OK):')
+        for n in noticias:
+            print(f'      • {n}')
+    else:
+        print('  → None (sin red / no disponible — no es fallo)')
 
     # 5. Recordatorios (parse + store)
     import reminders as R
