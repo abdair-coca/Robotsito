@@ -35,6 +35,10 @@ def main() -> None:
         ("ponme la canción shape of you",          "play",     "shape of you"),
         ("quiero escuchar a soda stereo",          "play",     "soda stereo"),
         ("toca algo de los beatles",               "play",     "algo de los beatles"),
+        ("pon mi playlist de rock",                "play_playlist", "rock"),
+        ("reproduce mis playlists",                "play_playlist", None),
+        ("pon la playlist favoritas",              "play_playlist", "favoritas"),
+        ("pon mi lista de entrenamiento",          "play_playlist", "entrenamiento"),
         ("pon música",                             "resume",   None),
         ("dale play",                              "resume",   None),
         ("pausa la música",                        "pause",    None),
@@ -70,10 +74,14 @@ def main() -> None:
         print('  [FALLO] con MUSICA_ENABLED=False debe devolver None'); fallos += 1
     M.MUSICA_ENABLED = True
 
-    # ejecutar() sin cliente (sin credenciales) → frase amable, sin excepción
+    # ejecutar() sin cliente → frase amable, sin excepción y SIN tocar Spotify real.
+    # Forzamos el estado "sin credenciales" (aunque el .env tenga claves reales) para
+    # que _cliente() devuelva None y NO se dispare ninguna acción de playback.
     print('\n  --- ejecutar() sin credenciales ---')
-    M._sp = None
+    _id_bak, _en_bak, _sp_bak = M.SPOTIFY_CLIENT_ID, M.MUSICA_ENABLED, M._sp
+    M.SPOTIFY_CLIENT_ID, M.MUSICA_ENABLED, M._sp = "", False, None
     msg = M.ejecutar(M.MusicIntent("pause"))
+    M.SPOTIFY_CLIENT_ID, M.MUSICA_ENABLED, M._sp = _id_bak, _en_bak, _sp_bak
     print(f'  → {msg!r}')
     if not msg or "configurada" not in msg.lower():
         print('  [FALLO] debía avisar que falta configurar Spotify'); fallos += 1

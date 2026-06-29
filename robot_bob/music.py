@@ -32,7 +32,8 @@ except Exception:
     SPOTIFY_CLIENT_ID = SPOTIFY_CLIENT_SECRET = SPOTIFY_REDIRECT_URI = ""
     SPOTIFY_CACHE_PATH = ".spotify_cache"
 
-_SCOPE = "user-modify-playback-state user-read-playback-state"
+_SCOPE = ("user-modify-playback-state user-read-playback-state "
+          "playlist-read-private playlist-read-collaborative")
 _VOL_STEP = 15            # cuánto sube/baja el volumen por comando (%)
 
 _sp = None                # cliente spotipy perezoso (se crea al primer uso)
@@ -42,8 +43,8 @@ _sp_lock = threading.Lock()
 # ── Intención ─────────────────────────────────────────────────────────────────
 @dataclass
 class MusicIntent:
-    accion: str                       # play | resume | pause | next | prev | vol_up | vol_down
-    query: Optional[str] = None       # tema/artista a buscar (solo accion == 'play')
+    accion: str                       # play | play_playlist | resume | pause | next | prev | vol_up | vol_down
+    query: Optional[str] = None       # tema (play) o nombre de playlist (play_playlist); None = genérico
 
 
 # Gatillos para reproducir algo específico ("pon X", "reproduce X"). El grupo (.+)
@@ -51,6 +52,18 @@ class MusicIntent:
 _RE_PLAY = re.compile(
     r"\b(?:pon(?:e|me|ele)?|reproduce|reproduci|toca|escuch(?:a|ar|emos)|"
     r"quiero escuchar|quiero oir|quiero oír)\b\s+(.+)",
+    re.IGNORECASE)
+
+# Verbo de reproducción presente en la frase (para distinguir comando de charla).
+_RE_PLAY_VERB = re.compile(
+    r"\b(?:pon(?:e|me|ele)?|reproduce|reproduci|toca|escuch\w*|"
+    r"quiero (?:escuchar|oir|oír)|dale play)\b", re.IGNORECASE)
+
+# Playlist: captura el nombre tras "playlist"/"lista (de reproducción)". Acepta
+# plural y conectores ("de", "llamada", "que se llama"). Sin nombre → playlist genérica.
+_RE_PLAYLIST = re.compile(
+    r"\b(?:playlists?|listas?(?:\s+de\s+reproducci[oó]n)?)\b\s*"
+    r"(?:de\s+|llamada\s+|titulada\s+|que se llama\s+)?(.*)$",
     re.IGNORECASE)
 
 # Frases sin tema → reanudar / poner música genérica.
@@ -105,6 +118,17 @@ def parse_music_command(texto: str) -> Optional[MusicIntent]:
         return MusicIntent("vol_down")
     if any(k in t for k in _KW_RESUME):
         return MusicIntent("resume")
+
+    # Playlist ("pon mi playlist de rock", "reproduce mis playlists"). Va ANTES de
+    # _RE_PLAY para que "playlist X" no se interprete como un tema suelto. Requiere
+    # un verbo de reproducción para no confundir charla ("tengo una playlist").
+    if _RE_PLAY_VERB.search(t):
+        mpl = _RE_PLAYLIST.search(texto)
+        if mpl:
+            nombre = _limpiar_query(mpl.group(1))
+            # sacar posesivos sueltos que queden ("mi", "mis")
+            nombre = re.sub(r"^(?:mi|mis|tu|tus)\s+", "", nombre, flags=re.IGNORECASE).strip()
+            return MusicIntent("play_playlist", query=nombre or None)
 
     # Reproducir algo específico ("pon despacito", "reproduce bohemian rhapsody").
     m = _RE_PLAY.search(texto)
@@ -182,6 +206,25 @@ def ejecutar(intent: MusicIntent) -> str:
             except spotipy.SpotifyException:
                 return "Encontré la canción pero no hay un Spotify activo donde reproducirla; abrilo."
             return f"¡Dale! Poniendo {nombre}" + (f" de {artista}." if artista else ".")
+
+        if intent.accion == "play_playlist":
+            pls = sp.current_user_playlists(limit=50).get("items", [])
+            if not pls:
+                return "No veo playlists en tu cuenta de Spotify."
+            if intent.query:
+                q = intent.query.lower()
+                # 1º coincidencia exacta, si no, la primera que contenga el nombre.
+                match = (next((p for p in pls if p["name"].lower() == q), None)
+                         or next((p for p in pls if q in p["name"].lower()), None))
+                if not match:
+                    return f"No encontré una playlist que se llame «{intent.query}»."
+            else:
+                match = pls[0]               # sin nombre → la primera de tu lista
+            try:
+                sp.start_playback(context_uri=match["uri"])
+            except spotipy.SpotifyException:
+                return "Encontré la playlist pero no hay un Spotify activo; abrilo."
+            return f"¡Dale! Poniendo tu playlist {match['name']}."
 
         if intent.accion == "resume":
             sp.start_playback()
