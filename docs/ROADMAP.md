@@ -36,7 +36,7 @@ CPU/visión/firmware pero siguen siendo 100% alcanzables con el alcance ya recor
 | Red / portabilidad (discovery + mDNS + multi-WiFi) | ✅ hecho (ver [NETWORK.md](NETWORK.md)) |
 | **P3 Expresividad** | ✅ hecho — estados internos (Energía/Motivación/Curiosidad/Sociabilidad) que derivan y sesgan tono/iniciativa + caras OLED nuevas (emocionado/asustado/avergonzado) en firmware + todos los tags EMO habilitados |
 | **P7 Autónomo avanzado** | ✅ hecho — el opener retoma temas de charlas pasadas (memoria P1) vía LLM |
-| **P9 Asistente personal** | ✅ hecho — info inmediata (hora/fecha/clima vía wttr.in) por intent+inyección + recordatorios/temporizadores/alarmas con scheduler local y disparo proactivo (reusa el camino de soliloquio). Pendiente opcional: noticias (API). |
+| **P9 Asistente personal** | ✅ hecho — info inmediata (hora/fecha/clima vía wttr.in + noticias/titulares vía RSS de Google News, sin API key) por intent+inyección + recordatorios/temporizadores/alarmas con scheduler local y disparo proactivo (reusa el camino de soliloquio). |
 | P5 Juegos · P6 Música · P4 Visión · P8 Físico · P10 Dev | ❌ pendiente |
 
 > **Foco actual:** P9 (Asistente personal) **hecho** — info inmediata
@@ -94,7 +94,7 @@ Ej: *"La última vez hablábamos de tu robot, ¿cómo va?"*
 ## Prioridad 9 — Asistente Personal
 
 ### Información
-Hora · Fecha (local) · Clima · Noticias (vía API).
+Hora · Fecha (local) · Clima · Noticias (titulares vía RSS de Google News, sin API key).
 
 ### Productividad
 Alarmas · Recordatorios · Temporizadores · Agenda (scheduling local + tool-calling del LLM).

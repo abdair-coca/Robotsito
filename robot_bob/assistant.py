@@ -1,5 +1,5 @@
 """
-assistant.py — P9 Asistente Personal de Bob (info inmediata: hora / fecha / clima).
+assistant.py — P9 Asistente Personal de Bob (info inmediata: hora / fecha / clima / noticias).
 
 Enfoque: DETECCIÓN DE INTENCIÓN + INYECCIÓN al system prompt. NO usa tool-calling
 nativo del LLM. Por qué:
@@ -14,21 +14,27 @@ por hora/fecha/clima, devuelve un bloque de DATOS FRESCOS para concatenar al sys
 prompt; el LLM lo redacta con la personalidad de Bob (no leemos datos crudos en voz
 alta). Si no hay intención de asistente, devuelve '' y no cambia nada.
 
-Sin dependencias nuevas: datetime + urllib (stdlib). El clima usa wttr.in, que NO
-pide API key (cero setup para la feria).
+Sin dependencias nuevas: datetime + urllib + xml.etree (stdlib). El clima usa
+wttr.in y las noticias el RSS de Google News; ninguno pide API key (cero setup
+para la feria).
 """
 
 from __future__ import annotations
 
 import time
 import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 try:
-    from config import CLIMA_ENABLED, CLIMA_CIUDAD
+    from config import (CLIMA_ENABLED, CLIMA_CIUDAD,
+                        NOTICIAS_ENABLED, NOTICIAS_RSS_URL, NOTICIAS_MAX)
 except Exception:
     CLIMA_ENABLED, CLIMA_CIUDAD = True, "Potosí"
+    NOTICIAS_ENABLED = True
+    NOTICIAS_RSS_URL = "https://news.google.com/rss?hl=es-419&gl=BO&ceid=BO:es-419"
+    NOTICIAS_MAX = 3
 
 # ── Nombres en español (locale de Windows poco fiable → hardcode) ───────────────
 _DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
@@ -46,6 +52,10 @@ _KW_CLIMA = ("clima", "temperatura", "qué tiempo hace", "que tiempo hace", "el 
              "hace frío", "hace frio", "hace calor", "va a llover", "está lloviendo",
              "esta lloviendo", "lluvia", "pronóstico", "pronostico", "grados hace",
              "cuántos grados", "cuantos grados")
+_KW_NOTICIAS = ("noticias", "noticia", "titulares", "qué pasa en el mundo",
+                "que pasa en el mundo", "qué está pasando", "que esta pasando",
+                "últimas noticias", "ultimas noticias", "qué hay de nuevo",
+                "que hay de nuevo", "novedades")
 
 
 def _quiere_hora(t: str) -> bool:
@@ -56,6 +66,9 @@ def _quiere_fecha(t: str) -> bool:
 
 def _quiere_clima(t: str) -> bool:
     return any(k in t for k in _KW_CLIMA)
+
+def _quiere_noticias(t: str) -> bool:
+    return any(k in t for k in _KW_NOTICIAS)
 
 
 # ── Hora / fecha ────────────────────────────────────────────────────────────────
@@ -100,6 +113,43 @@ def obtener_clima(ciudad: Optional[str] = None) -> Optional[str]:
         return None
 
 
+# ── Noticias (Google News RSS, sin API key, con caché) ──────────────────────────
+_noticias_cache: dict = {}     # url -> (timestamp_monotonic, [titulares])
+_NOTICIAS_TTL_S = 600          # 10 min: evita re-fetch en cada turno
+
+def obtener_noticias(n: Optional[int] = None) -> Optional[List[str]]:
+    """
+    Devuelve una lista de titulares (str) del RSS de Google News, o None si falla
+    la red / parseo. Cachea ~10 min. Timeout corto para no colgar el turno.
+    """
+    if not NOTICIAS_ENABLED:
+        return None
+    n = n or NOTICIAS_MAX
+    ahora = time.monotonic()
+    hit = _noticias_cache.get(NOTICIAS_RSS_URL)
+    if hit and ahora - hit[0] < _NOTICIAS_TTL_S:
+        return hit[1][:n]
+    try:
+        req = urllib.request.Request(NOTICIAS_RSS_URL, headers={"User-Agent": "curl/8.0"})
+        with urllib.request.urlopen(req, timeout=4.0) as r:
+            raw = r.read()
+        root = ET.fromstring(raw)
+        # RSS 2.0: rss > channel > item > title. Google News antepone " - Fuente"
+        # al título; lo cortamos para dejar solo el titular.
+        titulares = []
+        for item in root.iterfind(".//item/title"):
+            t = (item.text or "").strip()
+            if not t:
+                continue
+            titulares.append(t.rsplit(" - ", 1)[0].strip())
+        if not titulares:
+            return None
+        _noticias_cache[NOTICIAS_RSS_URL] = (ahora, titulares)
+        return titulares[:n]
+    except Exception:
+        return None
+
+
 # ── API pública ─────────────────────────────────────────────────────────────────
 def contexto_asistente(texto: str, now: Optional[datetime] = None) -> str:
     """
@@ -110,7 +160,8 @@ def contexto_asistente(texto: str, now: Optional[datetime] = None) -> str:
     quiere_hora = _quiere_hora(t)
     quiere_fecha = _quiere_fecha(t)
     quiere_clima = _quiere_clima(t)
-    if not (quiere_hora or quiere_fecha or quiere_clima):
+    quiere_noticias = _quiere_noticias(t)
+    if not (quiere_hora or quiere_fecha or quiere_clima or quiere_noticias):
         return ""
 
     lineas = []
@@ -125,6 +176,14 @@ def contexto_asistente(texto: str, now: Optional[datetime] = None) -> str:
         else:
             lineas.append(f"- Clima en {CLIMA_CIUDAD}: no disponible ahora (sin "
                           "conexión); admití que no lo pudiste consultar.")
+    if quiere_noticias:
+        noticias = obtener_noticias()
+        if noticias:
+            lineas.append("- Titulares de hoy:")
+            lineas.extend(f"    • {titular}" for titular in noticias)
+        else:
+            lineas.append("- Noticias: no disponibles ahora (sin conexión); admití "
+                          "que no las pudiste consultar.")
     if not lineas:
         return ""
 
