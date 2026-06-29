@@ -37,7 +37,8 @@ CPU/visión/firmware pero siguen siendo 100% alcanzables con el alcance ya recor
 | **P3 Expresividad** | ✅ hecho — estados internos (Energía/Motivación/Curiosidad/Sociabilidad) que derivan y sesgan tono/iniciativa + caras OLED nuevas (emocionado/asustado/avergonzado) en firmware + todos los tags EMO habilitados |
 | **P7 Autónomo avanzado** | ✅ hecho — el opener retoma temas de charlas pasadas (memoria P1) vía LLM |
 | **P9 Asistente personal** | ✅ hecho — info inmediata (hora/fecha/clima vía wttr.in + noticias/titulares vía RSS de Google News, sin API key) por intent+inyección + recordatorios/temporizadores/alarmas con scheduler local y disparo proactivo (reusa el camino de soliloquio). |
-| P5 Juegos · P6 Música · P4 Visión · P8 Físico · P10 Dev | ❌ pendiente |
+| **P6 Música** | ✅ hecho (control) — play/pausa/siguiente/anterior/volumen + reproducir tema por nombre vía **Spotify Web API** (`music.py`, patrón intent+acción). Suena por el Spotify Connect activo (laptop), requiere premium + credenciales en `.env`. Entretenimiento (chistes/historias) ya lo cubre el LLM. |
+| P5 Juegos · P4 Visión · P8 Físico · P10 Dev | ❌ pendiente |
 
 > **Foco actual:** P9 (Asistente personal) **hecho** — info inmediata
 > (hora/fecha/clima) + recordatorios/temporizadores proactivos, vía **detección de

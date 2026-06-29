@@ -1,6 +1,7 @@
 # Secretos y entorno
 config.py
 .env
+.spotify_cache
 venv/
 __pycache__/
 *.pyc

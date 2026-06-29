@@ -119,6 +119,11 @@ except Exception:
     RECORDATORIOS_ENABLED = True
 from wake_word import WakeWordDetector
 from assistant import contexto_asistente   # P9: hora/fecha/clima por inyección
+try:
+    from config import MUSICA_ENABLED
+except Exception:
+    MUSICA_ENABLED = False
+from music import parse_music_command, ejecutar as ejecutar_musica  # P6: Spotify
 from reminders import parse_recordatorio, ReminderStore   # P9: recordatorios
 from expression_engine import (
     pulse_emotion, react_to_user_text, react_to_bob_text,
@@ -858,6 +863,18 @@ class VoicePipeline:
                         f'¡Hecho! {rec.cuando_str} te aviso, tranqui.'])
                     console.print(f'[bold green]Bob[/] [dim](recordatorio '
                                   f'{rec.cuando_str}: "{rec.que}")[/]: {ack}')
+                    self._hablar(ack, 'FELIZ')
+                    es_primer_turno = False
+                    continue
+
+            # ── P6: control de música (Spotify) ────────────────────────────────
+            if MUSICA_ENABLED:
+                mintent = parse_music_command(texto)
+                if mintent:
+                    self._sm.iniciar_hablando()
+                    ack = ejecutar_musica(mintent)          # hace la llamada a Spotify
+                    console.print(f'[bold green]Bob[/] [dim](música:{mintent.accion}'
+                                  f'{" «"+mintent.query+"»" if mintent.query else ""})[/]: {ack}')
                     self._hablar(ack, 'FELIZ')
                     es_primer_turno = False
                     continue

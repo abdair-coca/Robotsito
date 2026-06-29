@@ -33,5 +33,9 @@ onnxruntime>=1.16
 # Reproducción local
 pygame>=2.5
 
+# P6 — control de música por Spotify (play/pause/volumen). Requiere cuenta premium
+# y credenciales en .env (SPOTIFY_CLIENT_ID/SECRET/REDIRECT_URI).
+spotipy>=2.23
+
 # UI terminal
 rich>=13.7
