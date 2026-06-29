@@ -82,8 +82,8 @@ adc = ADC(Pin(34))
 adc.atten(ADC.ATTN_11DB)
 adc.width(ADC.WIDTH_12BIT)
 
-# Speaker (PAM8403) por el DAC interno (GPIO25)
-dac = DAC(Pin(25))
+# Speaker (PAM8403) por el DAC interno (GPIO26 = DAC2)
+dac = DAC(Pin(26))
 dac.write(128)
 
 # Servos pan/tilt
@@ -541,6 +541,16 @@ def hilo_oled():
                     next_blink_at = ahora + OLED_BLINK_MIN_MS + (urandom.getrandbits(12) % (OLED_BLINK_MAX_MS - OLED_BLINK_MIN_MS))
 
                 idle_ms = utime.ticks_diff(ahora, state_started_at)
+
+                # ── Anti-stutter de audio ────────────────────────────────────
+                # Durante PLAY, cada show() del OLED bloquea el bus I2C ~25ms y le
+                # roba CPU al busy-wait de audio (8 kHz) → sonido entrecortado
+                # ("motor arrancando", ~4.5 Hz = 1/OLED_FPS_MS_AUDIO). Dibujamos
+                # UN frame al entrar a HABLANDO (frame_n==0) y luego CONGELAMOS el
+                # OLED (cero I2C) hasta que termine el audio. Ojos fijos pero audio liso.
+                if reproduciendo and frame_n > 0:
+                    utime.sleep_ms(OLED_FPS_MS_AUDIO)
+                    continue
 
                 # Boca animada en HABLANDO (oscilación tipo seno)
                 mouth = 0.0
