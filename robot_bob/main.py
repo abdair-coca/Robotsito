@@ -132,6 +132,7 @@ def main() -> None:
     voice.iniciar_wake_monitor()
     voice.iniciar_soliloquio_monitor()   # Bob habla solo cuando está libre
     voice.iniciar_recordatorio_monitor() # P9: anuncia recordatorios al vencer
+    voice.iniciar_baile_monitor()        # apaga el baile cuando la música para
 
     # ── 5. BehaviorEngine ──────────────────────────────────────────────────────
     behavior = BehaviorEngine(sm, tracker)

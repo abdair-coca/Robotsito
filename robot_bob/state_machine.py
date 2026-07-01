@@ -106,6 +106,11 @@ class StateMachine:
         self.scan_request: str | None = None
         self._cara_visible: bool = False
 
+        # Baile: set mientras suena música. BehaviorEngine lo lee y mueve la cabeza
+        # al ritmo; el wake monitor sigue activo (no es estado de conversación). Se
+        # limpia al entrar en LISTENING (el usuario dijo "Bob") o cuando para la música.
+        self.bailando = threading.Event()
+
         # ── Mood drift (InteractiveGoal Fase A) ────────────────────────────
         # Estado de ánimo acumulado DENTRO de la conversación actual.
         # Rango [-1.0, +1.0]. Se resetea al volver a IDLE.
@@ -427,6 +432,10 @@ class StateMachine:
         self.ev_hablando.clear()
         self.ev_idle_conv.clear()
         self.ev_idle.clear()
+
+        # Entrar en conversación corta el baile: Bob deja de bailar y atiende.
+        if nuevo == RobotState.LISTENING:
+            self.bailando.clear()
 
         if nuevo == RobotState.LISTENING:
             self.ev_escuchando.set()

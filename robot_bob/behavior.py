@@ -64,6 +64,18 @@ try:
 except Exception:
     SCAN_GIRO_VELOCIDAD = 45
 
+# Config de baile (mientras suena música). Fallback si un config viejo no la trae.
+try:
+    from config import (BAILE_ENABLED, BAILE_PAN_AMPL, BAILE_PAN_PERIODO,
+                        BAILE_TILT_AMPL, BAILE_TILT_PERIODO, BAILE_OLED,
+                        BAILE_MOTORES, BAILE_MOTOR_VEL, BAILE_WIGGLE_S)
+except Exception:
+    BAILE_ENABLED = False
+    BAILE_PAN_AMPL, BAILE_PAN_PERIODO = 35.0, 1.10
+    BAILE_TILT_AMPL, BAILE_TILT_PERIODO = 14.0, 0.55
+    BAILE_OLED = "MUY_FELIZ"
+    BAILE_MOTORES, BAILE_MOTOR_VEL, BAILE_WIGGLE_S = False, 50, 0.55
+
 # Comandos de giro sobre el eje (izq, der) para mover_motores del firmware.
 _GIRO_IZQ = (-1, 1)
 _GIRO_DER = (1, -1)
@@ -159,6 +171,12 @@ class BehaviorEngine:
         self._scan_bursts  = 0
         self._scan_max     = 0
         self._scan_next    = 0.0
+
+        # Baile (mientras suena música)
+        self._baile_prev       = False
+        self._baile_oled_last  = 0.0
+        self._baile_motor_dir  = 1      # +1/-1: sentido del contoneo del cuerpo
+        self._baile_motor_next = 0.0    # cuándo invertir el sentido
 
         self._hilo = threading.Thread(target=self._loop, daemon=True, name='behavior-engine')
         self._hilo.start()
@@ -409,6 +427,21 @@ class BehaviorEngine:
             return
         self._asleep_prev = False
 
+        # ── Baile: mientras suena música, Bob se mueve al ritmo (cabeza + cuerpo) ─
+        # Tiene prioridad sobre scan/tracking/idle. El wake monitor sigue activo
+        # aparte, así que decir "Bob" limpia el flag (state_machine) y corta el baile.
+        if BAILE_ENABLED and self._sm.bailando.is_set():
+            self._tick_baile(ahora)
+            return
+        if self._baile_prev:
+            # Recién terminó el baile → parar el cuerpo y soltar la cabeza.
+            self._baile_prev = False
+            self._parar_giro()
+            try:
+                self._sm._serial.cmd_motor(0, 0)
+            except Exception:
+                pass
+
         # Escaneo: busca al que habla girando (corre en cualquier estado).
         self._maybe_scan(det, ahora)
         if self._scan_activo and det is None:
@@ -532,6 +565,43 @@ class BehaviorEngine:
         # Actualizar los objetivos internos del tracker (necesario para el cálculo de siguiente tick)
         self._tracker.pan_obj  = pan_real
         self._tracker.tilt_obj = tilt_real
+
+    def _tick_baile(self, ahora: float) -> None:
+        """Baile al ritmo: la cabeza barre en pan (lento) y cabecea en tilt (rápido).
+        Opcional, el cuerpo se contonea en el lugar (BAILE_MOTORES). Movimiento
+        marcado a propósito (poco suavizado, paso amplio) para que se note."""
+        self._baile_prev = True
+
+        # Cara contenta mientras baila. El serial deduplica el mismo ESTADO < 1 s,
+        # así que mandarlo cada ~1 s alcanza sin spamear el canal.
+        if ahora - self._baile_oled_last > 1.0:
+            try:
+                self._sm._serial.cmd_estado(BAILE_OLED)
+            except Exception:
+                pass
+            self._baile_oled_last = ahora
+
+        # Cabeza: pan (horizontal) lento + tilt (cabeceo) al doble de frecuencia.
+        pan  = PAN_HOME  + BAILE_PAN_AMPL  * math.sin(2.0 * math.pi * ahora / BAILE_PAN_PERIODO)
+        tilt = TILT_HOME + BAILE_TILT_AMPL * math.sin(2.0 * math.pi * ahora / BAILE_TILT_PERIODO)
+        self._pan_obj  = _clamp(pan,  PAN_MIN,  PAN_MAX)
+        self._tilt_obj = _clamp(tilt, TILT_MIN, TILT_MAX)
+        self._tracker.set_objetivo(self._pan_obj, self._tilt_obj)
+        self._tracker.actualizar_servo(None, suavizado=0.55,
+                                       max_paso_pan=5.0, max_paso_tilt=5.0)
+
+        # Contoneo del cuerpo (solo con ruedas): invierte el sentido cada
+        # BAILE_WIGGLE_S → gira en el lugar a un lado y al otro al ritmo.
+        if BAILE_MOTORES and MOTORES_ENABLED:
+            if ahora >= self._baile_motor_next:
+                self._baile_motor_dir *= -1
+                self._baile_motor_next = ahora + BAILE_WIGGLE_S
+            base = _GIRO_DER if self._baile_motor_dir > 0 else _GIRO_IZQ
+            try:
+                self._sm._serial.cmd_motor(base[0] * BAILE_MOTOR_VEL,
+                                           base[1] * BAILE_MOTOR_VEL)
+            except Exception:
+                pass
 
     def _tick_thinking(self) -> None:
         """

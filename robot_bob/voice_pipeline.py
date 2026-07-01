@@ -79,6 +79,18 @@ try:
 except Exception:
     WAKE_MIN_LEVEL = 1.3
 
+# Cuántos tokens iniciales escanea el detector buscando "Bob" (sensibilidad).
+try:
+    from config import WAKE_SCAN_TOKENS
+except Exception:
+    WAKE_SCAN_TOKENS = 2
+
+# Prompt de sesgo para Whisper (mejora el reconocimiento). '' si config viejo.
+try:
+    from config import STT_PROMPT
+except Exception:
+    STT_PROMPT = ""
+
 # Memoria persistente (P1).
 try:
     from config import MEMORIA_ENABLED
@@ -123,7 +135,8 @@ try:
     from config import MUSICA_ENABLED
 except Exception:
     MUSICA_ENABLED = False
-from music import parse_music_command, ejecutar as ejecutar_musica  # P6: Spotify
+from music import (parse_music_command, ejecutar as ejecutar_musica,  # P6: Spotify
+                   esta_sonando as sonando_musica)                    # baile
 from reminders import parse_recordatorio, ReminderStore   # P9: recordatorios
 from expression_engine import (
     pulse_emotion, react_to_user_text, react_to_bob_text,
@@ -468,6 +481,13 @@ class VoicePipeline:
         self._soliloquio_reciente: deque = deque(maxlen=5)
         # P9: recordatorios pendientes (creados en charla, disparados en background).
         self._recordatorios = ReminderStore()
+        # Baile: momento en que arrancó (gracia antes de que el monitor lo corte,
+        # porque Spotify tarda un instante en reportar is_playing tras start_playback).
+        self._t_baile_inicio = 0.0
+        # Hint: "puede haber música sonando". Lo prende un comando de play; mientras
+        # esté prendido el monitor consulta a Spotify para sostener/cortar el baile.
+        # Se apaga cuando la música efectivamente paró → el monitor deja de consultar.
+        self._baile_hint = False
 
         self._wake = WakeWordDetector(
             wake_word=WAKE_CANONICAL,
@@ -476,6 +496,7 @@ class VoicePipeline:
             fuzzy_threshold=WAKE_FUZZY_THR,
             cooldown_s=WAKE_COOLDOWN_S,
             max_utterance_chars=WAKE_MAX_UTTR_CHARS,
+            max_scan_tokens=WAKE_SCAN_TOKENS,
         )
 
         # Pygame para reproducción local
@@ -875,6 +896,18 @@ class VoicePipeline:
                     ack = ejecutar_musica(mintent)          # hace la llamada a Spotify
                     console.print(f'[bold green]Bob[/] [dim](música:{mintent.accion}'
                                   f'{" «"+mintent.query+"»" if mintent.query else ""})[/]: {ack}')
+                    # Baile: si arrancó música, Bob sale de la charla y se pone a
+                    # bailar con el wake monitor activo (decir "Bob" lo corta). Si
+                    # la pausó, deja de bailar.
+                    if mintent.accion in ('play', 'play_playlist', 'resume'):
+                        self._t_baile_inicio = time.monotonic()
+                        self._baile_hint = True
+                        self._sm.bailando.set()
+                        self._hablar(ack, 'MUY_FELIZ')
+                        break          # fin de charla → wake monitor + baile activos
+                    if mintent.accion == 'pause':
+                        self._baile_hint = False
+                        self._sm.bailando.clear()
                     self._hablar(ack, 'FELIZ')
                     es_primer_turno = False
                     continue
@@ -1083,6 +1116,11 @@ class VoicePipeline:
                     file=('audio.wav', wav_bytes, 'audio/wav'),
                     model=GROQ_STT_MODEL,
                     language='es',
+                    # Sesgo de vocabulario: empuja "Bob" y los comandos (música,
+                    # volumen, giros) → menos confusiones de Whisper.
+                    prompt=STT_PROMPT or None,
+                    # temperature=0 → transcripción determinista, menos alucinación.
+                    temperature=0.0,
                     response_format='json',
                 )
                 return resp.text.strip()
@@ -1412,6 +1450,53 @@ class VoicePipeline:
             return
         threading.Thread(target=self._recordatorio_loop, daemon=True,
                          name='recordatorios').start()
+
+    # ── Baile: monitor que apaga el baile cuando la música para ────────────────
+
+    def iniciar_baile_monitor(self) -> None:
+        """Hilo que, mientras Bob baila, vigila Spotify: si la música ya no suena
+        (terminó la canción, la pausaron desde el celular, etc.), limpia el flag de
+        baile para que BehaviorEngine vuelva a su comportamiento normal."""
+        if not MUSICA_ENABLED:
+            return
+        threading.Thread(target=self._baile_monitor_loop, daemon=True,
+                         name='baile-monitor').start()
+
+    def _baile_monitor_loop(self) -> None:
+        while not self._detener.is_set():
+            self._detener.wait(2.0)
+            if self._detener.is_set():
+                break
+            # Solo consultamos a Spotify si hay una sesión de música en curso
+            # (hint) o si Bob ya está bailando. Sin esto no se gasta red.
+            if not (self._baile_hint or self._sm.bailando.is_set()):
+                continue
+            # No tocar el baile mientras Bob charla o habla solo (el wake ya limpió
+            # el flag al entrar a LISTENING; al terminar la charla acá se re-evalúa).
+            if self._sm.en_conversacion or self._muted.is_set():
+                continue
+            try:
+                sonando = sonando_musica()
+            except Exception:
+                continue
+            if sonando:
+                # Música sonando y Bob libre → asegurar que esté bailando
+                # (re-arranca el baile tras una charla de "siguiente"/"volumen").
+                if not self._sm.bailando.is_set():
+                    self._t_baile_inicio = time.monotonic()
+                    self._baile_hint = True
+                    self._sm.bailando.set()
+                    console.print('[dim][baile] música sonando → a bailar[/]')
+            else:
+                # Gracia: Spotify tarda un instante en reportar is_playing tras
+                # start_playback; no cortar el baile en los primeros segundos.
+                if self._sm.bailando.is_set() and \
+                        time.monotonic() - self._t_baile_inicio < 4.0:
+                    continue
+                if self._sm.bailando.is_set():
+                    console.print('[dim][baile] la música paró → fin del baile[/]')
+                self._sm.bailando.clear()
+                self._baile_hint = False     # música terminó → dejar de consultar
 
     def _recordatorio_loop(self) -> None:
         while not self._detener.is_set():
