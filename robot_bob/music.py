@@ -43,8 +43,9 @@ _sp_lock = threading.Lock()
 # ── Intención ─────────────────────────────────────────────────────────────────
 @dataclass
 class MusicIntent:
-    accion: str                       # play | play_playlist | resume | pause | next | prev | vol_up | vol_down
+    accion: str                       # play | play_playlist | resume | pause | next | prev | vol_up | vol_down | vol_set
     query: Optional[str] = None       # tema (play) o nombre de playlist (play_playlist); None = genérico
+    valor: Optional[int] = None       # volumen absoluto 0-100 (solo vol_set)
 
 
 # Gatillos para reproducir algo específico ("pon X", "reproduce X"). El grupo (.+)
@@ -75,18 +76,61 @@ _KW_PAUSE = ("pausa", "pausá", "pará la música", "para la música",
              "frena la música", "stop")
 _KW_NEXT = ("siguiente canción", "próxima canción", "proxima canción",
             "otra canción", "cambia de canción", "cambia la canción",
-            "salta la canción", "siguiente tema", "pasa la canción")
+            "salta la canción", "siguiente tema", "pasa la canción",
+            "siguiente", "próxima", "proxima", "salta", "sáltala", "saltala",
+            "cambia de tema", "la que sigue", "pasa a la otra", "siguiente tema",
+            "ponme otra", "pon otra")
 _KW_PREV = ("canción anterior", "tema anterior", "vuelve a la anterior",
-            "la anterior", "regresa la canción", "atrás la canción")
-_KW_VOL_UP = ("sube el volumen", "subí el volumen", "más fuerte", "más alto",
-              "más volumen", "sube la música")
-_KW_VOL_DOWN = ("baja el volumen", "bajá el volumen", "más bajo", "más despacio",
-                "menos volumen", "baja la música")
+            "la anterior", "regresa la canción", "atrás la canción",
+            "anterior", "la de antes", "vuelve atrás", "vuelve atras",
+            "retrocede", "regresa", "la previa", "pon la anterior")
+_KW_VOL_UP = ("sube el volumen", "subí el volumen", "más fuerte", "mas fuerte",
+              "más alto", "mas alto", "más volumen", "mas volumen",
+              "sube la música", "sube la musica", "súbele", "subele",
+              "ponlo más fuerte", "ponlo mas fuerte", "más duro", "mas duro")
+_KW_VOL_DOWN = ("baja el volumen", "bajá el volumen", "más bajo", "mas bajo",
+                "más despacio", "mas despacio", "menos volumen",
+                "baja la música", "baja la musica", "bájale", "bajale",
+                "ponlo más bajo", "ponlo mas bajo", "más suave", "mas suave",
+                "más despacito", "mas despacito")
 
 # Palabras de relleno a quitar del tema buscado ("pon la canción X" → "X").
 _FILLER_QUERY = re.compile(
     r"^(?:la|el|una|un|esa|ese|esta|este|por favor|porfa|"
     r"canción|cancion|tema|música|musica|de|a)\s+", re.IGNORECASE)
+
+
+# ── Volumen por porcentaje ("pon el volumen al 70 por ciento") ─────────────────
+# Whisper a veces escribe el número como dígitos ("70") y a veces como palabra
+# ("setenta"). Cubrimos ambos: dígitos directos y un mapa de palabras comunes.
+_NUM_PALABRA = {
+    "cero": 0, "diez": 10, "quince": 15, "veinte": 20, "veinticinco": 25,
+    "treinta": 30, "treinta y cinco": 35, "cuarenta": 40, "cuarenta y cinco": 45,
+    "cincuenta": 50, "cincuenta y cinco": 55, "sesenta": 60, "sesenta y cinco": 65,
+    "setenta": 70, "setenta y cinco": 75, "ochenta": 80, "ochenta y cinco": 85,
+    "noventa": 90, "noventa y cinco": 95, "cien": 100, "ciento": 100,
+    "mitad": 50, "medio": 50, "máximo": 100, "maximo": 100, "tope": 100,
+    "mínimo": 0, "minimo": 0,
+}
+# Dispara si el texto habla de volumen y trae un número, o si trae "X por ciento".
+_RE_PORCENTAJE = re.compile(r"(\d{1,3})\s*(?:%|por\s*ciento|por\s*cien)?", re.IGNORECASE)
+
+
+def _parse_vol_set(t: str) -> Optional[int]:
+    """Devuelve el volumen absoluto 0-100 si `t` lo pide ('volumen al 70'), o None."""
+    menciona_vol = "volumen" in t
+    menciona_pct = ("por ciento" in t) or ("por cien" in t) or ("%" in t)
+    if not (menciona_vol or menciona_pct):
+        return None
+    # 1) Dígitos ("70", "70%", "al 70 por ciento").
+    m = re.search(r"\b(\d{1,3})\b", t)
+    if m:
+        return max(0, min(100, int(m.group(1))))
+    # 2) Palabra-número (match más largo primero: "setenta y cinco" antes que "setenta").
+    for palabra in sorted(_NUM_PALABRA, key=len, reverse=True):
+        if palabra in t:
+            return max(0, min(100, _NUM_PALABRA[palabra]))
+    return None
 
 
 def _limpiar_query(q: str) -> str:
@@ -112,6 +156,11 @@ def parse_music_command(texto: str) -> Optional[MusicIntent]:
         return MusicIntent("next")
     if any(k in t for k in _KW_PREV):
         return MusicIntent("prev")
+    # Volumen ABSOLUTO ("pon el volumen al 70 por ciento") ANTES que sube/baja,
+    # porque "baja el volumen a 30" trae número → es vol_set, no vol_down.
+    vol = _parse_vol_set(t)
+    if vol is not None:
+        return MusicIntent("vol_set", valor=vol)
     if any(k in t for k in _KW_VOL_UP):
         return MusicIntent("vol_up")
     if any(k in t for k in _KW_VOL_DOWN):
@@ -173,6 +222,19 @@ def _dispositivo_activo(sp) -> bool:
     try:
         pb = sp.current_playback()
         return bool(pb and pb.get("device"))
+    except Exception:
+        return False
+
+
+def esta_sonando() -> bool:
+    """True si Spotify está reproduciendo algo AHORA. Lo usa el baile para saber
+    cuándo parar. Defensivo: cualquier fallo (sin red/cliente/premium) → False."""
+    sp = _cliente()
+    if sp is None:
+        return False
+    try:
+        pb = sp.current_playback()
+        return bool(pb and pb.get("is_playing"))
     except Exception:
         return False
 
@@ -241,6 +303,11 @@ def ejecutar(intent: MusicIntent) -> str:
         if intent.accion == "prev":
             sp.previous_track()
             return "Volviendo a la anterior."
+
+        if intent.accion == "vol_set":
+            v = max(0, min(100, int(intent.valor if intent.valor is not None else 50)))
+            sp.volume(v)
+            return f"¡Listo! Volumen al {v} por ciento."
 
         if intent.accion in ("vol_up", "vol_down"):
             pb = sp.current_playback()
