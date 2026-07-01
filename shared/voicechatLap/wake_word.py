@@ -126,6 +126,7 @@ class WakeWordDetector:
         fuzzy_threshold: int = 78,
         cooldown_s: float = 1.5,
         max_utterance_chars: int = 100,
+        max_scan_tokens: int = 2,
     ) -> None:
         self.wake_word = _normalize(wake_word)
 
@@ -145,6 +146,10 @@ class WakeWordDetector:
         self.fuzzy_threshold = int(fuzzy_threshold)
         self.cooldown_s = float(cooldown_s)
         self.max_utterance_chars = int(max_utterance_chars)
+        # Cuántos de los primeros tokens se escanean buscando la wake word.
+        # 1 = solo al inicio (estricto). 3 = engancha "Bob" tras 1-2 palabras
+        # ("a ver bob") a costa de más falsos positivos. Mín 1.
+        self.max_scan_tokens = max(1, int(max_scan_tokens))
 
         # cooldown state
         self._last_fire = 0.0
@@ -166,36 +171,27 @@ class WakeWordDetector:
         if not tokens:
             return WakeWordResult(False, 0.0, normalized_input=norm, reason="empty-tokens")
 
-        # ── Capa 1: token 0 es variante EXACTA ──────────────────
-        if tokens[0] in self.variant_set:
-            return self._build(norm, tokens, idx=0,
-                               exact=True, fuzzy=100,
-                               reason="exact-token0", now=now)
+        # Ventana de escaneo: primeros K tokens (cubre "bob", "oye bob",
+        # "a ver bob", etc.). Cubre de paso el caso prefijo+wake sin lógica aparte.
+        k = min(self.max_scan_tokens, len(tokens))
 
-        # ── Capa 2: token 0 = prefijo y token 1 = variante exacta ─
-        if (
-            len(tokens) >= 2
-            and tokens[0] in self.prefix_set
-            and tokens[1] in self.variant_set
-        ):
-            return self._build(norm, tokens, idx=1,
-                               exact=True, fuzzy=100,
-                               reason="prefix-exact", now=now)
+        # ── Capa 1: variante EXACTA en alguno de los primeros K tokens ──
+        for i in range(k):
+            if tokens[i] in self.variant_set:
+                return self._build(norm, tokens, idx=i,
+                                   exact=True, fuzzy=100,
+                                   reason=f"exact-token{i}", now=now)
 
-        # ── Capa 3: fuzzy contra token 0 ────────────────────────
-        fz0 = _fuzzy(tokens[0], self.wake_word)
-        if fz0 >= self.fuzzy_threshold:
-            return self._build(norm, tokens, idx=0,
-                               exact=False, fuzzy=fz0,
-                               reason=f"fuzzy-token0-{fz0}", now=now)
-
-        # ── Capa 4: prefijo + fuzzy en token 1 ──────────────────
-        if len(tokens) >= 2 and tokens[0] in self.prefix_set:
-            fz1 = _fuzzy(tokens[1], self.wake_word)
-            if fz1 >= self.fuzzy_threshold:
-                return self._build(norm, tokens, idx=1,
-                                   exact=False, fuzzy=fz1,
-                                   reason=f"prefix-fuzzy-{fz1}", now=now)
+        # ── Capa 2: mejor fuzzy en los primeros K tokens ───────────────
+        best_idx, best_fz = -1, 0
+        for i in range(k):
+            fz = _fuzzy(tokens[i], self.wake_word)
+            if fz > best_fz:
+                best_idx, best_fz = i, fz
+        if best_fz >= self.fuzzy_threshold:
+            return self._build(norm, tokens, idx=best_idx,
+                               exact=False, fuzzy=best_fz,
+                               reason=f"fuzzy-token{best_idx}-{best_fz}", now=now)
 
         return WakeWordResult(False, 0.0,
                               normalized_input=norm, reason="no-match")
