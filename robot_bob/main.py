@@ -55,13 +55,33 @@ COLOR_STATE = {
 # ── Imports de módulos robot_bob ───────────────────────────────────────────────
 from serial_manager import SerialManager
 from state_machine  import StateMachine, RobotState
-from facial_tracker import FacialTracker, PAN_HOME, TILT_HOME
+from facial_tracker import FacialTracker, PAN_HOME, TILT_HOME, ZONA_MUERTA_X, ZONA_MUERTA_Y
 from voice_pipeline import VoicePipeline
 from behavior       import BehaviorEngine
 try:
     from config import MEMORIA_ENABLED
 except Exception:
     MEMORIA_ENABLED = False
+
+
+def _enrolar_async(frame, face_id, memoria) -> None:
+    """Enrolado manual en hilo aparte: no congela el video mientras se escribe
+    el nombre en la consola. Memoria es thread-safe (lock interno)."""
+    emb, edad = (face_id.analizar(frame) if face_id.listo else (None, None))
+    if emb is None:
+        print('[enrolar] no hay cara o InsightFace aún no cargó.')
+        return
+    nombre = input('[enrolar] nombre de la persona: ').strip()
+    if not nombre:
+        print('[enrolar] cancelado (nombre vacío).')
+        return
+    m = memoria.reconocer(emb)
+    if m:
+        memoria.actualizar(m[0], nombre=nombre)
+        print(f'[enrolar] actualizado id={m[0]} → {nombre}')
+    else:
+        pid = memoria.registrar(nombre, emb, edad)
+        print(f'[enrolar] nuevo id={pid} → {nombre}')
 
 
 def main() -> None:
@@ -142,11 +162,11 @@ def main() -> None:
     fps_frames = 0
     fps_t0 = time.time()
     ultimo_rostro = 0.0
+    enroll_hilo: threading.Thread | None = None
 
     # ── 6. Loop principal ──────────────────────────────────────────────────────
-    # IMPORTANTE: cap a 25 FPS. El ESP32-CAM emite a 60-80 FPS y procesar
-    # cada frame satura el GIL → el hilo stream-reader no drena el socket.
-    TARGET_FPS    = 25
+    # IMPORTANTE: cap de FPS (config.TARGET_FPS). El ESP32-CAM emite a 60-80 FPS
+    # y procesar cada frame satura el GIL → el stream-reader no drena el socket.
     TARGET_PERIOD = 1.0 / TARGET_FPS
 
     print('\nRobot Bob activo. Presiona Q para salir.')
@@ -231,7 +251,6 @@ def main() -> None:
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, COLOR_ERR, 2)
 
             # Cruz central y zona muerta
-            from facial_tracker import ZONA_MUERTA_X, ZONA_MUERTA_Y
             cv2.line(frame, (cx_c - 25, cy_c), (cx_c + 25, cy_c), (255, 255, 0), 2)
             cv2.line(frame, (cx_c, cy_c - 25), (cx_c, cy_c + 25), (255, 255, 0), 2)
             cv2.rectangle(frame,
@@ -244,20 +263,19 @@ def main() -> None:
             if tecla == ord('q'):
                 break
             elif tecla == ord('e') and memoria is not None and face_id is not None:
-                # Enrolado manual (tecla E): registra/renombra la cara actual.
-                emb, edad = (face_id.analizar(frame) if face_id.listo else (None, None))
-                if emb is None:
-                    print('[enrolar] no hay cara o InsightFace aún no cargó.')
+                # Enrolado manual (tecla E) en hilo: el video sigue corriendo
+                # mientras se escribe el nombre. Frame LIMPIO del tracker (el
+                # local ya tiene el HUD dibujado encima de la cara).
+                if enroll_hilo is not None and enroll_hilo.is_alive():
+                    print('[enrolar] ya hay un enrolado en curso — escribí el nombre en la consola.')
                 else:
-                    nombre = input('[enrolar] nombre de la persona: ').strip()
-                    if nombre:
-                        m = memoria.reconocer(emb)
-                        if m:
-                            memoria.actualizar(m[0], nombre=nombre)
-                            print(f'[enrolar] actualizado id={m[0]} → {nombre}')
-                        else:
-                            pid = memoria.registrar(nombre, emb, edad)
-                            print(f'[enrolar] nuevo id={pid} → {nombre}')
+                    frame_limpio = tracker.leer_frame()
+                    if frame_limpio is not None:
+                        enroll_hilo = threading.Thread(
+                            target=_enrolar_async,
+                            args=(frame_limpio.copy(), face_id, memoria),
+                            daemon=True, name='enrolar')
+                        enroll_hilo.start()
 
             # Cap a TARGET_FPS — cede CPU al hilo stream-reader.
             elapsed = time.monotonic() - t_inicio_ciclo
