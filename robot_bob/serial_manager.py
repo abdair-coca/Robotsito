@@ -17,6 +17,7 @@ El protocolo de texto es idéntico en ambos transportes:
   H:<pan>,V:<tilt>\\n  |  ESTADO:<NOMBRE>\\n  |  SIGUIENDO:<dx>,<dy>\\n
 """
 
+import itertools
 import queue
 import socket
 import threading
@@ -55,6 +56,9 @@ class SerialManager:
         self._control_port = CONTROL_PORT if control_port is None else control_port
 
         self._cola:  queue.PriorityQueue = queue.PriorityQueue(maxsize=60)
+        # Tiebreaker FIFO: sin esto, a igual prioridad la cola ordena por el
+        # contenido del comando (compara tuplas) y puede reordenar servos.
+        self._seq = itertools.count()
         self._detener = threading.Event()
 
         # Reconexión: si el DevKit se reinicia (brownout) el socket WiFi queda
@@ -122,7 +126,7 @@ class SerialManager:
 
     def _encolar(self, prio: int, item: tuple) -> None:
         try:
-            self._cola.put_nowait((prio, item))
+            self._cola.put_nowait((prio, next(self._seq), item))
         except queue.Full:
             pass  # descarta si la cola está llena (no bloquea nunca)
 
@@ -217,7 +221,7 @@ class SerialManager:
                     self._reconectar()
 
             try:
-                prio, item = self._cola.get(timeout=0.1)
+                prio, _seq, item = self._cola.get(timeout=0.1)
             except queue.Empty:
                 continue
 
