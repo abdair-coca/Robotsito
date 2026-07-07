@@ -78,6 +78,10 @@ try:
     from config import WAKE_MIN_LEVEL
 except Exception:
     WAKE_MIN_LEVEL = 1.3
+try:
+    from config import SOLILOQUIO_LLM_MODEL
+except Exception:
+    SOLILOQUIO_LLM_MODEL = None   # None = usar el mismo modelo del chat
 
 # Cuántos tokens iniciales escanea el detector buscando "Bob" (sensibilidad).
 try:
@@ -1247,26 +1251,25 @@ class VoicePipeline:
         return self._reproducir_mp3_laptop(mp3)
 
     def _reproducir_mp3_robot(self, mp3: bytes) -> Optional[bytes]:
-        """Convierte mp3 → uint8 @ 8 kHz y lo manda al ESP32 en chunks."""
+        """Convierte mp3 → uint8 @ 8 kHz y lo manda al ESP32 de una vez."""
         u8 = self._mp3_a_u8(mp3)
         if not u8:
             return None
-        # Mandar header + body en bloques. send_audio_chunk mete header+body en uno.
-        # Para frases grandes troceamos con header de longitud total + body por send_audio_body.
         total = len(u8)
         if not self._audio_io.send_audio_header(total):
             return None
-        i = 0
-        while i < total and not self._detener.is_set():
-            end = min(i + TTS_SEND_CHUNK_BYTES, total)
-            if not self._audio_io.send_audio_body(u8[i:end]):
-                break
-            i = end
-            # Pacing: dejar al ESP32 reproducir. Factor < 1.0 manda un poco más
-            # rápido que el playback para no quedarse corto de buffer. Si suben
-            # los chasquidos/cortes (buffer overrun en red lenta), sube hacia
-            # 1.0; si se oye entrecortado por falta de datos, bájalo.
-            time.sleep(TTS_SEND_CHUNK_BYTES / SAMPLE_RATE * 0.90)
+        # TODO el body en un sendall. El envío por chunks con pacing dejaba MUDO
+        # el 2º playback en adelante (bug de firmware sin resolver: play_mode
+        # consume los bytes a ritmo correcto pero el DAC no suena); de golpe el
+        # DAC reproduce siempre. TCP bufferea; el firmware consume a 8 kHz.
+        t0 = time.monotonic()
+        if not self._audio_io.send_audio_body(u8):
+            return None
+        # sendall vuelve cuando el buffer TCP acepta los bytes, NO cuando terminó
+        # de sonar: esperar la duración real del audio (anti-eco / auto-wake).
+        restante = total / SAMPLE_RATE - (time.monotonic() - t0)
+        if restante > 0:
+            self._detener.wait(restante)
         time.sleep(TTS_TAIL_S)
         return None
 
@@ -1533,6 +1536,10 @@ class VoicePipeline:
             # No hablar solo si hay una charla en curso o si ya estamos hablando.
             if self._sm.en_conversacion or self._muted.is_set():
                 continue
+            # Con música sonando Bob baila callado: nada de frases/carnadas
+            # (hablarían encima de la música).
+            if self._sm.bailando.is_set():
+                continue
             # Dormido = callado (igual que las muecas): coherencia con la pose de sueño.
             if self._sm.is_asleep():
                 continue
@@ -1596,9 +1603,14 @@ class VoicePipeline:
         if self._soliloquio_reciente:
             contexto += (" No repitas ni parafrasees estas frases que ya dijiste: "
                          + " | ".join(self._soliloquio_reciente))
+        # Modelo chico solo si el chat corre en Groq (self._llm es el cliente
+        # Groq); con Ollama/Gemini el nombre no existiría en ese backend.
+        modelo = (SOLILOQUIO_LLM_MODEL
+                  if SOLILOQUIO_LLM_MODEL and self._llm is self._client
+                  else self._llm_model)
         try:
             resp = self._llm.chat.completions.create(
-                model=self._llm_model,
+                model=modelo,
                 messages=[{'role': 'system', 'content': SOLILOQUIO_LLM_PROMPT},
                           {'role': 'user',   'content': contexto}],
                 temperature=1.0,
