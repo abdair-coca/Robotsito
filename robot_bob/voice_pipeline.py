@@ -82,6 +82,10 @@ try:
     from config import SOLILOQUIO_LLM_MODEL
 except Exception:
     SOLILOQUIO_LLM_MODEL = None   # None = usar el mismo modelo del chat
+try:
+    from config import WAKE_WINDOW_S, WAKE_VOICE_LEVEL, WAKE_SILENCE_CUT_S
+except Exception:
+    WAKE_WINDOW_S, WAKE_VOICE_LEVEL, WAKE_SILENCE_CUT_S = 3.0, 1.0, 0.45
 
 # Cuántos tokens iniciales escanea el detector buscando "Bob" (sensibilidad).
 try:
@@ -141,6 +145,7 @@ except Exception:
     MUSICA_ENABLED = False
 from music import (parse_music_command, ejecutar as ejecutar_musica,  # P6: Spotify
                    esta_sonando as sonando_musica)                    # baile
+from show import es_comando_show, run_show     # modo presentación ("presentate")
 from reminders import parse_recordatorio, ReminderStore   # P9: recordatorios
 from expression_engine import (
     pulse_emotion, react_to_user_text, react_to_bob_text,
@@ -892,6 +897,16 @@ class VoicePipeline:
                     es_primer_turno = False
                     continue
 
+            # ── SHOW de presentación: "presentate / qué sabés hacer" ───────────
+            if es_comando_show(texto):
+                console.print('[bold magenta][show][/] ¡Modo presentación!')
+                self._sm.iniciar_hablando()
+                if run_show(self):
+                    break     # cerró bailando con música → fin de charla,
+                              # wake monitor queda activo (decir "Bob" lo corta)
+                es_primer_turno = False
+                continue      # sin música: sigue la charla normal
+
             # ── P6: control de música (Spotify) ────────────────────────────────
             if MUSICA_ENABLED:
                 mintent = parse_music_command(texto)
@@ -1317,14 +1332,22 @@ class VoicePipeline:
         captured = [None]
 
         def llm_worker():
-            for sent in self._stream_llm(texto):
-                sent_q.put(sent)
-            sent_q.put(None)
+            # finally: el None de cierre DEBE llegar aunque el LLM explote,
+            # si no el tts_worker espera su timeout entero y el turno muere mudo.
+            try:
+                for sent in self._stream_llm(texto):
+                    sent_q.put(sent)
+            finally:
+                sent_q.put(None)
+
+        # Ollama local frío (cargar el modelo a VRAM) tarda más que los 10 s
+        # que toleramos con Groq/Gemini → sin esto el primer turno sale mudo.
+        primer_sent_timeout = 45.0 if self._usando_ollama else 10.0
 
         def tts_worker():
             while True:
                 try:
-                    sent = sent_q.get(timeout=10.0)
+                    sent = sent_q.get(timeout=primer_sent_timeout)
                 except queue.Empty:
                     audio_q.put(None)
                     return
@@ -1466,8 +1489,9 @@ class VoicePipeline:
                          name='baile-monitor').start()
 
     def _baile_monitor_loop(self) -> None:
+        fallos = 0
         while not self._detener.is_set():
-            self._detener.wait(2.0)
+            self._detener.wait(1.5)
             if self._detener.is_set():
                 break
             # Solo consultamos a Spotify si hay una sesión de música en curso
@@ -1480,7 +1504,15 @@ class VoicePipeline:
                 continue
             try:
                 sonando = sonando_musica()
+                fallos = 0
             except Exception:
+                # Fail-safe: si Spotify no responde 2 veces seguidas, asumir que
+                # la música paró — Bob no debe seguir bailando a ciegas.
+                fallos += 1
+                if fallos >= 2 and self._sm.bailando.is_set():
+                    console.print('[dim][baile] Spotify no responde → paro el baile[/]')
+                    self._sm.bailando.clear()
+                    self._baile_hint = False
                 continue
             if sonando:
                 # Música sonando y Bob libre → asegurar que esté bailando
@@ -1702,16 +1734,24 @@ class VoicePipeline:
         return self._grabar_wake_laptop()
 
     def _grabar_wake_robot(self) -> Optional[bytes]:
-        """Graba 3 s desde el mic del ESP32 (uint8) y devuelve WAV."""
+        """Graba hasta WAKE_WINDOW_S desde el mic del ESP32 (uint8). Corte
+        anticipado con voz + silencio, igual que la versión laptop."""
         self._audio_io.drain_mic()
         collected = bytearray()
         t0 = time.monotonic()
-        while time.monotonic() - t0 < 3.0 and not self._detener.is_set():
+        t_ultima_voz = 0.0
+        while time.monotonic() - t0 < WAKE_WINDOW_S and not self._detener.is_set():
             if self._sm.en_conversacion:
                 return None
             chunk = self._audio_io.get_mic(timeout=0.1)
             if chunk:
                 collected.extend(chunk)
+                ahora = time.monotonic()
+                # Escala u8: gate de silencio es 4.0 → voz clara ~2x eso.
+                if _rms_uint8(bytes(chunk)) >= 8.0:
+                    t_ultima_voz = ahora
+                elif t_ultima_voz and ahora - t_ultima_voz >= WAKE_SILENCE_CUT_S:
+                    break
         if not collected:
             return None
         raw = bytes(collected)
@@ -1720,7 +1760,9 @@ class VoicePipeline:
         return _uint8_to_wav(raw)
 
     def _grabar_wake_laptop(self) -> Optional[bytes]:
-        """Graba 3 s desde el mic local. Devuelve WAV int16 @ 16 kHz."""
+        """Graba hasta WAKE_WINDOW_S desde el mic local. Devuelve WAV int16 @ 16 kHz.
+        Corte anticipado: si hubo voz y luego WAKE_SILENCE_CUT_S de silencio,
+        corta ya y transcribe → el "Bob" dispara sin esperar la ventana entera."""
         q: queue.Queue = queue.Queue()
 
         def callback(indata, frames, t, status):
@@ -1729,18 +1771,28 @@ class VoicePipeline:
         frame_bytes = int(_LAP_SAMPLE_RATE * FRAME_MS / 1000) * 2
         collected: List[bytes] = []
         t0 = time.monotonic()
+        t_ultima_voz = 0.0
 
         try:
             with sd.RawInputStream(samplerate=_LAP_SAMPLE_RATE, channels=1,
                                    dtype='int16', blocksize=frame_bytes // 2,
                                    callback=callback):
-                while time.monotonic() - t0 < 3.0 and not self._detener.is_set():
+                while time.monotonic() - t0 < WAKE_WINDOW_S and not self._detener.is_set():
                     if self._sm.en_conversacion:
                         return None
                     try:
                         chunk = q.get(timeout=0.1)
                         if len(chunk) >= frame_bytes:
                             collected.append(chunk[:frame_bytes])
+                            arr = np.frombuffer(chunk[:frame_bytes], dtype=np.int16)
+                            nivel = float(np.sqrt(np.mean(
+                                arr.astype(np.float32) ** 2))) / 32767.0 * 100.0
+                            ahora = time.monotonic()
+                            if nivel >= WAKE_VOICE_LEVEL:
+                                t_ultima_voz = ahora
+                            elif (t_ultima_voz and
+                                  ahora - t_ultima_voz >= WAKE_SILENCE_CUT_S):
+                                break     # voz + silencio → transcribir YA
                     except queue.Empty:
                         pass
         except Exception:
