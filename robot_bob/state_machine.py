@@ -111,6 +111,10 @@ class StateMachine:
         # limpia al entrar en LISTENING (el usuario dijo "Bob") o cuando para la música.
         self.bailando = threading.Event()
 
+        # Show de presentación ("Bob, presentate"): mientras está set, el
+        # BehaviorEngine suelta los servos — la coreografía de show.py manda.
+        self.show_activo = threading.Event()
+
         # ── Mood drift (InteractiveGoal Fase A) ────────────────────────────
         # Estado de ánimo acumulado DENTRO de la conversación actual.
         # Rango [-1.0, +1.0]. Se resetea al volver a IDLE.
@@ -381,6 +385,10 @@ class StateMachine:
     # ── Interno ────────────────────────────────────────────────────────────────
 
     def _evaluar_inicio_conv(self, ahora: float) -> None:
+        # Con música sonando (bailando), Bob NUNCA inicia charla por su cuenta:
+        # solo la wake word abre conversación (instrucciones sobre la música).
+        if self.bailando.is_set():
+            return
         if self._t_cara_vista == 0.0:
             return
         tiempo_cara = ahora - self._t_cara_vista

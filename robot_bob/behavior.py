@@ -350,6 +350,10 @@ class BehaviorEngine:
         # Solo solo y libre; no pisar otro OLED expresivo (soliloquio).
         if estado != RobotState.IDLE or self._sm.en_conversacion:
             return
+        # Bailando o en pleno show: CERO muecas — no pisar la cara del baile
+        # ni el guion de la presentación.
+        if self._sm.bailando.is_set() or self._sm.show_activo.is_set():
+            return
         # Dormido no hace muecas (rompería la pose/ilusión de sueño).
         if self._sm.is_asleep():
             return
@@ -426,6 +430,10 @@ class BehaviorEngine:
                                            max_paso_pan=0.6, max_paso_tilt=0.6)
             return
         self._asleep_prev = False
+
+        # ── Show de presentación: la coreografía (show.py) maneja los servos ─
+        if self._sm.show_activo.is_set():
+            return
 
         # ── Baile: mientras suena música, Bob se mueve al ritmo (cabeza + cuerpo) ─
         # Tiene prioridad sobre scan/tracking/idle. El wake monitor sigue activo
