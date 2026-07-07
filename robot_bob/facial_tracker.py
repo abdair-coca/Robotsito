@@ -13,7 +13,9 @@ API pública:
 
 import os
 os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "quiet"
-os.environ["FFREPORT"] = "disable"
+# FFREPORT: si esta variable EXISTE (con cualquier valor), ffmpeg genera un
+# ffmpeg-FECHA-HORA.log por cada invocación. Hay que eliminarla, no setearla.
+os.environ.pop("FFREPORT", None)
 
 import cv2
 import numpy as np
