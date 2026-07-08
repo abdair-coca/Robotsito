@@ -17,9 +17,14 @@ Creador: Abdair — estudiante de Ingeniería Informática, UATF, Bolivia.
 | Fase | Nombre | Periodo | Objetivo |
 |------|--------|---------|----------|
 | 1 | El alma de Bob | Jun–Dic 2026 | Memoria persistente, razonamiento, personalidad, reconocimiento de personas |
-| 2 | El cuerpo se mueve | Ene–Jun 2027 | Equilibrio bipedal básico con IMU, marcha, RL simple |
+| 2 | El cuerpo se mueve | Jul 2026–Jun 2027† | 4 pistas paralelas: 2A piernas físicas (control clásico), 2B gemelo digital MuJoCo, 2C fundamentos RL, 2D imitation learning |
 | 3 | Mente y cuerpo unidos | Jul–Dic 2027 | Embodied AI loop: visión + decisión + acción, tareas autónomas |
 | 4 | El mundo lo conoce | Ene–Nov 2028 | Open source completo, ferias, paper publicado |
+
+† *La Fase 2 arrancó adelantada (jul 2026, modelado en Fusion 360) y su alcance
+ampliado puede requerir extender el fin más allá de jun 2027 — incertidumbre
+anotada, sin fecha nueva comprometida. CAD: pivote de freecad-mcp a modelado
+manual en Fusion 360 ([ADR-002](decisions/ADR-002-pivote-fusion360-manual.md)).*
 
 ## Cómo navegar la documentación
 
@@ -32,7 +37,9 @@ Creador: Abdair — estudiante de Ingeniería Informática, UATF, Bolivia.
 
 ## Estado actual
 
-**FASE 1 — El alma de Bob** (EN PROGRESO).
+**FASE 1 — El alma de Bob** (EN PROGRESO, cierre) · **FASE 2 — El cuerpo se
+mueve** (EN CURSO en paralelo desde jul 2026; pista 2A-a: modelado de piernas
+en Fusion 360).
 Bob ya cuenta con: face tracking (OpenCV/MediaPipe), pipeline STT→Groq→TTS,
 ojos OLED animados (SH1106), servo pan/tilt, cámara MJPEG, memoria SQLite,
 máquina de estados y motor de comportamiento.

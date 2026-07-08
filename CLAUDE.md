@@ -28,12 +28,17 @@ Creador: Abdair (estudiante de Ingeniería Informática, UATF, Bolivia)
 Inicio: Jun 2026 | Graduación estimada: Nov 2028
 
 ### Fase activa
-FASE 1 — El alma de Bob (Jun 2026 - Dic 2026)
-Objetivo: Bob tiene memoria, personalidad y reconoce personas.
+FASE 2 — El cuerpo se mueve (Jul 2026 - Jun 2027, EN CURSO) — bitácora: log/phase-2-log.md
+Objetivo: Bob camina (4 pistas: 2A piernas, 2B gemelo MuJoCo, 2C RL, 2D imitation).
+FASE 1 — El alma de Bob (Jun-Dic 2026) sigue abierta en cierre; avances de
+alma/voz/memoria se registran en log/phase-1-log.md.
 
 ### Current focus
 [Abdair actualiza esto manualmente cada semana]
-Semana del 25 Jun 2026: Iniciar sistema de documentación Génesis. Bob ya tiene: face tracking, voz (STT→Groq→TTS), ojos OLED, servo pan/tilt, cámara MJPEG.
+Semana del 7 Jul 2026: Julio dedicado 100% al modelado manual de piernas
+(8 DOF, 4 por pierna) en Fusion 360 — soportes MG996R, bracket de cadera,
+articulaciones (pista 2A-a). CAD: pivote de freecad-mcp a Fusion 360 manual
+(ADR-002). Presentación pública de Bob en feria: completada el 7 Jul.
 
 ### Estructura del proyecto
 - robot_bob/       → código principal (behavior, memory, voice, face tracking, state machine)
