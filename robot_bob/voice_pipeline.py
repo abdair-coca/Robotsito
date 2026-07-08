@@ -428,6 +428,7 @@ class VoicePipeline:
         self._face_id  = face_id
         self._memoria  = memoria
         self._get_frame = get_frame
+        self._t_audio_retry = 0.0    # throttle de reconexión del audio ESP32
 
         # Estado de identidad de la conversación actual (P1).
         self._convo_persona       = None     # id en la base, o None
@@ -1261,9 +1262,35 @@ class VoicePipeline:
 
     def _reproducir_mp3(self, mp3: bytes) -> Optional[bytes]:
         """Reproduce MP3 — vía speaker del ESP32 (TCP) o pygame local según flag."""
-        if USE_ROBOT_SPEAKER and self._audio_io is not None and self._audio_io.connected:
-            return self._reproducir_mp3_robot(mp3)
+        if USE_ROBOT_SPEAKER and self._audio_io is not None:
+            if not self._audio_io.connected:
+                self._audio_reconectar()   # el DevKit rebootó → reenganchar
+            if self._audio_io.connected:
+                return self._reproducir_mp3_robot(mp3)
         return self._reproducir_mp3_laptop(mp3)
+
+    def _audio_reconectar(self) -> None:
+        """Reintenta el TCP de audio al ESP32. Un reboot/brownout del DevKit (o
+        abrir COM3, que lo resetea) tira los sockets y AudioIO NO reconecta
+        solo — sin esto el robot queda mudo hasta reiniciar main. Throttle 10 s.
+        Refresca la IP desde el cache de discovery por si la placa cambió de red."""
+        ahora = time.monotonic()
+        if ahora - self._t_audio_retry < 10.0:
+            return
+        self._t_audio_retry = ahora
+        try:
+            import discovery
+            ip = discovery.cache_ips().get('ESP32_IP')
+            if ip:
+                self._audio_io.ip = ip
+        except Exception:
+            pass
+        try:
+            self._audio_io.close()
+            self._audio_io.connect(timeout_s=3.0)
+            console.print(f'[green][audio] ✓ reconectado al ESP32 ({self._audio_io.ip})[/]')
+        except Exception as e:
+            console.print(f'[dim][audio] ESP32 no responde ({e}); hablo por la laptop[/]')
 
     def _reproducir_mp3_robot(self, mp3: bytes) -> Optional[bytes]:
         """Convierte mp3 → uint8 @ 8 kHz y lo manda al ESP32 de una vez."""
