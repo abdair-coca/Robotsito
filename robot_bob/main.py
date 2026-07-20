@@ -159,7 +159,7 @@ def main() -> None:
     voice.iniciar_baile_monitor()        # apaga el baile cuando la música para
 
     # ── 5. BehaviorEngine ──────────────────────────────────────────────────────
-    behavior = BehaviorEngine(sm, tracker)
+    behavior = BehaviorEngine(serial_mgr, sm, tracker)
 
     # ── Variables de display ───────────────────────────────────────────────────
     fps = 0.0

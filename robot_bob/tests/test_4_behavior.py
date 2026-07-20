@@ -247,7 +247,7 @@ def main() -> None:
 
     sm      = StateMachine(mgr, p_conversacion=0.0)  # nunca arranca conversación
     tracker = MockTracker(mgr)
-    behavior = BehaviorEngine(sm, tracker)
+    behavior = BehaviorEngine(mgr, sm, tracker)
 
     try:
         prueba_idle(mgr, sm, tracker, behavior)

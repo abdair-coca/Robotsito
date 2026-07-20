@@ -205,7 +205,7 @@ def main() -> None:
 
     voice = VoicePipeline(serial_mgr, sm)
     voice.iniciar_wake_monitor()
-    behavior = BehaviorEngine(sm, tracker)
+    behavior = BehaviorEngine(serial_mgr, sm, tracker)
 
     print('\nTest activo. Sigue el plan de prueba del docstring. Q para salir y ver reporte.\n')
     serial_mgr.cmd_servo(PAN_HOME, TILT_HOME)

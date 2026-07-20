@@ -159,7 +159,7 @@ def main() -> None:
                             conversation_timeout=5.0,
                             timeout_rostro=1.5)
     tracker  = MockTracker(mgr)
-    behavior = BehaviorEngine(sm, tracker)
+    behavior = BehaviorEngine(mgr, sm, tracker)
     resultado = Resultado()
 
     duracion_total = GUION[-1][1]

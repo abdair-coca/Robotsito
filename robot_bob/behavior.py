@@ -106,7 +106,8 @@ WAKE_TILT_PEAK = TILT_HOME - 18.0  # 72° — mira hacia arriba mientras se desp
 
 
 class BehaviorEngine:
-    def __init__(self, state_machine, facial_tracker):
+    def __init__(self, serial_mgr, state_machine, facial_tracker):
+        self._serial  = serial_mgr
         self._sm      = state_machine
         self._tracker = facial_tracker
         self._detener = threading.Event()
@@ -188,7 +189,7 @@ class BehaviorEngine:
         self._hilo.join(timeout=1.0)
         # Parar motores al cerrar (el watchdog igual los pararía, pero explícito mejor).
         try:
-            self._sm._serial.cmd_motor(0, 0)
+            self._serial.cmd_motor(0, 0)
         except Exception:
             pass
 
@@ -213,7 +214,7 @@ class BehaviorEngine:
         if self._giro_dir is not None:
             if ahora < self._giro_hasta:
                 try:
-                    self._sm._serial.cmd_motor(*self._giro_dir)
+                    self._serial.cmd_motor(*self._giro_dir)
                 except Exception:
                     pass
                 return True
@@ -230,7 +231,7 @@ class BehaviorEngine:
         self._giro_dir   = giro
         self._giro_hasta = ahora + GIRO_BURST_S
         try:
-            self._sm._serial.cmd_motor(*giro)
+            self._serial.cmd_motor(*giro)
         except Exception:
             pass
 
@@ -279,7 +280,7 @@ class BehaviorEngine:
         if self._giro_dir is not None:
             if ahora < self._giro_hasta:
                 try:
-                    self._sm._serial.cmd_motor(*self._giro_dir)
+                    self._serial.cmd_motor(*self._giro_dir)
                 except Exception:
                     pass
                 return True
@@ -336,7 +337,7 @@ class BehaviorEngine:
     def _parar_giro(self) -> None:
         if self._giro_dir is not None:
             try:
-                self._sm._serial.cmd_motor(0, 0)
+                self._serial.cmd_motor(0, 0)
             except Exception:
                 pass
             self._giro_dir = None
@@ -364,7 +365,7 @@ class BehaviorEngine:
         if random.random() > P_MUECA:
             return
 
-        dur_ms = random_mueca(self._sm._serial, self._sm)
+        dur_ms = random_mueca(self._serial, self._sm)
         self._sm.oled_ocupar(dur_ms)
         self._mueca_last = ahora
         print('[mueca]')
@@ -396,13 +397,13 @@ class BehaviorEngine:
         if startle:
             if not self._startle_prev:
                 # Primer tick: SORPRENDIDO instantáneo (impacto visual fuerte)
-                self._sm._serial.cmd_estado('SORPRENDIDO')
+                self._serial.cmd_estado('SORPRENDIDO')
                 # Después de 400ms pasamos a CURIOSO sostenido (vía hilo)
                 import threading as _th, time as _tm
                 def _to_curioso():
                     _tm.sleep(0.4)
                     if self._sm.startle_active():
-                        self._sm._serial.cmd_estado('CURIOSO')
+                        self._serial.cmd_estado('CURIOSO')
                 _th.Thread(target=_to_curioso, daemon=True).start()
             self._startle_prev = True
             self._pan_obj  = self._tracker.pan_actual
@@ -416,7 +417,7 @@ class BehaviorEngine:
             if self._startle_prev:
                 # Fin del despertar → volver al OLED de PRESENCE (SIGUIENDO lo
                 # mandará el main loop con cmd_siguiendo en el próximo frame)
-                self._sm._serial.cmd_estado('SIGUIENDO')
+                self._serial.cmd_estado('SIGUIENDO')
             self._startle_prev = False
 
         # ── Sueño: si Bob lleva >SLEEP_THR_S en IDLE sin nadie, baja la cabeza ─
@@ -446,7 +447,7 @@ class BehaviorEngine:
             self._baile_prev = False
             self._parar_giro()
             try:
-                self._sm._serial.cmd_motor(0, 0)
+                self._serial.cmd_motor(0, 0)
             except Exception:
                 pass
 
@@ -584,7 +585,7 @@ class BehaviorEngine:
         # así que mandarlo cada ~1 s alcanza sin spamear el canal.
         if ahora - self._baile_oled_last > 1.0:
             try:
-                self._sm._serial.cmd_estado(BAILE_OLED)
+                self._serial.cmd_estado(BAILE_OLED)
             except Exception:
                 pass
             self._baile_oled_last = ahora
@@ -606,7 +607,7 @@ class BehaviorEngine:
                 self._baile_motor_next = ahora + BAILE_WIGGLE_S
             base = _GIRO_DER if self._baile_motor_dir > 0 else _GIRO_IZQ
             try:
-                self._sm._serial.cmd_motor(base[0] * BAILE_MOTOR_VEL,
+                self._serial.cmd_motor(base[0] * BAILE_MOTOR_VEL,
                                            base[1] * BAILE_MOTOR_VEL)
             except Exception:
                 pass
