@@ -30,15 +30,18 @@ cv2.setNumThreads(1)
 
 # ── Configuración ──────────────────────────────────────────────────────────────
 # Toda la configuración modificable vive en config.py (en esta misma carpeta).
+# Import apply_discovery primero para actualizar IPs via cache antes de bindear
+# el resto de valores localmente.
+from config import apply_discovery
+apply_discovery()
 from config import (
     PUERTO_SERIAL, BAUD_RATE,
     IP_ESPCAM, URL_STREAM, MODELO_TFLITE,
     USE_ROBOT_MIC, USE_ROBOT_SPEAKER,
     T_PERMANENCIA_MIN, P_CONVERSACION, COOLDOWN_CONV,
     CONVERSATION_TIMEOUT, TIMEOUT_ROSTRO,
-    TARGET_FPS, apply_discovery,
+    TARGET_FPS,
 )
-apply_discovery()   # discovery cache después de imports, antes de usar IPs
 
 # Colores HUD (BGR)
 COLOR_OK    = (0, 255, 0)
