@@ -34,47 +34,24 @@ from facial_tracker import (
     ZONA_MUERTA_X, ZONA_MUERTA_Y, ADELANTO_MAX,
 )
 
-# Config de muecas (en config.py, gitignoreado). Fallback por si falta.
-try:
-    from config import (MUECA_ENABLED, MUECA_HEAD_ENABLED, MUECA_HEAD_AMPL,
-                        MUECA_COOLDOWN_S, P_MUECA)
-except Exception:
-    MUECA_ENABLED, MUECA_HEAD_ENABLED = False, False
-    MUECA_HEAD_AMPL, MUECA_COOLDOWN_S, P_MUECA = 6.0, 8.0, 0.30
+# Config de muecas (config.py, gitignoreado)
+from config import (MUECA_ENABLED, MUECA_HEAD_ENABLED, MUECA_HEAD_AMPL,
+                    MUECA_COOLDOWN_S, P_MUECA)
 
-# Config de locomoción (giro del cuerpo hacia la cara, Fase 3). Fallback si falta.
-try:
-    from config import (MOTORES_ENABLED, GIRO_VELOCIDAD, GIRO_PAN_THRESHOLD,
-                        GIRO_BURST_S, GIRO_COOLDOWN_S, GIRO_INVERTIR, MOTOR_DEBUG,
-                        GIRO_IDLE_ENABLED, GIRO_IDLE_COOLDOWN_S, GIRO_IDLE_PROB,
-                        SCAN_MAX_BURSTS, SCAN_DIR_BURSTS, SCAN_LOOK_S)
-except Exception:
-    MOTORES_ENABLED = False
-    GIRO_VELOCIDAD = 70
-    GIRO_PAN_THRESHOLD, GIRO_BURST_S, GIRO_COOLDOWN_S, GIRO_INVERTIR = 30, 0.40, 0.4, False
-    MOTOR_DEBUG = False
-    GIRO_IDLE_ENABLED, GIRO_IDLE_COOLDOWN_S, GIRO_IDLE_PROB = True, 6.0, 0.4
-    SCAN_MAX_BURSTS, SCAN_DIR_BURSTS, SCAN_LOOK_S = 14, 4, 0.5
+# Config de locomoción (giro del cuerpo hacia la cara, Fase 3)
+from config import (MOTORES_ENABLED, GIRO_VELOCIDAD, GIRO_PAN_THRESHOLD,
+                    GIRO_BURST_S, GIRO_COOLDOWN_S, GIRO_INVERTIR, MOTOR_DEBUG,
+                    GIRO_IDLE_ENABLED, GIRO_IDLE_COOLDOWN_S, GIRO_IDLE_PROB,
+                    SCAN_MAX_BURSTS, SCAN_DIR_BURSTS, SCAN_LOOK_S)
 
-# Velocidad de giro del cuerpo durante el ESCANEO (buscar al que habla). Más baja
-# que GIRO_VELOCIDAD para que la búsqueda sea suave, no frenética. Import aislado
-# para no romper los otros valores si un config viejo no la define.
-try:
-    from config import SCAN_GIRO_VELOCIDAD
-except Exception:
-    SCAN_GIRO_VELOCIDAD = 45
+# Velocidad de giro del cuerpo durante el ESCANEO. Más baja que GIRO_VELOCIDAD
+# para que la búsqueda sea suave, no frenética.
+from config import SCAN_GIRO_VELOCIDAD
 
-# Config de baile (mientras suena música). Fallback si un config viejo no la trae.
-try:
-    from config import (BAILE_ENABLED, BAILE_PAN_AMPL, BAILE_PAN_PERIODO,
-                        BAILE_TILT_AMPL, BAILE_TILT_PERIODO, BAILE_OLED,
-                        BAILE_MOTORES, BAILE_MOTOR_VEL, BAILE_WIGGLE_S)
-except Exception:
-    BAILE_ENABLED = False
-    BAILE_PAN_AMPL, BAILE_PAN_PERIODO = 35.0, 1.10
-    BAILE_TILT_AMPL, BAILE_TILT_PERIODO = 14.0, 0.55
-    BAILE_OLED = "MUY_FELIZ"
-    BAILE_MOTORES, BAILE_MOTOR_VEL, BAILE_WIGGLE_S = False, 50, 0.55
+# Config de baile (mientras suena música)
+from config import (BAILE_ENABLED, BAILE_PAN_AMPL, BAILE_PAN_PERIODO,
+                    BAILE_TILT_AMPL, BAILE_TILT_PERIODO, BAILE_OLED,
+                    BAILE_MOTORES, BAILE_MOTOR_VEL, BAILE_WIGGLE_S)
 
 # Comandos de giro sobre el eje (izq, der) para mover_motores del firmware.
 _GIRO_IZQ = (-1, 1)
@@ -89,13 +66,8 @@ TILT_HOME = 90
 TICK_S = 0.05  # 20 Hz — más suave para los servos sin saturar CPU
 
 # Offset vertical: la cámara apunta al centro del bbox (cuello/boca).
-# La gente espera contacto visual a los ojos → subimos la mirada N grados.
 # (tilt negativo = mirar más arriba). Tuneable en config.py.
-try:
-    from config import EYE_CONTACT_OFFSET_TILT, IDLE_TILT_CENTER, IDLE_TILT_SPREAD
-except Exception:
-    EYE_CONTACT_OFFSET_TILT = -22.0
-    IDLE_TILT_CENTER, IDLE_TILT_SPREAD = 62.0, 16.0
+from config import EYE_CONTACT_OFFSET_TILT, IDLE_TILT_CENTER, IDLE_TILT_SPREAD
 
 # Postura de sueño: cabeza baja (mentón al pecho)
 SLEEP_TILT  = TILT_HOME + 15.0   # 105° — dentro del rango TILT_MAX=130

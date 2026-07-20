@@ -52,18 +52,12 @@ ADELANTO_MAX  = 12      # deja más margen entre objetivo y actual (más fluido)
 #   1.0  = sin filtro (salida = entrada)
 #   ~0.5 = suavizado moderado (default)
 #   bajo = muy suave pero con más lag
-try:
-    from config import SERVO_EMA_ALPHA
-except Exception:
-    SERVO_EMA_ALPHA = 0.5
+from config import SERVO_EMA_ALPHA
 
 # Cámara montada al revés en la cabeza → rotar el frame 180° tras decodificar.
 # La rotación cancela el flip físico: la imagen queda derecha y el tracking
 # mantiene los mismos signos de servo.
-try:
-    from config import ROTAR_CAMARA_180
-except Exception:
-    ROTAR_CAMARA_180 = False
+from config import ROTAR_CAMARA_180
 
 
 # ── LectorStream (socket TCP crudo — evita crash FFmpeg) ──────────────────────

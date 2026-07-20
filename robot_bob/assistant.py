@@ -27,14 +27,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import List, Optional
 
-try:
-    from config import (CLIMA_ENABLED, CLIMA_CIUDAD,
-                        NOTICIAS_ENABLED, NOTICIAS_RSS_URL, NOTICIAS_MAX)
-except Exception:
-    CLIMA_ENABLED, CLIMA_CIUDAD = True, "Potosí"
-    NOTICIAS_ENABLED = True
-    NOTICIAS_RSS_URL = "https://news.google.com/rss?hl=es-419&gl=BO&ceid=BO:es-419"
-    NOTICIAS_MAX = 3
+from config import CLIMA_ENABLED, CLIMA_CIUDAD, NOTICIAS_ENABLED, NOTICIAS_RSS_URL, NOTICIAS_MAX
 
 # ── Nombres en español (locale de Windows poco fiable → hardcode) ───────────────
 _DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]

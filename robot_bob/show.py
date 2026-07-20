@@ -25,10 +25,7 @@ from assistant import hora_actual, obtener_clima
 from config import MUSICA_ENABLED
 
 # Canción del cierre (query de búsqueda en Spotify). Editable en config.py.
-try:
-    from config import SHOW_CANCION
-except Exception:
-    SHOW_CANCION = "Daddy Cool Boney M"
+from config import SHOW_CANCION
 
 # ── Detección del comando ───────────────────────────────────────────────────────
 _RE_SHOW = re.compile(
@@ -125,10 +122,7 @@ def _mover_suave(serial, desde, hasta, paso=1.5, dt=0.06):
 
 def _wiggle_cuerpo(serial) -> None:
     """Giro corto a un lado y al otro. No hace nada si los motores están off."""
-    try:
-        from config import MOTORES_ENABLED, GIRO_VELOCIDAD
-    except Exception:
-        return
+    from config import MOTORES_ENABLED, GIRO_VELOCIDAD
     if not MOTORES_ENABLED:
         return
     v = int(min(90, GIRO_VELOCIDAD))

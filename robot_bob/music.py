@@ -24,13 +24,7 @@ import threading
 from dataclasses import dataclass
 from typing import Optional
 
-try:
-    from config import (MUSICA_ENABLED, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET,
-                        SPOTIFY_REDIRECT_URI, SPOTIFY_CACHE_PATH)
-except Exception:
-    MUSICA_ENABLED = False
-    SPOTIFY_CLIENT_ID = SPOTIFY_CLIENT_SECRET = SPOTIFY_REDIRECT_URI = ""
-    SPOTIFY_CACHE_PATH = ".spotify_cache"
+from config import MUSICA_ENABLED, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REDIRECT_URI, SPOTIFY_CACHE_PATH
 
 _SCOPE = ("user-modify-playback-state user-read-playback-state "
           "playlist-read-private playlist-read-collaborative")

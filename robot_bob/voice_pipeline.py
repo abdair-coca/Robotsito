@@ -67,82 +67,16 @@ from config import (
     SOLILOQUIO_USA_LLM, SOLILOQUIO_LLM_RATIO, SOLILOQUIO_LLM_MAX_TOK,
     SOLILOQUIO_MAX_CARNADAS,
 )
-# Prosodia por emoción (config local, gitignoreado). Fallback neutro si falta.
-try:
-    from config import TTS_RATE_BASE, TTS_PITCH_BASE, TTS_EMO_PROSODY
-except Exception:
-    TTS_RATE_BASE, TTS_PITCH_BASE, TTS_EMO_PROSODY = "+0%", "+0Hz", {}
-
-# Gate de energía del wake monitor (silencio → no transcribir).
-try:
-    from config import WAKE_MIN_LEVEL
-except Exception:
-    WAKE_MIN_LEVEL = 1.3
-try:
-    from config import SOLILOQUIO_LLM_MODEL
-except Exception:
-    SOLILOQUIO_LLM_MODEL = None   # None = usar el mismo modelo del chat
-try:
-    from config import WAKE_WINDOW_S, WAKE_VOICE_LEVEL, WAKE_SILENCE_CUT_S
-except Exception:
-    WAKE_WINDOW_S, WAKE_VOICE_LEVEL, WAKE_SILENCE_CUT_S = 3.0, 1.0, 0.45
-
-# Cuántos tokens iniciales escanea el detector buscando "Bob" (sensibilidad).
-try:
-    from config import WAKE_SCAN_TOKENS
-except Exception:
-    WAKE_SCAN_TOKENS = 2
-
-# Prompt de sesgo para Whisper (mejora el reconocimiento). '' si config viejo.
-try:
-    from config import STT_PROMPT
-except Exception:
-    STT_PROMPT = ""
-
-# Memoria persistente (P1).
-try:
-    from config import MEMORIA_ENABLED
-except Exception:
-    MEMORIA_ENABLED = False
-# Backend del LLM (charla): "ollama" local o "groq" nube. Import guardado por si
-# un config viejo no lo define.
-try:
-    from config import LLM_BACKEND, OLLAMA_BASE_URL, OLLAMA_MODEL
-except Exception:
-    LLM_BACKEND, OLLAMA_BASE_URL, OLLAMA_MODEL = "groq", "http://localhost:11434/v1", "qwen2.5:7b"
-# Backend Gemini (cloud). Guardado por si un config viejo no lo define.
-try:
-    from config import GEMINI_BASE_URL, GEMINI_MODEL, GEMINI_API_KEY
-except Exception:
-    GEMINI_BASE_URL, GEMINI_MODEL, GEMINI_API_KEY = "", "gemini-2.0-flash", ""
-# Recorte de historial por turno (ahorro de tokens). Default 10 si falta.
-try:
-    from config import MAX_HIST_MSGS
-except Exception:
-    MAX_HIST_MSGS = 10
-# Prompt corto y estricto para el LLM local (modelo chico). Si un config viejo
-# no lo define, cae al prompt normal.
-try:
-    from config import SYSTEM_PROMPT_LOCAL
-except Exception:
-    SYSTEM_PROMPT_LOCAL = SYSTEM_PROMPT
-# Tope de frases por turno del guard. config.py está gitignoreado (por-máquina);
-# si un config viejo no lo define, default a 2.
-try:
-    from config import MAX_FRASES_TURNO
-except Exception:
-    MAX_FRASES_TURNO = 2
-# P9: recordatorios/temporizadores. Guardado por si un config viejo no lo define.
-try:
-    from config import RECORDATORIOS_ENABLED
-except Exception:
-    RECORDATORIOS_ENABLED = True
+from config import (TTS_RATE_BASE, TTS_PITCH_BASE, TTS_EMO_PROSODY,
+                    WAKE_MIN_LEVEL, SOLILOQUIO_LLM_MODEL,
+                    WAKE_WINDOW_S, WAKE_VOICE_LEVEL, WAKE_SILENCE_CUT_S,
+                    WAKE_SCAN_TOKENS, STT_PROMPT, MEMORIA_ENABLED,
+                    LLM_BACKEND, OLLAMA_BASE_URL, OLLAMA_MODEL,
+                    GEMINI_BASE_URL, GEMINI_MODEL, GEMINI_API_KEY,
+                    MAX_HIST_MSGS, SYSTEM_PROMPT_LOCAL, MAX_FRASES_TURNO,
+                    RECORDATORIOS_ENABLED, MUSICA_ENABLED)
 from wake_word import WakeWordDetector
 from assistant import contexto_asistente   # P9: hora/fecha/clima por inyección
-try:
-    from config import MUSICA_ENABLED
-except Exception:
-    MUSICA_ENABLED = False
 from music import (parse_music_command, ejecutar as ejecutar_musica,  # P6: Spotify
                    esta_sonando as sonando_musica)                    # baile
 from show import es_comando_show, run_show     # modo presentación ("presentate")

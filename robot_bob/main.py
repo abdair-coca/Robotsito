@@ -62,10 +62,7 @@ from state_machine  import StateMachine, RobotState
 from facial_tracker import FacialTracker, PAN_HOME, TILT_HOME, ZONA_MUERTA_X, ZONA_MUERTA_Y
 from voice_pipeline import VoicePipeline
 from behavior       import BehaviorEngine
-try:
-    from config import MEMORIA_ENABLED
-except Exception:
-    MEMORIA_ENABLED = False
+from config import MEMORIA_ENABLED
 
 
 def _enrolar_async(frame, face_id, memoria) -> None:

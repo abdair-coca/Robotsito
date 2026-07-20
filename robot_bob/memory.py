@@ -22,10 +22,7 @@ _DB_DEFAULT = os.path.join(os.path.dirname(__file__), 'memory.db')
 
 # Umbral de similitud coseno para considerar "misma persona" (ArcFace: misma
 # cara ~0.45-0.7, distinta <0.3). Tuneable en config.MEMORIA_SIM_THRESHOLD.
-try:
-    from config import MEMORIA_SIM_THRESHOLD as _SIM_THR
-except Exception:
-    _SIM_THR = 0.40
+from config import MEMORIA_SIM_THRESHOLD as _SIM_THR
 
 
 class Memoria:

@@ -24,12 +24,7 @@ import threading
 import time
 import serial
 
-try:
-    from config import USE_WIFI_SERIAL, CONTROL_IP, CONTROL_PORT
-except Exception:               # config viejo sin estas claves → solo USB
-    USE_WIFI_SERIAL = False
-    CONTROL_IP      = ""
-    CONTROL_PORT    = 0
+from config import USE_WIFI_SERIAL, CONTROL_IP, CONTROL_PORT
 
 # ── Prioridades de cola ────────────────────────────────────────────────────────
 _PRIO_MOTOR    = 0   # locomoción: tan prioritario como el servo (responsivo)
