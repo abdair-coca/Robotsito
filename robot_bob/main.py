@@ -36,8 +36,9 @@ from config import (
     USE_ROBOT_MIC, USE_ROBOT_SPEAKER,
     T_PERMANENCIA_MIN, P_CONVERSACION, COOLDOWN_CONV,
     CONVERSATION_TIMEOUT, TIMEOUT_ROSTRO,
-    TARGET_FPS,
+    TARGET_FPS, apply_discovery,
 )
+apply_discovery()   # discovery cache después de imports, antes de usar IPs
 
 # Colores HUD (BGR)
 COLOR_OK    = (0, 255, 0)
