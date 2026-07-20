@@ -22,19 +22,7 @@ import threading
 import time
 from typing import Optional
 
-from state_machine import RobotState
-
-# ── Mapeo: estado de la StateMachine → comando OLED por defecto ─────────────
-# Coincide con _OLED_STATE de state_machine.py — duplicado a propósito acá
-# para que expression_engine no dependa de leerlo desde el otro módulo.
-_DEFAULT_OLED: dict[RobotState, str] = {
-    RobotState.IDLE:              'ESPERANDO',
-    RobotState.PRESENCE:          'SIGUIENDO',
-    RobotState.LISTENING:         'ESCUCHANDO',
-    RobotState.THINKING:          'PENSANDO',
-    RobotState.SPEAKING:          'HABLANDO',
-    RobotState.CONVERSATION_IDLE: 'ESPERANDO',
-}
+from state_machine import RobotState, _OLED_STATE
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -102,7 +90,7 @@ def pulse_sequence(serial_mgr, sm, steps: list,
         if sm.estado != estado_inicial and return_to is None:
             return
         target = return_to if return_to is not None else \
-            _DEFAULT_OLED.get(sm.estado, 'ESPERANDO')
+            _OLED_STATE.get(sm.estado, 'ESPERANDO')
         try:
             serial_mgr.cmd_estado(target)
         except Exception:
