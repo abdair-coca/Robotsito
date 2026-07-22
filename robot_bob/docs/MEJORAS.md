@@ -89,9 +89,9 @@ comparar. Sincronizado en `registrar()`, `actualizar_embedding()`, `_reconstruir
 
 ## 🟡 9. Cache de respuestas LLM
 
-Preguntas repetitivas ("cuéntame un chiste") queman tokens de Groq al pedo.
-
-**Acción:** LRU cache en memoria (dict + TTL) con hash del input del usuario.
+✅ Cache LRU en `llm_client.py` (64 entradas, TTL 5 min streaming / 10 min chat).
+Hash MD5 de (modelo, messages, temperatura, max_tokens, extra). Evita llamadas
+API repetitivas. + tests unitarios (5 tests).
 
 ---
 

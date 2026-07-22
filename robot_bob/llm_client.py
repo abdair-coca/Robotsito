@@ -1,11 +1,15 @@
 """
 Cliente LLM multi-backend para Bob: Groq, Ollama, Gemini.
+Cache LRU de respuestas para evitar tokens quemados en preguntas repetitivas.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 import time
+from collections import OrderedDict
 from typing import Dict, Iterator, List, Optional
 
 from groq import Groq
@@ -19,6 +23,12 @@ from config import (
 )
 
 console = Console()
+
+# Cache global entre instancias (opcional, pero ahorra memoria)
+_CACHE: OrderedDict = OrderedDict()
+_CACHE_MAX = 64
+_CACHE_TTL_S = 300       # 5 min para streaming
+_CACHE_TTL_CHAT_S = 600  # 10 min para chat() no-streaming
 
 
 class LLMClient:
@@ -76,38 +86,90 @@ class LLMClient:
     def is_groq(self) -> bool:
         return LLM_BACKEND not in ("ollama", "gemini")
 
-    def stream_chat(self, messages: List[Dict], **overrides) -> Iterator[str]:
+    # ── Cache LRU ───────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _req_hash(**kw) -> str:
+        raw = json.dumps(kw, sort_keys=True, default=str)
+        return hashlib.md5(raw.encode()).hexdigest()
+
+    def _cache_get(self, key: str, ttl: float):
+        if key not in _CACHE:
+            return None
+        val, ts = _CACHE[key]
+        if time.monotonic() - ts > ttl:
+            del _CACHE[key]
+            return None
+        _CACHE.move_to_end(key)
+        return val
+
+    def _cache_set(self, key: str, val) -> None:
+        _CACHE[key] = (val, time.monotonic())
+        while len(_CACHE) > _CACHE_MAX:
+            _CACHE.popitem(last=False)
+
+    def _build_kwargs(self, messages, **overrides) -> dict:
         kwargs = dict(
             model=overrides.get('model', self._llm_model),
             messages=messages,
             temperature=overrides.get('temperature', TEMPERATURE),
             max_tokens=overrides.get('max_tokens', MAX_TOKENS),
-            stream=True,
         )
-        if overrides.get('extra'):
-            kwargs.update(overrides['extra'])
-        elif self._llm_extra:
-            kwargs.update(self._llm_extra)
-        stream = self._llm.chat.completions.create(**kwargs)
+        extra = overrides.get('extra') or self._llm_extra
+        if extra:
+            kwargs['extra'] = extra
+        return kwargs
+
+    # ── LLM calls ──────────────────────────────────────────────────────────
+
+    def stream_chat(self, messages: List[Dict], **overrides) -> Iterator[str]:
+        kwargs = self._build_kwargs(messages, **overrides)
+        kwargs['stream'] = True
+        ckey = self._req_hash(**kwargs)
+        cached = self._cache_get(ckey, _CACHE_TTL_S)
+        if cached is not None:
+            console.print(f'[dim][llm] cache hit (stream, {len(cached)} chars)[/]')
+            yield cached
+            return
+
+        try:
+            stream = self._llm.chat.completions.create(**kwargs)
+        except Exception as e:
+            console.print(f'[red][voice] LLM error: {e}[/]')
+            return
+
+        buff: list[str] = []
         for chunk in stream:
             delta = (chunk.choices[0].delta.content or '') if chunk.choices else ''
+            buff.append(delta)
             yield delta
 
+        full = ''.join(buff)
+        if full.strip():
+            self._cache_set(ckey, full)
+
     def chat(self, messages: List[Dict], **overrides) -> Optional[str]:
-        kwargs = dict(
-            model=overrides.get('model', self._llm_model),
-            messages=messages,
-            temperature=overrides.get('temperature', 0.8),
-            max_tokens=overrides.get('max_tokens', 60),
-            stream=False,
-        )
-        if overrides.get('extra'):
-            kwargs.update(overrides['extra'])
-        elif self._llm_extra:
-            kwargs.update(self._llm_extra)
+        temp = overrides.get('temperature', 0.8)
+        mtok = overrides.get('max_tokens', 60)
+        extra = overrides.get('extra') or self._llm_extra
+        model = overrides.get('model', self._llm_model)
+        ckey = self._req_hash(model=model, messages=messages,
+                              temperature=temp, max_tokens=mtok, extra=extra)
+        cached = self._cache_get(ckey, _CACHE_TTL_CHAT_S)
+        if cached is not None:
+            console.print(f'[dim][llm] cache hit (chat, {len(cached)} chars)[/]')
+            return cached
+
         try:
-            resp = self._llm.chat.completions.create(**kwargs)
-            return (resp.choices[0].message.content or '').strip() or None
+            resp = self._llm.chat.completions.create(
+                model=model, messages=messages,
+                temperature=temp, max_tokens=mtok,
+                stream=False, **(extra or {}),
+            )
+            txt = (resp.choices[0].message.content or '').strip() or None
+            if txt:
+                self._cache_set(ckey, txt)
+            return txt
         except Exception as e:
             console.print(f'[dim][llm] chat error: {e}[/]')
             return None
