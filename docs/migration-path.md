@@ -51,3 +51,11 @@ Registra el progreso paso a paso, pruebas realizadas, aciertos, errores/desacier
   - `ESPAsyncWebServer` en C++ opera de forma no bloqueante por eventos, evitando que el tráfico WSS afecte la respuesta fluida de los servos Pan/Tilt.
 - **Desaciertos / Lecciones:**
   - `pio` (PlatformIO CLI) debe instalarse en el entorno local para compilaciones y flasheos automáticos desde consola.
+
+#### [2026-07-22] Paso 3: Verificación de Resolución DNS Local (DuckDNS vs IP Privada LAN)
+- **Objetivo:** Probar que los subdominios DuckDNS (`bobcreeper.duckdns.org` y `bobcreeper-cam.duckdns.org`) resuelven correctamente hacia las IPs privadas locales (`192.168.X.Y`) asignadas a los ESP32.
+- **Acción:**
+  - Se reutilizan las IPs asignadas por el DHCP del router local con el firmware actual para verificar la resolución de DuckDNS sin necesidad de flashear aún el C++.
+- **Aciertos:** Permite validar la resolución DNS y los certificados SSL antes del flasheo definitivo de C++.
+
+
