@@ -11,11 +11,13 @@ Priorizado: 🔴 alto impacto/bajo esfuerzo → 🟡 medio → 🟢 calidad de v
 - `tts_engine.py` — edge-tts + reproducción (ESP32/laptop)
 - `recorder.py` — grabación mic laptop/robot, VAD, endpointing, anti-eco
 
+Nuevos modulos extraidos (1209→663 lns, −45%):
+- `llm_client.py` (123 lns) — multi-backend LLM (Groq/Ollama/Gemini), STT, warmup
+- `wake_monitor.py` (136 lns) — wake word loop, grabacion background (robot/laptop)
+- `soliloquio.py` (176 lns) — soliloquio loop, generacion LLM/banco, recordatorios
+
 ❌ Queda dentro de `voice_pipeline.py`:
-- `llm_client.py` — cliente LLM (Groq/Gemini), streaming, guard de frases
-- `wake_monitor.py` — wake word loop
-- `soliloquy.py` — soliloquio loop, banco local, generación LLM
-- reminders, background monitors, baile, reconexión
+- reminders inline context, baile monitor loop, reconexion
 
 ---
 

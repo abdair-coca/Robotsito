@@ -1,248 +1,118 @@
 """
-voice_pipeline.py — Pipeline de voz del robot Bob.
-
-Adapta chat.py para integrarse con StateMachine:
-  - run() corre en su propio hilo, respeta ev_escuchando para saber cuándo grabar
-  - Usa SerialManager en vez de RobotSerial (COM3 ya no se abre aquí)
-  - Notifica StateMachine en cada fase: LISTENING → THINKING → SPEAKING → CONV_IDLE
-  - Mantiene WakeWordDetector activo siempre (wake word = override en cualquier estado)
-
-Dependencias externas: voicechatLap/config.py y voicechatLap/wake_word.py
-(se importan con ruta relativa; ajustar sys.path en main.py si es necesario)
+voice_pipeline.py — Orquestador del pipeline de voz de Bob.
+Delega a modulos especializados y coordina el ciclo de conversacion.
 """
 
 from __future__ import annotations
 
-import io as _io
 import json
 import os
 import random
 import re
+import subprocess
 import sys
 import queue
-import subprocess
-
 import threading
 import time
-import wave
-from datetime import datetime
-from collections import deque
-from typing import Optional, List, Dict, Iterator
+from typing import Optional
 
-import numpy as np
-import webrtcvad
 import imageio_ffmpeg
-import sounddevice as sd
-from groq import Groq
 from rich.console import Console
 
-# voicechatLap se appendea (no se inserta al frente) para que robot_bob/config.py
-# tenga prioridad sobre voicechatLap/config.py al hacer `from config import ...`.
-# Esto deja que Abdair edite robot_bob/config.py como la única fuente de verdad
-# y que wake_word.py y audio_io.py sigan siendo importables.
 _VOICECHAT_DIR = os.path.join(os.path.dirname(__file__), '..', 'shared', 'voicechatLap')
 if _VOICECHAT_DIR not in sys.path:
     sys.path.append(os.path.abspath(_VOICECHAT_DIR))
 
 from config import (
-    GROQ_API_KEY,
-    USE_ROBOT_SPEAKER, USE_ROBOT_MIC,
-    SAMPLE_RATE, FRAME_MS, FRAME_SIZE, MIC_CHUNK_BYTES,
-    VAD_AGGRESSIVENESS, SILENCE_END_MS, MAX_RECORDING_S, MIN_SPEECH_S,
-    PREROLL_FRAMES, NOISE_FLOOR_INIT, NOISE_FLOOR_MARGIN, NOISE_FLOOR_MIN,
-    SPEECH_START_FRAMES,
+    USE_ROBOT_MIC, FRAME_MS,
     BARGE_IN_ENABLED, BARGE_IN_SUSTAINED_MS, BARGE_IN_SETTLE_MS, BARGE_IN_RMS_U8,
-    WAKE_WORD_ENABLED,
     WAKE_CANONICAL, WAKE_PREFIXES, WAKE_MIN_CONF, WAKE_FUZZY_THR,
-    WAKE_COOLDOWN_S, WAKE_MAX_UTTR_CHARS,
-    GROQ_LLM_MODEL, GROQ_STT_MODEL, TEMPERATURE, MAX_TOKENS, MAX_RETRIES,
-    VOICE, TTS_FFMPEG_FILTERS, SENTENCE_MIN_CHARS, TTS_TAIL_S,
-    SYSTEM_PROMPT, EXIT_PHRASES, GOODBYE_PHRASES,
-    TTS_SEND_CHUNK_BYTES,
-    SOLILOQUIO_ENABLED, SOLO_IDLE_MIN_S, PRESENCE_NUDGE_S,
-    P_SOLILOQUIO, SOLILOQUIO_COOLDOWN_S, SOLILOQUIO_SETTLE_MS, BANCO_SOLILOQUIO,
-    SOLILOQUIO_USA_LLM, SOLILOQUIO_LLM_RATIO, SOLILOQUIO_LLM_MAX_TOK,
-    SOLILOQUIO_MAX_CARNADAS,
+    WAKE_COOLDOWN_S, WAKE_MAX_UTTR_CHARS, WAKE_SCAN_TOKENS,
+    MAX_HIST_MSGS, MAX_FRASES_TURNO,
+    SYSTEM_PROMPT, SYSTEM_PROMPT_LOCAL,
+    MEMORIA_ENABLED, RECORDATORIOS_ENABLED, MUSICA_ENABLED,
+    STT_PROMPT,
 )
-from config import (TTS_RATE_BASE, TTS_PITCH_BASE, TTS_EMO_PROSODY,
-                    WAKE_MIN_LEVEL, SOLILOQUIO_LLM_MODEL,
-                    WAKE_WINDOW_S, WAKE_VOICE_LEVEL, WAKE_SILENCE_CUT_S,
-                    WAKE_SCAN_TOKENS, STT_PROMPT, MEMORIA_ENABLED,
-                    LLM_BACKEND, OLLAMA_BASE_URL, OLLAMA_MODEL,
-                    GEMINI_BASE_URL, GEMINI_MODEL, GEMINI_API_KEY,
-                    MAX_HIST_MSGS, SYSTEM_PROMPT_LOCAL, MAX_FRASES_TURNO,
-                    RECORDATORIOS_ENABLED, MUSICA_ENABLED)
 from wake_word import WakeWordDetector
-from assistant import contexto_asistente   # P9: hora/fecha/clima por inyección
-from music import (parse_music_command, ejecutar as ejecutar_musica,  # P6: Spotify
-                   esta_sonando as sonando_musica)                    # baile
-from show import es_comando_show, run_show     # modo presentación ("presentate")
-from reminders import parse_recordatorio, ReminderStore   # P9: recordatorios
+from assistant import contexto_asistente
+from music import (parse_music_command, ejecutar as ejecutar_musica,
+                   esta_sonando as sonando_musica)
+from show import es_comando_show, run_show
+from reminders import parse_recordatorio, ReminderStore
 from expression_engine import (
     pulse_emotion, react_to_user_text, react_to_bob_text,
     mood_delta_for_user_text, is_love,
     EMO_WAKE_DETECTED, EMO_GREETING_PLAYED, EMO_AUTO_OPENER,
-    EMO_STT_FAIL, EMO_LLM_ERROR,
-    PULSE_FAST, PULSE_NORM, PULSE_SLOW,
+    EMO_STT_FAIL,
+    PULSE_FAST,
 )
 from audio_helpers import (
-    extract_emo_tag, ensure_emo_tag, rms_uint8, uint8_to_wav,
-    is_happy, es_alucinacion, intent_giro, extraer_nombre,
+    extract_emo_tag, ensure_emo_tag,
+    is_happy, intent_giro, extraer_nombre,
     is_exit, is_goodbye, synthesize_mp3, split_sentence,
 )
+from llm_client import LLMClient
+from tts_engine import TTSEngine
+from recorder import Recorder
+from wake_monitor import WakeMonitor
+from soliloquy import Soliloquio
 
-
-FFMPEG  = imageio_ffmpeg.get_ffmpeg_exe()
+FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 console = Console()
 
-# ── Constantes locales ─────────────────────────────────────────────────────────
-_LAP_SAMPLE_RATE = 16000  # sounddevice graba a 16 kHz
-
-# Saludos rápidos cuando el usuario gatilla wake word ("Bob ...")
 WAKE_GREETINGS = [
-    '¡Hola bola!',
-    '¿Qué pasa calabaza?',
-    '¡Aquí estoy!',
-    '¡Dime, dime!',
-    '¡Sí dime!',
-    '¿Qué tranza compadre?',
-    '¡Te escucho!',
-    '¿Qué hubo qué hay?',
-    '¡A la orden!',
-    '¿Qué onda banana?',
-    '¿Qué tal lechuga?',
-    '¡Aquí Bob, reportándose!',
+    '!Hola bola!', '?Que pasa calabaza?', '!Aqui estoy!',
+    '!Dime, dime!', '!Si dime!', '?Que tranza compadre?',
+    '!Te escucho!', '?Que hubo que hay?', '!A la orden!',
+    '?Que onda banana?', '?Que tal lechuga?',
+    '!Aqui Bob, reportandose!',
 ]
 
-# Openers cuando Bob inicia solo (vio una cara permanente, se animó a romper hielo).
-# Preguntas abiertas para invitar a charlar — el usuario no esperaba ser hablado.
 AUTO_OPENERS = [
-    '¡Hola! Soy Bob, ¿y tú cómo te llamas?',
-    '¡Buenas! ¿De qué carrera eres?',
-    '¡Hey! ¿Qué te trae por la feria?',
-    '¡Hola! Te estaba mirando, ¿charlamos?',
-    '¡Buenas! ¿Cómo va tu día?',
-    '¡Eh, hola! ¿Te cuento un chiste?',
-    '¡Hola! ¿Vienes a ver robots o a ver robots?',
-    '¡Saludos! ¿Te puedo preguntar algo?',
-    '¡Hola! Me aburría, ¿hablamos un rato?',
-    '¡Buenas! ¿Sabías que llevo aquí horas? Cuéntame algo.',
-    '¡Hola! ¿Eres de Potosí o de visita?',
-    '¡Hey! ¿Qué opinas de los robots conversacionales?',
+    '!Hola! Soy Bob, y tu como te llamas?',
+    '!Buenas! De que carrera eres?',
+    '!Hey! Que te trae por la feria?',
+    '!Hola! Te estaba mirando, charlamos?',
+    '!Buenas! Como va tu dia?',
+    '!Eh, hola! Te cuento un chiste?',
+    '!Hola! Vienes a ver robots o a ver robots?',
+    '!Saludos! Te puedo preguntar algo?',
+    '!Hola! Me aburria, hablamos un rato?',
+    '!Buenas! Sabias que llevo aqui horas? Cuentame algo.',
+    '!Hola! Eres de Potosi o de visita?',
+    '!Hey! Que opinas de los robots conversacionales?',
 ]
-
-# Prompt para soliloquios generados por LLM (Fase C). Pide UNA frase corta,
-# hablable, con su tag [EMO:X]. Barato (pocos tokens) y con temperatura alta
-# para variedad.
-SOLILOQUIO_LLM_PROMPT = (
-    "Eres Bob, un robot sociable en una feria de la Universidad Autónoma Tomás "
-    "Frías (UATF), en Potosí, Bolivia. Ahora estás SOLO, nadie te habla.\n"
-    "Di UNA sola frase corta (máximo 12 palabras) que dirías en voz alta para ti "
-    "mismo: un pensamiento, una queja liviana, una curiosidad o una broma con "
-    "actitud. Tono de compañero de la facu, boliviano, divertido.\n"
-    "La frase DEBE empezar con un tag de emoción entre corchetes: [EMO:FELIZ], "
-    "[EMO:CURIOSO], [EMO:TRAVIESO], [EMO:PENSANDO], [EMO:TRISTE], [EMO:MUY_FELIZ], "
-    "[EMO:CONFUNDIDO] o [EMO:AMOR].\n"
-    "Texto plano hablable: sin comillas, sin markdown, sin emojis, sin acotaciones. "
-    "Solo la frase con su tag."
-)
 
 
 
 # ── VoicePipeline ──────────────────────────────────────────────────────────────
 
 class VoicePipeline:
-    """
-    Corre en un hilo daemon. Espera ev_escuchando de StateMachine para grabar.
-    Flujo por turno: graba → transcribe → detecta wake/exit → LLM → TTS → reproduce.
-
-    serial_mgr: SerialManager  (para comandos ESTADO sin abrir COM3)
-    state_machine: StateMachine (para notificar transiciones)
-    """
-
     def __init__(self, serial_mgr, state_machine, audio_io=None,
                  face_id=None, memoria=None, get_frame=None):
-        """
-        audio_io: instancia opcional de AudioIO (voicechatLap.audio_io) ya conectada.
-        face_id / memoria / get_frame: para la memoria persistente (P1). face_id da
-                  el embedding de la cara, memoria lo busca/guarda, get_frame() devuelve
-                  el frame actual de la cámara. Si faltan, la memoria queda desactivada.
-        """
         self._serial = serial_mgr
         self._sm     = state_machine
         self._audio_io = audio_io
         self._face_id  = face_id
         self._memoria  = memoria
         self._get_frame = get_frame
-        self._t_audio_retry = 0.0    # throttle de reconexión del audio ESP32
 
-        # Estado de identidad de la conversación actual (P1).
-        self._convo_persona       = None     # id en la base, o None
-        self._convo_emb           = None     # embedding facial de esta charla
-        self._convo_edad          = None
-        self._persona_nombre      = None
-        self._nombre_pendiente    = None
+        self._convo_persona = None
+        self._convo_emb = None
+        self._convo_edad = None
+        self._persona_nombre = None
+        self._nombre_pendiente = None
         self._system_prompt_actual = SYSTEM_PROMPT
 
-        self._client = Groq(api_key=GROQ_API_KEY)   # STT (Whisper) SIEMPRE en Groq
-
-        # Cliente de CHAT: local (Ollama, sin tokens) o Groq. La API
-        # chat.completions es OpenAI-compatible en ambos. Si Ollama no responde
-        # al arrancar, cae solo a Groq.
-        # Params extra por backend para las llamadas al LLM. Gemini 2.5 es modelo
-        # "thinking": sin esto se come el max_tokens pensando y corta la respuesta.
-        self._llm_extra: Dict = {}
-        self._usando_ollama = False
-        if LLM_BACKEND == "gemini":
-            from openai import OpenAI
-            self._llm = OpenAI(base_url=GEMINI_BASE_URL, api_key=GEMINI_API_KEY)
-            self._llm_model = GEMINI_MODEL
-            try:
-                self._llm.models.list()   # ping a Gemini (valida key + red)
-                self._llm_extra = {"reasoning_effort": "none"}   # thinking off
-                console.print(f"[dim][llm] Gemini OK → {self._llm_model}[/]")
-            except Exception as _e:
-                console.print(f"[yellow][llm] Gemini no responde ({_e}); fallback a Groq[/]")
-                self._llm = self._client
-                self._llm_model = GROQ_LLM_MODEL
-        elif LLM_BACKEND == "ollama":
-            from openai import OpenAI
-            self._llm = OpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
-            self._llm_model = OLLAMA_MODEL
-            try:
-                self._llm.models.list()   # ping a Ollama
-                self._usando_ollama = True
-                console.print(f"[dim][llm] Ollama OK → {self._llm_model}[/]")
-            except Exception as _e:
-                console.print(f"[yellow][llm] Ollama no responde ({_e}); fallback a Groq[/]")
-                self._llm = self._client
-                self._llm_model = GROQ_LLM_MODEL
-        else:
-            self._llm = self._client
-            self._llm_model = GROQ_LLM_MODEL
-            console.print(f"[dim][llm] backend Groq → {self._llm_model}[/]")
-
-        # Prompt base según el backend efectivo: solo el modelo local chico usa el
-        # prompt corto y estricto (no obedece el largo). Gemini/Groq usan el completo.
-        self._system_prompt_base = SYSTEM_PROMPT_LOCAL if self._usando_ollama else SYSTEM_PROMPT
+        self._llm = LLMClient()
+        self._system_prompt_base = SYSTEM_PROMPT_LOCAL if self._llm.usando_ollama else SYSTEM_PROMPT
         self._system_prompt_actual = self._system_prompt_base
 
-        self._vad    = webrtcvad.Vad(VAD_AGGRESSIVENESS)
-        self._convo: List[Dict[str, str]] = []
+        self._convo: list[dict[str, str]] = []
         self._detener = threading.Event()
-        # Anti-eco: cuando Bob habla solo (soliloquio), el wake monitor NO debe
-        # grabar su propia voz. Este flag lo silencia mientras dura el soliloquio.
         self._muted = threading.Event()
-        # Anti-repetición de soliloquios: últimas frases dichas (texto sin tag).
-        self._soliloquio_reciente: deque = deque(maxlen=5)
-        # P9: recordatorios pendientes (creados en charla, disparados en background).
         self._recordatorios = ReminderStore()
-        # Baile: momento en que arrancó (gracia antes de que el monitor lo corte,
-        # porque Spotify tarda un instante en reportar is_playing tras start_playback).
         self._t_baile_inicio = 0.0
-        # Hint: "puede haber música sonando". Lo prende un comando de play; mientras
-        # esté prendido el monitor consulta a Spotify para sostener/cortar el baile.
-        # Se apaga cuando la música efectivamente paró → el monitor deja de consultar.
         self._baile_hint = False
 
         self._wake = WakeWordDetector(
@@ -255,36 +125,36 @@ class VoicePipeline:
             max_scan_tokens=WAKE_SCAN_TOKENS,
         )
 
-        sd.default.samplerate = 24000
-
-        from tts_engine import TTSEngine
-        from recorder import Recorder
         self._tts = TTSEngine(self._audio_io, self._detener)
         self._grabador = Recorder(self._audio_io, self._detener, self._serial, self._sm)
+
+        self._wake_monitor = WakeMonitor(
+            self._serial, self._sm, self._wake, self._transcribir,
+            self._detener, self._muted, self._audio_io)
+        self._soliloquio = Soliloquio(
+            self._serial, self._sm, self._llm, self._hablar,
+            self._detener, self._muted)
 
         self._warmup()
         self._hilo = threading.Thread(target=self._loop, daemon=True, name='voice-pipeline')
         self._hilo.start()
 
-    # ── API pública ────────────────────────────────────────────────────────────
+    # ── API publica ────────────────────────────────────────────────────────────
 
     def cerrar(self) -> None:
         self._detener.set()
-        self._sm.ev_escuchando.set()  # desbloquea el wait
+        self._sm.ev_escuchando.set()
         self._hilo.join(timeout=3.0)
 
     # ── Loop principal ────────────────────────────────────────────────────────
 
     def _loop(self) -> None:
         while not self._detener.is_set():
-            # Esperar hasta que StateMachine diga LISTENING
             self._sm.ev_escuchando.wait(timeout=0.5)
             if self._detener.is_set():
                 break
             if not self._sm.ev_escuchando.is_set():
                 continue
-
-            # Capturar flags pendientes ANTES de arrancar la conversación
             pending_audio = self._sm.pending_audio
             pending_text  = self._sm.pending_text
             greeting      = self._sm.greeting_pending
@@ -293,7 +163,6 @@ class VoicePipeline:
             self._sm.pending_text         = None
             self._sm.greeting_pending     = False
             self._sm.conversation_trigger = None
-
             self._run_conversation(pending_audio=pending_audio,
                                    pending_text=pending_text,
                                    greeting=greeting,
@@ -305,20 +174,15 @@ class VoicePipeline:
         return bool(MEMORIA_ENABLED and self._face_id and self._memoria and self._get_frame)
 
     def _identificar(self) -> None:
-        """Al arrancar la charla: reconoce la cara y personaliza el prompt/saludo."""
-        self._convo = []                     # historial fresco por conversación
+        self._convo = []
         self._convo_persona = None
-        self._convo_emb     = None
-        self._convo_edad    = None
+        self._convo_emb = None
+        self._convo_edad = None
         self._persona_nombre = None
         self._nombre_pendiente = None
         self._system_prompt_actual = self._system_prompt_base
         if not self._memoria_activa() or not self._face_id.listo:
             return
-        # Al venir de un wake word, Bob puede estar todavía girando hacia la
-        # persona y el primer frame no tiene cara. Reintentamos hasta ~2.5 s para
-        # darle tiempo a que aparezca antes de decidir que no la conocemos
-        # (así te reconoce cuando te encara, en vez de saludarte como desconocido).
         RETRY_S = 2.5
         emb, edad = None, None
         t0 = time.monotonic()
@@ -326,53 +190,46 @@ class VoicePipeline:
             try:
                 emb, edad = self._face_id.analizar(self._get_frame())
             except Exception as e:
-                console.print(f'[dim][memoria] análisis falló: {e}[/]')
+                console.print(f'[dim][memoria] analisis fallo: {e}[/]')
                 break
             if emb is not None:
                 break
             if self._detener.is_set():
                 break
             time.sleep(0.2)
-        self._convo_emb  = emb
+        self._convo_emb = emb
         self._convo_edad = edad
         if emb is None:
             return
         m = self._memoria.reconocer(emb)
         if m:
             pid, nombre, score = m
-            self._convo_persona  = pid
+            self._convo_persona = pid
             self._persona_nombre = nombre
             self._memoria.marcar_visto(pid)
             console.print(f'[bold magenta][memoria][/] reconocido: {nombre} (score {score:.2f})')
             self._system_prompt_actual = (
-                self._system_prompt_base + '\n\n═══ MEMORIA (ya conocés a esta persona) ═══\n'
+                self._system_prompt_base + '\n\n═══ MEMORIA (ya conoces a esta persona) ═══\n'
                 + self._memoria.contexto(pid)
-                + '\nSaludala con calidez por su nombre y, si viene al caso, mencioná algo '
+                + '\nSaludala con calidez por su nombre y, si viene al caso, menciona algo '
                   'que recuerdes de ella. No repitas que sos un robot de feria.'
-                  '\nAdaptá tu cercanía a esa relación: con un amigo cercano sé confianzudo, '
-                  'cariñoso y bromista; con un conocido reciente, cordial y un poco más medido.')
+                  '\nAdapta tu cercania a esa relacion: con un amigo cercano se confianzudo, '
+                  'carinoso y bromista; con un conocido reciente, cordial y un poco mas medido.')
         else:
             console.print('[bold magenta][memoria][/] persona desconocida')
             self._system_prompt_actual = (
-                self._system_prompt_base + '\n\n═══ MEMORIA ═══\nNo conocés a esta persona todavía. '
-                'En algún momento de la charla preguntale su nombre con naturalidad.')
+                self._system_prompt_base + '\n\n═══ MEMORIA ═══\nNo conoces a esta persona todavia. '
+                'En algun momento de la charla preguntale su nombre con naturalidad.')
 
     def _opener_memoria(self):
-        """
-        P7 — Conversación autónoma sobre P1: arma un saludo que RETOMA un tema de
-        una charla anterior con esta persona reconocida (ej: "la última vez me
-        hablabas de tu robot, ¿cómo va?"). Usa el LLM ya configurado (local o
-        Groq). Devuelve (texto_limpio, emo) o None si no hay nada que retomar o
-        el LLM falla — el caller cae al saludo normal.
-        """
         pid = self._convo_persona
         if pid is None:
             return None
         eps = self._memoria.episodios(pid, 3)
-        p   = self._memoria.persona(pid)
-        temas = (p[4] if p else '') or ''          # columna temas
+        p = self._memoria.persona(pid)
+        temas = (p[4] if p else '') or ''
         if not eps and not temas:
-            return None                            # sin recuerdos → saludo normal
+            return None
         nombre = self._persona_nombre or 'esta persona'
         nivel, _, _ = self._memoria.nivel_relacion(pid)
         recuerdos = '; '.join(t for t, _ in eps) if eps else ''
@@ -382,20 +239,17 @@ class VoicePipeline:
         sys_p = (
             "Eres Bob, un robot sociable de feria. Vas a saludar a alguien que YA "
             "conoces. Saluda retomando con calidez UNO de sus temas o recuerdos de "
-            "una charla anterior, como un amigo que retoma la conversación "
-            "(ej: 'la última vez me hablabas de tu robot, ¿cómo va eso?'). "
-            "UNA sola frase corta y hablable, que empiece con un tag de emoción "
+            "una charla anterior, como un amigo que retoma la conversacion "
+            "(ej: 'la ultima vez me hablabas de tu robot, como va eso?'). "
+            "UNA sola frase corta y hablable, que empiece con un tag de emocion "
             "[EMO:FELIZ], [EMO:CURIOSO], [EMO:TRAVIESO] o [EMO:AMOR]. "
             "Sin comillas, sin markdown, sin emojis.")
-        try:
-            resp = self._llm.chat.completions.create(
-                model=self._llm_model,
-                messages=[{'role': 'system', 'content': sys_p},
-                          {'role': 'user',   'content': ctx}],
-                temperature=0.8, max_tokens=60, **self._llm_extra)
-            txt = (resp.choices[0].message.content or '').strip()
-        except Exception as e:
-            console.print(f'[dim][P7] opener memoria falló: {e}[/]')
+        txt = self._llm.chat(
+            messages=[{'role': 'system', 'content': sys_p},
+                      {'role': 'user', 'content': ctx}],
+            temperature=0.8, max_tokens=60)
+        if not txt:
+            console.print(f'[dim][P7] opener memoria fallo[/]')
             return None
         emo, clean = extract_emo_tag(txt)
         if not clean or not any(c.isalnum() for c in clean):
@@ -403,38 +257,36 @@ class VoicePipeline:
         return clean, (emo or 'FELIZ')
 
     def _resumir_conversacion(self):
-        """LLM resume la charla → (resumen, gustos, temas). None si falla."""
         turns = [m for m in self._convo if m['role'] in ('user', 'assistant')]
         if not turns:
             return None, None, None
         transcript = '\n'.join(
             f"{'Usuario' if m['role'] == 'user' else 'Bob'}: {m['content']}"
             for m in turns[-12:])
-        sys_p = ('Sos un extractor de memoria. Resumí la charla entre Bob (robot) y una '
-                 'persona. Devolvé SOLO un JSON, sin markdown: '
-                 '{"resumen": "una frase en pasado de qué hablaron", '
-                 '"gustos": "gustos/intereses mencionados o cadena vacía", '
-                 '"temas": "temas de los que hablaron o cadena vacía"}.')
-        try:
-            resp = self._llm.chat.completions.create(
-                model=self._llm_model,
-                messages=[{'role': 'system', 'content': sys_p},
-                          {'role': 'user', 'content': transcript}],
-                temperature=0.3, max_tokens=140, **self._llm_extra)
-            txt = (resp.choices[0].message.content or '').strip()
-            mt = re.search(r'\{.*\}', txt, re.DOTALL)
-            if mt:
+        sys_p = ('Sos un extractor de memoria. Resumi la charla entre Bob (robot) y una '
+                 'persona. Devolve SOLO un JSON, sin markdown: '
+                 '{"resumen": "una frase en pasado de que hablaron", '
+                 '"gustos": "gustos/intereses mencionados o cadena vacia", '
+                 '"temas": "temas de los que hablaron o cadena vacia"}.')
+        txt = self._llm.chat(
+            messages=[{'role': 'system', 'content': sys_p},
+                      {'role': 'user', 'content': transcript}],
+            temperature=0.3, max_tokens=140)
+        if not txt:
+            return None, None, None
+        mt = re.search(r'\{.*\}', txt, re.DOTALL)
+        if mt:
+            try:
                 d = json.loads(mt.group(0))
                 res = (d.get('resumen') or '').strip() or None
                 gus = (d.get('gustos') or '').strip() or None
                 tem = (d.get('temas') or '').strip() or None
                 return res, gus, tem
-        except Exception as e:
-            console.print(f'[dim][memoria] resumen falló: {e}[/]')
+            except Exception as e:
+                console.print(f'[dim][memoria] resumen parse fallo: {e}[/]')
         return None, None, None
 
     def _cerrar_memoria(self) -> None:
-        """Al terminar la charla: registra (si nuevo) y guarda recuerdo + gustos/temas."""
         if not self._memoria_activa() or self._convo_emb is None:
             return
         pid = self._convo_persona
@@ -448,11 +300,9 @@ class VoicePipeline:
         if resumen:
             self._memoria.agregar_episodio(pid, resumen)
         self._memoria.actualizar(pid, gustos=gustos, temas=temas)
-
-        # ── Relación social (P2): la charla sube amistad/confianza ─────────────
         turns = len([m for m in self._convo if m['role'] == 'user'])
-        mood  = self._sm.mood                       # ánimo final de la charla
-        d_amistad   = int(5 + mood * 8 + min(turns, 5) * 1.5)
+        mood = self._sm.mood
+        d_amistad = int(5 + mood * 8 + min(turns, 5) * 1.5)
         d_confianza = int(3 + (5 if self._persona_nombre else 0) + min(turns, 5))
         self._memoria.registrar_interaccion(pid, d_amistad, d_confianza)
         console.print(f'[dim][memoria] id={pid}: recuerdo guardado | '
@@ -462,46 +312,28 @@ class VoicePipeline:
                           pending_text: Optional[str] = None,
                           greeting: bool = False,
                           trigger: Optional[str] = None) -> None:
-        """
-        Maneja una conversación completa: turno inicial + turnos sucesivos
-        sin requerir wake word entre ellos. Termina cuando:
-          - El usuario no responde en NEXT_TURN_TIMEOUT segundos
-          - El usuario dice una frase de salida/despedida
-          - Se llama a cerrar()
-
-        pending_text: si está presente, se usa como primer turno SIN grabar/transcribir
-                      (caso típico: "Bob ¿cómo estás?" — el payload tras el wake).
-        greeting:     si True, dice un saludo random ANTES de proceder.
-        """
-        NEXT_TURN_TIMEOUT = 6.0   # s para esperar respuesta del usuario tras hablar Bob
-        FIRST_TURN_TIMEOUT = 10.0  # s para el primer turno tras wake word
-
+        NEXT_TURN_TIMEOUT = 6.0
+        FIRST_TURN_TIMEOUT = 10.0
         es_primer_turno = True
-        n_turnos = 0  # contador de turnos para el bonus de mood (charla fluye)
+        n_turnos = 0
 
-        # ── Identidad (memoria P1): reconocer la cara y personalizar ──────────
         self._identificar()
 
-        # ── Saludo / opener al arrancar conversación ──────────────────────────
         if greeting:
             saludo, saludo_emo = None, None
-            # P7: si reconocemos a la persona y hay recuerdos, abrimos retomando
-            # un tema de una charla anterior en vez del saludo genérico.
             recall = self._opener_memoria() if self._convo_persona is not None else None
             if recall:
                 saludo, saludo_emo = recall
                 console.print(f'[bold magenta][P7 opener memoria][/] ({saludo_emo}) {saludo}')
                 self._serial.cmd_estado(saludo_emo)
-                # Registrar lo dicho para que el LLM continúe el hilo del tema.
                 self._convo.append({'role': 'assistant',
                                     'content': f'[EMO:{saludo_emo}] {saludo}'})
             elif self._persona_nombre:
-                # Persona conocida sin recuerdos útiles → saludo por su nombre.
                 n = self._persona_nombre
                 saludo = random.choice([
-                    f'¡Hola {n}! ¡Qué bueno verte de nuevo!',
-                    f'¡{n}! ¿Cómo andás?',
-                    f'¡Mirá quién volvió! ¿Qué contás, {n}?'])
+                    f'!Hola {n}! !Que bueno verte de nuevo!',
+                    f'!{n}! Como andas?',
+                    f'!Mira quien volvio! Que contas, {n}?'])
                 saludo_emo = 'FELIZ'
                 console.print(f'[bold magenta][saludo memoria][/] {saludo}')
                 pulse_emotion(self._serial, self._sm, 'FELIZ', PULSE_FAST)
@@ -515,16 +347,12 @@ class VoicePipeline:
                 pulse_emotion(self._serial, self._sm, EMO_GREETING_PLAYED, PULSE_FAST)
             self._sm.iniciar_hablando()
             self._hablar(saludo, saludo_emo)
-            # Si no hay payload pendiente, volvemos a LISTENING para grabar
             if not pending_text:
                 self._sm.iniciar_escuchando()
 
         while not self._detener.is_set():
-            # ── 1. Obtener input del turno ─────────────────────────────────────
             texto: str = ''
             if pending_text:
-                # El wake monitor ya transcribió la frase entera junto al wake.
-                # Saltamos grabar + STT para este primer turno.
                 texto = pending_text
                 pending_text = None
                 console.print(f'[dim][voice] Usando payload del wake: "{texto}"[/]')
@@ -543,7 +371,7 @@ class VoicePipeline:
                 console.print(f'[voice] Escuchando ({timeout:.0f}s timeout)...')
                 audio = self._grabar(initial_timeout=timeout)
                 if audio is None or not audio:
-                    console.print('[dim][voice] Silencio prolongado, fin de conversación[/]')
+                    console.print('[dim][voice] Silencio prolongado, fin de conversacion[/]')
                     break
                 self._sm.iniciar_pensando()
                 console.print('[voice] Transcribiendo...')
@@ -551,26 +379,22 @@ class VoicePipeline:
 
             if not texto:
                 console.print('[dim][voice] Audio sin texto[/]')
-                # Pulso CONFUNDIDO para señalar visualmente que no entendió
                 pulse_emotion(self._serial, self._sm, EMO_STT_FAIL, PULSE_FAST)
-                self._sm.mood_event(-0.05)  # silencio incomprendido
+                self._sm.mood_event(-0.05)
                 self._sm.stt_fail_streak += 1
                 if self._sm.stt_fail_streak >= 2:
-                    # Fase C: 2 fallos seguidos → Bob lo reconoce con empatía
-                    # y da otra oportunidad en vez de cortar la conversación.
                     self._sm.stt_fail_streak = 0
-                    console.print('[dim][voice] 2 fallos STT → mensaje empático[/]')
+                    console.print('[dim][voice] 2 fallos STT -> mensaje empatico[/]')
                     self._sm.iniciar_hablando()
                     self._serial.cmd_estado('CONFUNDIDO')
-                    self._hablar('Perdón, no te estoy escuchando bien. '
-                                 'Acércate un poquito y dime de nuevo, ¿sí?', 'CONFUNDIDO')
+                    self._hablar('Perdon, no te estoy escuchando bien. '
+                                 'Acercate un poquito y dime de nuevo, si?', 'CONFUNDIDO')
                     es_primer_turno = False
                     continue
                 break
 
             console.print(f'[bold cyan]Usuario:[/] {texto}')
 
-            # ── Memoria: ¿se presentó? ("me llamo X") → guardar nombre ─────────
             if self._memoria_activa():
                 nombre = extraer_nombre(texto)
                 if nombre and nombre != self._persona_nombre:
@@ -579,96 +403,81 @@ class VoicePipeline:
                     if self._convo_persona is not None:
                         self._memoria.actualizar(self._convo_persona, nombre=nombre)
                     elif self._convo_emb is not None:
-                        # registrar ya para asociar cara↔nombre desde este momento
                         self._convo_persona = self._memoria.registrar(
                             nombre, self._convo_emb, self._convo_edad)
                     console.print(f'[bold magenta][memoria][/] nombre aprendido: {nombre}')
 
-            # Reaccionar emocionalmente a lo que dijo el usuario
-            # (AMOR / TRISTE / CONFUNDIDO según contenido)
             react_to_user_text(self._serial, self._sm, texto)
-
-            # ── Mood drift (Fase A) + continuidad (Fase C) ─────────────────
-            self._sm.stt_fail_streak = 0   # transcripción exitosa
-            self._sm.mood_decay()                                  # 5% hacia 0
+            self._sm.stt_fail_streak = 0
+            self._sm.mood_decay()
             delta = mood_delta_for_user_text(texto)
             self._sm.mood_event(delta)
             if is_love(texto):
-                self._sm.mood_floor(0.6)   # cariño directo: salto de ánimo
+                self._sm.mood_floor(0.6)
             if delta > 0:
                 self._sm.positive_streak += 1
             elif delta < 0:
                 self._sm.positive_streak = 0
             n_turnos += 1
             if n_turnos > 4:
-                self._sm.mood_event(0.10)  # la conversación fluye — bonus
+                self._sm.mood_event(0.10)
             console.print(f'[dim][mood] {self._sm.mood:+.2f}  '
                           f'racha+{self._sm.positive_streak}[/]')
 
-            # Limpiar wake word residual si el usuario repitió "Bob"
             ww = self._wake.detect(texto)
             if ww.detected and ww.payload:
                 texto = ww.payload
-
             if not texto.strip():
                 es_primer_turno = False
                 continue
 
-            # ── Comando de giro: "date la vuelta", "a tu derecha", etc. ─────────
             intent = intent_giro(texto)
             if intent:
                 self._sm.scan_request = intent
                 self._sm.iniciar_hablando()
-                ack = random.choice(['¡Voy para allá!', '¡Ya te busco!',
-                                     '¡Me doy la vuelta!', '¡A ver dónde estás!'])
+                ack = random.choice(['!Voy para alla!', '!Ya te busco!',
+                                     '!Me doy la vuelta!', '!A ver donde estas!'])
                 console.print(f'[bold green]Bob[/] [dim](giro:{intent})[/]: {ack}')
                 self._hablar(ack, 'TRAVIESO')
                 es_primer_turno = False
                 continue
 
-            # ── P9: crear recordatorio ("recuérdame en 5 min que...") ──────────
             if RECORDATORIOS_ENABLED:
                 rec = parse_recordatorio(texto)
                 if rec:
                     self._recordatorios.agregar(rec)
                     self._sm.iniciar_hablando()
                     ack = random.choice([
-                        f'¡Listo! Te aviso {rec.cuando_str}.',
-                        f'¡Anotado! Te lo recuerdo {rec.cuando_str}.',
-                        f'¡Hecho! {rec.cuando_str} te aviso, tranqui.'])
+                        f'!Listo! Te aviso {rec.cuando_str}.',
+                        f'!Anotado! Te lo recuerdo {rec.cuando_str}.',
+                        f'!Hecho! {rec.cuando_str} te aviso, tranqui.'])
                     console.print(f'[bold green]Bob[/] [dim](recordatorio '
                                   f'{rec.cuando_str}: "{rec.que}")[/]: {ack}')
                     self._hablar(ack, 'FELIZ')
                     es_primer_turno = False
                     continue
 
-            # ── SHOW de presentación: "presentate / qué sabés hacer" ───────────
             if es_comando_show(texto):
-                console.print('[bold magenta][show][/] ¡Modo presentación!')
+                console.print('[bold magenta][show][/] !Modo presentacion!')
                 self._sm.iniciar_hablando()
                 if run_show(self):
-                    break     # cerró bailando con música → fin de charla,
-                              # wake monitor queda activo (decir "Bob" lo corta)
+                    break
                 es_primer_turno = False
-                continue      # sin música: sigue la charla normal
+                continue
 
-            # ── P6: control de música (Spotify) ────────────────────────────────
             if MUSICA_ENABLED:
                 mintent = parse_music_command(texto)
                 if mintent:
                     self._sm.iniciar_hablando()
-                    ack = ejecutar_musica(mintent)          # hace la llamada a Spotify
-                    console.print(f'[bold green]Bob[/] [dim](música:{mintent.accion}'
+                    ack = ejecutar_musica(mintent)
+                    console.print(f'[bold green]Bob[/] [dim](musica:{mintent.accion}'
                                   f'{" «"+mintent.query+"»" if mintent.query else ""})[/]: {ack}')
-                    # Baile: si arrancó música, Bob sale de la charla y se pone a
-                    # bailar con el wake monitor activo (decir "Bob" lo corta). Si
-                    # la pausó, deja de bailar.
                     if mintent.accion in ('play', 'play_playlist', 'resume'):
                         self._t_baile_inicio = time.monotonic()
                         self._baile_hint = True
                         self._sm.bailando.set()
                         self._hablar(ack, 'MUY_FELIZ')
-                        break          # fin de charla → wake monitor + baile activos
+                        break
                     if mintent.accion == 'pause':
                         self._baile_hint = False
                         self._sm.bailando.clear()
@@ -676,7 +485,6 @@ class VoicePipeline:
                     es_primer_turno = False
                     continue
 
-            # ── 4. Comandos de salida (cualquier turno) ────────────────────────
             if is_exit(texto):
                 self._hablar('Hasta luego.')
                 break
@@ -684,28 +492,22 @@ class VoicePipeline:
                 self._hablar('Hasta pronto.')
                 break
 
-            # ── 5. LLM + TTS paralelo ──────────────────────────────────────────
             console.print('[voice] Pensando...')
             captured = self._stream_and_speak(texto)
-
-            # Si hubo barge-in, el audio capturado va al siguiente turno
             pending_audio = captured
             es_primer_turno = False
 
-        # ── 6. Fin de conversación ─────────────────────────────────────────────
-        # P3: la charla ajusta los estados internos (sociabilidad/motivación suben,
-        # energía baja, curiosidad se sacia) según cuántos turnos y qué ánimo hubo.
         try:
             self._sm.ei_evento_charla(n_turnos, self._sm.mood)
         except Exception:
             pass
         try:
-            self._cerrar_memoria()   # guarda recuerdo + perfil de la persona
+            self._cerrar_memoria()
         except Exception as e:
-            console.print(f'[dim][memoria] cierre falló: {e}[/]')
+            console.print(f'[dim][memoria] cierre fallo: {e}[/]')
         self._sm.fin_turno()
 
-    # ── Grabación ────────────────────────────────────────────────────────────
+    # ── Grabacion ────────────────────────────────────────────────────────────
 
     def _grabar(self, initial_timeout: float = 8.0) -> Optional[bytes]:
         return self._grabador.grabar(initial_timeout)
@@ -713,96 +515,49 @@ class VoicePipeline:
     # ── STT ──────────────────────────────────────────────────────────────────
 
     def _transcribir(self, wav_bytes: bytes) -> str:
-        for attempt in range(MAX_RETRIES + 1):
-            try:
-                resp = self._client.audio.transcriptions.create(
-                    file=('audio.wav', wav_bytes, 'audio/wav'),
-                    model=GROQ_STT_MODEL,
-                    language='es',
-                    # Sesgo de vocabulario: empuja "Bob" y los comandos (música,
-                    # volumen, giros) → menos confusiones de Whisper.
-                    prompt=STT_PROMPT or None,
-                    # temperature=0 → transcripción determinista, menos alucinación.
-                    temperature=0.0,
-                    response_format='json',
-                )
-                return resp.text.strip()
-            except Exception as e:
-                if attempt == MAX_RETRIES:
-                    console.print(f'[red][voice] STT error: {e}[/]')
-                    return ''
-                time.sleep(0.5)
-        return ''
+        return self._llm.stt(wav_bytes)
 
     # ── LLM ──────────────────────────────────────────────────────────────────
 
     def _contexto_recordatorios(self) -> str:
-        """P9: si hay recordatorios VENCIDOS, los saca de la cola y devuelve un bloque
-        para que Bob los entregue YA dentro de su respuesta. Así, aunque estés en
-        plena charla (en_conversacion=True, el loop de fondo se difiere), el
-        recordatorio se dispara en el próximo turno en vez de perderse."""
         if not RECORDATORIOS_ENABLED:
             return ""
         vencidos = self._recordatorios.vencidos()
         if not vencidos:
             return ""
         for rec in vencidos:
-            console.print(f'[bold magenta][recordatorio→charla][/] {rec.que}')
+            console.print(f'[bold magenta][recordatorio->charla][/] {rec.que}')
         lineas = "\n".join(f"- {r.que}" for r in vencidos)
         return ("\n\n═══ RECORDATORIO VENCIDO (ENTREGAR AHORA, OBLIGATORIO) ═══\n"
-                "Se cumplió el tiempo de uno o más recordatorios que el usuario te pidió. "
+                "Se cumplio el tiempo de uno o mas recordatorios que el usuario te pidio. "
                 "Antes de responder cualquier otra cosa, AVISALE AHORA MISMO con tu "
                 "personalidad, de forma clara y directa (no lo omitas, no lo pospongas):\n"
                 + lineas)
 
-    def _stream_llm(self, texto: str) -> Iterator[str]:
+    def _stream_llm(self, texto: str):
         self._convo.append({'role': 'user', 'content': texto})
-        # Recorte: solo los últimos N mensajes van al LLM (ahorro de tokens). La
-        # memoria de largo plazo (P1) ya está en el system prompt, no se pierde.
         hist = self._convo[-MAX_HIST_MSGS:]
-        # P3: inyecta el estado interno actual de Bob (energía/ánimo) para que su
-        # tono derive con el tiempo. Se recalcula por turno → refleja el cansancio
-        # acumulado dentro de una charla larga.
-        # P9: si el turno pide hora/fecha/clima, inyecta datos en vivo al prompt.
-        # contexto_asistente devuelve '' cuando no hay intención de asistente.
         sys_content = (self._system_prompt_actual
                        + self._sm.estado_interno_prompt()
                        + contexto_asistente(texto)
                        + self._contexto_recordatorios())
         messages = [{'role': 'system', 'content': sys_content}] + hist
 
+        def _hablable(s: str) -> bool:
+            return any(c.isalnum() for c in extract_emo_tag(s)[1])
+
         try:
-            stream = self._llm.chat.completions.create(
-                model=self._llm_model,
-                messages=messages,
-                temperature=TEMPERATURE,
-                max_tokens=MAX_TOKENS,
-                stream=True,
-                **self._llm_extra,
-            )
+            stream = self._llm.stream_chat(messages)
         except Exception as e:
             console.print(f'[red][voice] LLM error: {e}[/]')
             return
 
-        # Guard: corta el turno al llegar a MAX_FRASES_TURNO frases y garantiza
-        # que cada frase abra con un tag [EMO:X] válido. Los modelos locales
-        # chicos se pasan de frases y olvidan los tags; esto lo fuerza pase lo
-        # que pase. Guardamos en el historial SOLO lo dicho (refuerza brevedad).
-        #
-        # _split_sentence parte también en ¿/¡, dejando fragmentos sin contenido
-        # hablable (solo un tag o un signo de apertura). Esos NO cuentan como
-        # frase y se arrastran al fragmento siguiente, para no perder su tag ni
-        # truncar la respuesta a media frase.
-        def _hablable(s: str) -> bool:
-            return any(c.isalnum() for c in extract_emo_tag(s)[1])
-
-        buf       = ''
-        dicho     = []     # frases efectivamente habladas
-        pendiente = ''     # prefijo (tag/signo de apertura) para la próxima frase
-        n_frases  = 0
-        corte     = False
-        for chunk in stream:
-            delta = (chunk.choices[0].delta.content or '') if chunk.choices else ''
+        buf = ''
+        dicho = []
+        pendiente = ''
+        n_frases = 0
+        corte = False
+        for delta in stream:
             buf += delta
             while True:
                 sent, buf = split_sentence(buf)
@@ -811,7 +566,7 @@ class VoicePipeline:
                 sent = pendiente + sent
                 pendiente = ''
                 if not _hablable(sent):
-                    pendiente = sent        # arrastrar tag/signo al siguiente
+                    pendiente = sent
                     continue
                 sent = ensure_emo_tag(sent)
                 dicho.append(sent)
@@ -822,12 +577,7 @@ class VoicePipeline:
                     break
             if corte:
                 break
-        if corte:
-            try:
-                stream.close()              # no seguir generando server-side
-            except Exception:
-                pass
-        else:
+        if not corte:
             tail = (pendiente + buf).strip()
             if _hablable(tail):
                 sent = ensure_emo_tag(tail)
@@ -835,7 +585,7 @@ class VoicePipeline:
                 yield sent
         self._convo.append({'role': 'assistant', 'content': ' '.join(dicho)})
 
-    # ── TTS + Reproducción ────────────────────────────────────────────────────
+    # ── TTS + Reproduccion ────────────────────────────────────────────────────
 
     def _hablar(self, texto: str, emo: Optional[str] = None) -> None:
         self._tts._hablar(texto, emo)
@@ -844,23 +594,18 @@ class VoicePipeline:
         return self._tts._reproducir_mp3(mp3)
 
     def _stream_and_speak(self, texto: str) -> Optional[bytes]:
-        """LLM streaming + TTS en paralelo, reproducción en cuanto llega cada frase."""
-        sent_q:  queue.Queue = queue.Queue()
+        sent_q: queue.Queue = queue.Queue()
         audio_q: queue.Queue = queue.Queue(maxsize=8)
         captured = [None]
 
         def llm_worker():
-            # finally: el None de cierre DEBE llegar aunque el LLM explote,
-            # si no el tts_worker espera su timeout entero y el turno muere mudo.
             try:
                 for sent in self._stream_llm(texto):
                     sent_q.put(sent)
             finally:
                 sent_q.put(None)
 
-        # Ollama local frío (cargar el modelo a VRAM) tarda más que los 10 s
-        # que toleramos con Groq/Gemini → sin esto el primer turno sale mudo.
-        primer_sent_timeout = 45.0 if self._usando_ollama else 10.0
+        primer_sent_timeout = 45.0 if self._llm.usando_ollama else 10.0
 
         def tts_worker():
             while True:
@@ -872,31 +617,22 @@ class VoicePipeline:
                 if sent is None:
                     audio_q.put(None)
                     return
-                # Extraer el tag [EMO:X] ANTES del TTS para que no se lea
                 emo, clean = extract_emo_tag(sent)
-                # Saltar fragmentos sin contenido hablable (solo tag, puntuación,
-                # espacios) — edge-tts lanza NoAudioReceived con esos.
                 if not any(ch.isalnum() for ch in clean):
                     continue
                 try:
                     mp3 = synthesize_mp3(clean, emo)
                 except Exception as e:
-                    # Una frase mala no debe matar el hilo TTS entero
                     console.print(f'[red][voice] TTS error ("{clean[:40]}"): {e}[/]')
                     continue
                 audio_q.put((clean, mp3, emo))
 
         self._sm.iniciar_hablando()
-
-        # Fase C: si la conversación viene muy bien (mood alto o racha de 3+
-        # turnos positivos), Bob arranca a hablar con cara eufórica. La emoción
-        # del primer tag del LLM la reemplaza cuando empiece la primera frase.
         if self._sm.mood >= 0.6 or self._sm.positive_streak >= 3:
             self._serial.cmd_estado('MUY_FELIZ')
 
-        t_pensando = time.monotonic()  # para detectar LLM lento (Fase D)
+        t_pensando = time.monotonic()
         primera_frase = True
-
         llm_t = threading.Thread(target=llm_worker, daemon=True)
         tts_t = threading.Thread(target=tts_worker, daemon=True)
         llm_t.start()
@@ -912,37 +648,25 @@ class VoicePipeline:
             sent_text, mp3, emo = item
             if not mp3:
                 continue
-
-            # Fase D: si el LLM tardó >2.5s, flash de "¡ya sé!" antes de hablar
             if primera_frase:
                 primera_frase = False
                 if time.monotonic() - t_pensando > 2.5:
                     self._serial.cmd_estado('MUY_FELIZ')
                     time.sleep(0.20)
-
-            # Fase D: risa explícita en la frase sin tag → MUY_FELIZ
             low = sent_text.lower()
             if emo is None and ('jaja' in low or 'jeje' in low):
                 emo = 'MUY_FELIZ'
-
             if emo:
-                # El LLM decidió la emoción de esta frase — fuente principal
                 self._serial.cmd_estado(emo)
                 console.print(f'[bold green]Bob[/] [dim]({emo})[/]: {sent_text}')
             else:
-                # Fallback si el LLM olvidó el tag: keywords como antes
                 oled = 'FELIZ' if is_happy(sent_text) else 'HABLANDO'
                 self._serial.cmd_estado(oled)
                 console.print(f'[bold green]Bob:[/] {sent_text}')
                 react_to_bob_text(self._serial, self._sm, sent_text)
-
             c = self._reproducir_mp3(mp3)
-
-            # Fase D: si la frase fue una pregunta, cara CURIOSA al terminarla
-            # (la siguiente frase o la transición a LISTENING la reemplaza)
             if sent_text.rstrip().endswith('?'):
                 self._serial.cmd_estado('CURIOSO')
-
             if c is not None:
                 captured[0] = c
                 break
@@ -954,53 +678,24 @@ class VoicePipeline:
     # ── Warmup ────────────────────────────────────────────────────────────────
 
     def _warmup(self) -> None:
-        def _w():
-            try:
-                list(self._client.models.list(timeout=3.0))
-            except Exception:
-                pass
-        threading.Thread(target=_w, daemon=True).start()
+        self._llm.warmup()
         threading.Thread(
             target=lambda: subprocess.run([FFMPEG, '-version'], capture_output=True, timeout=2),
             daemon=True,
         ).start()
 
-    # ── Wake word monitor (siempre activo, corre en hilo separado) ────────────
+    # ── Monitores de fondo ────────────────────────────────────────────────────
 
     def iniciar_wake_monitor(self) -> None:
-        """
-        Hilo que graba continuamente en modo IDLE/PRESENCE solo para detectar wake word.
-        Cuando detecta "Bob", notifica StateMachine.notificar_wake_word().
-        Se mantiene activo mientras el robot no esté en conversación.
-        """
-        threading.Thread(target=self._wake_monitor_loop, daemon=True, name='wake-monitor').start()
-
-    # ── Soliloquio / actitud (featuresAction.md Fase A) ───────────────────────
+        self._wake_monitor.start()
 
     def iniciar_soliloquio_monitor(self) -> None:
-        """Hilo que, cuando Bob está libre (IDLE/PRESENCE, fuera de conversación),
-        suelta de vez en cuando una frase espontánea del banco local."""
-        if not SOLILOQUIO_ENABLED:
-            return
-        threading.Thread(target=self._soliloquio_loop, daemon=True,
-                         name='soliloquio').start()
-
-    # ── P9: monitor de recordatorios (dispara proactivamente) ──────────────────
+        self._soliloquio.iniciar_monitor()
 
     def iniciar_recordatorio_monitor(self) -> None:
-        """Hilo que cada segundo revisa recordatorios vencidos y los anuncia
-        reusando el camino de soliloquio (anti-eco + OLED + habla)."""
-        if not RECORDATORIOS_ENABLED:
-            return
-        threading.Thread(target=self._recordatorio_loop, daemon=True,
-                         name='recordatorios').start()
-
-    # ── Baile: monitor que apaga el baile cuando la música para ────────────────
+        self._soliloquio.iniciar_recordatorio_monitor(self._recordatorios)
 
     def iniciar_baile_monitor(self) -> None:
-        """Hilo que, mientras Bob baila, vigila Spotify: si la música ya no suena
-        (terminó la canción, la pausaron desde el celular, etc.), limpia el flag de
-        baile para que BehaviorEngine vuelva a su comportamiento normal."""
         if not MUSICA_ENABLED:
             return
         threading.Thread(target=self._baile_monitor_loop, daemon=True,
@@ -1012,326 +707,31 @@ class VoicePipeline:
             self._detener.wait(1.5)
             if self._detener.is_set():
                 break
-            # Solo consultamos a Spotify si hay una sesión de música en curso
-            # (hint) o si Bob ya está bailando. Sin esto no se gasta red.
             if not (self._baile_hint or self._sm.bailando.is_set()):
                 continue
-            # No tocar el baile mientras Bob charla o habla solo (el wake ya limpió
-            # el flag al entrar a LISTENING; al terminar la charla acá se re-evalúa).
             if self._sm.en_conversacion or self._muted.is_set():
                 continue
             try:
                 sonando = sonando_musica()
                 fallos = 0
             except Exception:
-                # Fail-safe: si Spotify no responde 2 veces seguidas, asumir que
-                # la música paró — Bob no debe seguir bailando a ciegas.
                 fallos += 1
                 if fallos >= 2 and self._sm.bailando.is_set():
-                    console.print('[dim][baile] Spotify no responde → paro el baile[/]')
+                    console.print('[dim][baile] Spotify no responde -> paro el baile[/]')
                     self._sm.bailando.clear()
                     self._baile_hint = False
                 continue
             if sonando:
-                # Música sonando y Bob libre → asegurar que esté bailando
-                # (re-arranca el baile tras una charla de "siguiente"/"volumen").
                 if not self._sm.bailando.is_set():
                     self._t_baile_inicio = time.monotonic()
                     self._baile_hint = True
                     self._sm.bailando.set()
-                    console.print('[dim][baile] música sonando → a bailar[/]')
+                    console.print('[dim][baile] musica sonando -> a bailar[/]')
             else:
-                # Gracia: Spotify tarda un instante en reportar is_playing tras
-                # start_playback; no cortar el baile en los primeros segundos.
                 if self._sm.bailando.is_set() and \
                         time.monotonic() - self._t_baile_inicio < 4.0:
                     continue
                 if self._sm.bailando.is_set():
-                    console.print('[dim][baile] la música paró → fin del baile[/]')
+                    console.print('[dim][baile] la musica paro -> fin del baile[/]')
                 self._sm.bailando.clear()
-                self._baile_hint = False     # música terminó → dejar de consultar
-
-    def _recordatorio_loop(self) -> None:
-        while not self._detener.is_set():
-            time.sleep(1.0)
-            if self._detener.is_set():
-                break
-            # Reparto: si hay charla en curso, los recordatorios vencidos los
-            # entrega _contexto_recordatorios() inyectándolos en el próximo turno
-            # (ver _stream_llm) → NO se pierden aunque sigas hablando. Acá (libre)
-            # solo disparamos cuando NO hay charla ni Bob hablando solo.
-            if self._sm.en_conversacion or self._muted.is_set():
-                continue
-            for rec in self._recordatorios.vencidos():
-                frase = (f"[EMO:CURIOSO] ¡Ey! Me pediste que te recuerde: {rec.que}.")
-                console.print(f'[bold magenta][recordatorio][/] {rec.que}')
-                self.decir_soliloquio(frase)
-
-    def _soliloquio_loop(self) -> None:
-        from state_machine import RobotState
-        t_ultimo = 0.0
-        cooldown = SOLILOQUIO_COOLDOWN_S
-        carnadas = 0                      # frases-carnada disparadas en esta presencia
-        while not self._detener.is_set():
-            time.sleep(1.0)
-            if self._detener.is_set():
-                break
-
-            est = self._sm.estado
-            # Al dejar PRESENCE (se fue la persona o arrancó charla), resetear el
-            # contador de carnadas para la próxima persona.
-            if est != RobotState.PRESENCE:
-                carnadas = 0
-
-            # No hablar solo si hay una charla en curso o si ya estamos hablando.
-            if self._sm.en_conversacion or self._muted.is_set():
-                continue
-            # Con música sonando Bob baila callado: nada de frases/carnadas
-            # (hablarían encima de la música).
-            if self._sm.bailando.is_set():
-                continue
-            # Dormido = callado (igual que las muecas): coherencia con la pose de sueño.
-            if self._sm.is_asleep():
-                continue
-            ahora = time.monotonic()
-            if ahora - t_ultimo < cooldown:
-                continue
-
-            t_en = self._sm.t_en_estado
-            if est == RobotState.IDLE and t_en >= SOLO_IDLE_MIN_S:
-                categoria = random.choice(('aburrimiento', 'curiosidad', 'actitud'))
-            elif est == RobotState.PRESENCE and t_en >= PRESENCE_NUDGE_S:
-                # Carnada acotada: no acosar a quien no se anima a hablar.
-                if carnadas >= SOLILOQUIO_MAX_CARNADAS:
-                    continue
-                categoria = 'carnada'
-            else:
-                continue
-
-            if random.random() > P_SOLILOQUIO:
-                continue
-            # Última verificación: pudo entrar una conversación en este segundo.
-            if self._sm.en_conversacion:
-                continue
-
-            frase = self._elegir_frase_soliloquio(categoria, est)
-            if not frase:
-                continue
-            self.decir_soliloquio(frase)
-            if categoria == 'carnada':
-                carnadas += 1
-            t_ultimo = time.monotonic()
-            # Cadencia con jitter: que no suene metronómico.
-            cooldown = SOLILOQUIO_COOLDOWN_S * random.uniform(0.8, 1.4)
-
-    def _elegir_frase_soliloquio(self, categoria: str, estado) -> Optional[str]:
-        """Mezcla LLM/banco: con prob LLM_RATIO pide una frase nueva al LLM;
-        si falla o no toca, devuelve una del banco local."""
-        if SOLILOQUIO_USA_LLM and random.random() < SOLILOQUIO_LLM_RATIO:
-            frase = self._soliloquio_llm(categoria, estado)
-            if frase:
-                return frase
-        frases = BANCO_SOLILOQUIO.get(categoria)
-        if not frases:
-            return None
-        # Anti-repetición: evitar las frases dichas hace poco.
-        candidatas = [f for f in frases
-                      if extract_emo_tag(f)[1].lower() not in self._soliloquio_reciente]
-        return random.choice(candidatas or frases)
-
-    def _soliloquio_llm(self, categoria: str, estado) -> Optional[str]:
-        """Genera UNA frase de soliloquio con Groq. Devuelve None si falla."""
-        from state_machine import RobotState
-        hora = datetime.now().strftime('%H:%M')
-        if estado == RobotState.PRESENCE:
-            situacion = ("Hay alguien cerca mirándote pero aún no te habla; "
-                         "tírale una frase para romper el hielo.")
-        else:
-            situacion = "No hay nadie a la vista; esperas que llegue gente."
-        contexto = (f"Categoría: {categoria}. Son las {hora}. {situacion} "
-                    f"Tu ánimo (de -1 a 1) está en {self._sm.mood:+.1f}.")
-        if self._soliloquio_reciente:
-            contexto += (" No repitas ni parafrasees estas frases que ya dijiste: "
-                         + " | ".join(self._soliloquio_reciente))
-        # Modelo chico solo si el chat corre en Groq (self._llm es el cliente
-        # Groq); con Ollama/Gemini el nombre no existiría en ese backend.
-        modelo = (SOLILOQUIO_LLM_MODEL
-                  if SOLILOQUIO_LLM_MODEL and self._llm is self._client
-                  else self._llm_model)
-        try:
-            resp = self._llm.chat.completions.create(
-                model=modelo,
-                messages=[{'role': 'system', 'content': SOLILOQUIO_LLM_PROMPT},
-                          {'role': 'user',   'content': contexto}],
-                temperature=1.0,
-                max_tokens=SOLILOQUIO_LLM_MAX_TOK,
-                **self._llm_extra,
-            )
-            txt = (resp.choices[0].message.content or '').strip()
-            if txt:
-                console.print(f'[dim][soliloquio-LLM] generada: {txt}[/]')
-            return txt or None
-        except Exception as e:
-            console.print(f'[dim][soliloquio] LLM falló, uso banco: {e}[/]')
-            return None
-
-    def decir_soliloquio(self, frase: str) -> None:
-        """Dice UNA frase espontánea: muta el mic (anti-eco), pone el OLED según
-        su tag [EMO], habla, restaura el OLED y deja decaer el eco."""
-        emo, clean = extract_emo_tag(frase)
-        if not any(ch.isalnum() for ch in clean):
-            return
-        self._soliloquio_reciente.append(clean.lower())   # anti-repetición
-        self._muted.set()
-        self._sm.oled_ocupar()          # bloquea muecas mientras Bob habla solo
-        try:
-            if emo:
-                self._serial.cmd_estado(emo)
-            console.print(f'[bold blue][soliloquio][/] [dim]({emo})[/]: {clean}')
-            self._hablar(clean, emo)
-        except Exception as e:
-            console.print(f'[red][soliloquio] error: {e}[/]')
-        finally:
-            self._sm.oled_liberar()
-            self._restaurar_oled()
-            time.sleep(SOLILOQUIO_SETTLE_MS / 1000.0)
-            self._muted.clear()
-
-    def _restaurar_oled(self) -> None:
-        """Devuelve el OLED al look del estado actual tras un soliloquio."""
-        from state_machine import RobotState, _OLED_STATE
-        est = self._sm.estado
-        # En PRESENCE el FacialTracker manda SIGUIENDO; no lo pisamos.
-        if est == RobotState.PRESENCE:
-            return
-        cmd = _OLED_STATE.get(est)
-        if cmd:
-            self._serial.cmd_estado(cmd)
-
-    def _wake_monitor_loop(self) -> None:
-        from state_machine import RobotState
-        while not self._detener.is_set():
-            # Solo monitorear en estados no-conversacionales
-            if self._sm.en_conversacion:
-                time.sleep(0.2)
-                continue
-
-            # Anti-eco: si Bob está hablando solo, no grabar (su voz no debe
-            # auto-dispararse como wake word).
-            if self._muted.is_set():
-                time.sleep(0.2)
-                continue
-
-            audio = self._grabar_wake()
-            if audio is None:
-                continue
-
-            texto = self._transcribir(audio)
-            if not texto:
-                continue
-            if es_alucinacion(texto):
-                continue   # silencio/ruido alucinado por Whisper → ignorar
-
-            ww = self._wake.detect(texto)
-            if ww.detected:
-                payload = (ww.payload or '').strip()
-                if payload:
-                    console.print(f'[bold yellow][wake] "{texto}" → payload: "{payload}"[/]')
-                else:
-                    console.print(f'[bold yellow][wake] "{texto}" detectado![/]')
-                # Pulso emocional inmediato: ojos CURIOSOS al oír su nombre
-                pulse_emotion(self._serial, self._sm, EMO_WAKE_DETECTED, PULSE_FAST)
-                self._sm.notificar_wake_word(payload=payload or None)
-            else:
-                console.print(f'[dim][wake?] heard: "{texto}"[/]')
-
-    def _grabar_wake(self) -> Optional[bytes]:
-        """Versión corta para wake monitor: ~3 s, despacha a robot o laptop."""
-        if USE_ROBOT_MIC and self._audio_io is not None and self._audio_io.connected:
-            return self._grabar_wake_robot()
-        return self._grabar_wake_laptop()
-
-    def _grabar_wake_robot(self) -> Optional[bytes]:
-        """Graba hasta WAKE_WINDOW_S desde el mic del ESP32 (uint8). Corte
-        anticipado con voz + silencio, igual que la versión laptop."""
-        self._audio_io.drain_mic()
-        collected = bytearray()
-        t0 = time.monotonic()
-        t_ultima_voz = 0.0
-        while time.monotonic() - t0 < WAKE_WINDOW_S and not self._detener.is_set():
-            if self._sm.en_conversacion:
-                return None
-            chunk = self._audio_io.get_mic(timeout=0.1)
-            if chunk:
-                collected.extend(chunk)
-                ahora = time.monotonic()
-                # Escala u8: gate de silencio es 4.0 → voz clara ~2x eso.
-                if rms_uint8(bytes(chunk)) >= 8.0:
-                    t_ultima_voz = ahora
-                elif t_ultima_voz and ahora - t_ultima_voz >= WAKE_SILENCE_CUT_S:
-                    break
-        if not collected:
-            return None
-        raw = bytes(collected)
-        if rms_uint8(raw) < 4.0:        # silencio → no transcribir
-            return None
-        return uint8_to_wav(raw)
-
-    def _grabar_wake_laptop(self) -> Optional[bytes]:
-        """Graba hasta WAKE_WINDOW_S desde el mic local. Devuelve WAV int16 @ 16 kHz.
-        Corte anticipado: si hubo voz y luego WAKE_SILENCE_CUT_S de silencio,
-        corta ya y transcribe → el "Bob" dispara sin esperar la ventana entera."""
-        q: queue.Queue = queue.Queue()
-
-        def callback(indata, frames, t, status):
-            q.put(bytes(indata))
-
-        frame_bytes = int(_LAP_SAMPLE_RATE * FRAME_MS / 1000) * 2
-        collected: List[bytes] = []
-        t0 = time.monotonic()
-        t_ultima_voz = 0.0
-
-        try:
-            with sd.RawInputStream(samplerate=_LAP_SAMPLE_RATE, channels=1,
-                                   dtype='int16', blocksize=frame_bytes // 2,
-                                   callback=callback):
-                while time.monotonic() - t0 < WAKE_WINDOW_S and not self._detener.is_set():
-                    if self._sm.en_conversacion:
-                        return None
-                    try:
-                        chunk = q.get(timeout=0.1)
-                        if len(chunk) >= frame_bytes:
-                            collected.append(chunk[:frame_bytes])
-                            arr = np.frombuffer(chunk[:frame_bytes], dtype=np.int16)
-                            nivel = float(np.sqrt(np.mean(
-                                arr.astype(np.float32) ** 2))) / 32767.0 * 100.0
-                            ahora = time.monotonic()
-                            if nivel >= WAKE_VOICE_LEVEL:
-                                t_ultima_voz = ahora
-                            elif (t_ultima_voz and
-                                  ahora - t_ultima_voz >= WAKE_SILENCE_CUT_S):
-                                break     # voz + silencio → transcribir YA
-                    except queue.Empty:
-                        pass
-        except Exception:
-            return None
-
-        if not collected:
-            return None
-
-        raw = b''.join(collected)
-        # Gate de energía: si la ventana es silencio, NO transcribir (Whisper
-        # alucina "Gracias." con silencio y quema llamadas a Groq).
-        arr = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
-        if arr.size:
-            level = float(np.sqrt(np.mean(arr * arr))) / 32767.0 * 100.0
-            if level < WAKE_MIN_LEVEL:
-                return None
-
-        buf = _io.BytesIO()
-        with wave.open(buf, 'wb') as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(_LAP_SAMPLE_RATE)
-            wf.writeframes(raw)
-        return buf.getvalue()
+                self._baile_hint = False
