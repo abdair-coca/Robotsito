@@ -97,9 +97,8 @@ API repetitivas. + tests unitarios (5 tests).
 
 ## 🟡 10. Manejo de errores fino en wake monitor
 
-`_grabar_wake_laptop` falla silencioso si el micrófono default cambia.
-
-**Acción:** Listar dispositivos, reintentar con fallback, loggear error específico.
+✅ _grabar_laptop(): enumera devices con sd.query_devices(), fallback si default
+muere, PortAudioError con nombre de device, throttle 5s por error.
 
 ---
 

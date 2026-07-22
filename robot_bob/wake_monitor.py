@@ -29,16 +29,6 @@ _LAP_SAMPLE_RATE = 16000
 
 
 class WakeMonitor:
-    def __init__(self, serial, sm, wake_detector, transcribir_fn,
-                 detener_event, muted_event, audio_io=None):
-        self._serial = serial
-        self._sm = sm
-        self._wake = wake_detector
-        self._transcribir = transcribir_fn
-        self._detener = detener_event
-        self._muted = muted_event
-        self._audio_io = audio_io
-
     def start(self) -> None:
         threading.Thread(target=self._loop, daemon=True,
                          name='wake-monitor').start()
@@ -99,7 +89,55 @@ class WakeMonitor:
             return None
         return uint8_to_wav(raw)
 
+    def __init__(self, serial, sm, wake_detector, transcribir_fn,
+                 detener_event, muted_event, audio_io=None):
+        self._serial = serial
+        self._sm = sm
+        self._wake = wake_detector
+        self._transcribir = transcribir_fn
+        self._detener = detener_event
+        self._muted = muted_event
+        self._audio_io = audio_io
+        self._dev_logged = False         # ya logueamos info del device
+        self._t_last_err = 0.0           # throttle errores de audio
+        self._device: Optional[int] = None  # indice del device en uso
+
+    def _log_error(self, msg: str) -> None:
+        ahora = time.monotonic()
+        if ahora - self._t_last_err < 5.0:
+            return
+        self._t_last_err = ahora
+        console.print(f'[red][wake] {msg}[/]')
+
+    def _seleccionar_device(self) -> Optional[int]:
+        try:
+            devices = sd.query_devices()
+            default = sd.default.device[0]
+            if default is not None and default >= 0 and default < len(devices):
+                d = devices[default]
+                self._device = default
+                if not self._dev_logged:
+                    console.print(f'[dim][wake] mic: "{d["name"]}" (device {default})[/]')
+                    self._dev_logged = True
+                return default
+            # default no disponible -> buscar primer input
+            for i, d in enumerate(devices):
+                if d['max_input_channels'] > 0:
+                    self._device = i
+                    console.print(f'[yellow][wake] default muerto, fallback a "{d["name"]}" (device {i})[/]')
+                    self._dev_logged = True
+                    return i
+            self._log_error('no hay dispositivos de entrada')
+            return None
+        except Exception as e:
+            self._log_error(f'error listando devices: {e}')
+            return None
+
     def _grabar_laptop(self) -> Optional[bytes]:
+        device = self._seleccionar_device()
+        if device is None:
+            return None
+
         q: queue.Queue = queue.Queue()
 
         def callback(indata, frames, t, status):
@@ -113,7 +151,7 @@ class WakeMonitor:
         try:
             with sd.RawInputStream(samplerate=_LAP_SAMPLE_RATE, channels=1,
                                    dtype='int16', blocksize=frame_bytes // 2,
-                                   callback=callback):
+                                   device=device, callback=callback):
                 while time.monotonic() - t0 < WAKE_WINDOW_S and not self._detener.is_set():
                     if self._sm.en_conversacion:
                         return None
@@ -132,7 +170,13 @@ class WakeMonitor:
                                 break
                     except queue.Empty:
                         pass
-        except Exception:
+        except sd.PortAudioError as e:
+            self._log_error(f'PortAudio error en device {device}: {e}')
+            self._dev_logged = False
+            return None
+        except Exception as e:
+            self._log_error(f'error grabando wake: {e}')
+            self._dev_logged = False
             return None
 
         if not collected:
