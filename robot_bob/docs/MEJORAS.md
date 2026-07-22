@@ -82,10 +82,8 @@ memoria. Sin archivos temporales.
 
 ## 🟡 8. Optimizar búsqueda de embeddings en `memory.py`
 
-`reconocer()` carga TODOS los BLOBs de SQLite por cada frame de cámara.
-
-**Acción:** Mantener índice en memoria (dict de numpy arrays). Sincronizar con
-SQLite solo en escritura.
+✅ `_idx: dict[int, np.ndarray]` en RAM. `reconocer()` ya no toca SQLite para
+comparar. Sincronizado en `registrar()`, `actualizar_embedding()`, `_reconstruir_idx()`.
 
 ---
 

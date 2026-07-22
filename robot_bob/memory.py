@@ -38,9 +38,11 @@ class Memoria:
             persona_id INTEGER, texto TEXT, fecha TEXT)''')
         self._con.commit()
         self._migrar()
+        # Indice en RAM: {pid: np.ndarray} para reconocer() sin SQLite
+        self._idx: dict[int, np.ndarray] = {}
+        self._reconstruir_idx()
 
     def _migrar(self) -> None:
-        """Agrega columnas nuevas a bases viejas (P2: relaciones sociales)."""
         cols = {r[1] for r in self._con.execute('PRAGMA table_info(personas)')}
         for col, ddl in (('amistad', 'INTEGER DEFAULT 0'),
                          ('confianza', 'INTEGER DEFAULT 0'),
@@ -49,28 +51,35 @@ class Memoria:
                 self._con.execute(f'ALTER TABLE personas ADD COLUMN {col} {ddl}')
         self._con.commit()
 
+    def _reconstruir_idx(self) -> None:
+        with self._lock:
+            filas = self._con.execute(
+                'SELECT id, embedding FROM personas WHERE embedding IS NOT NULL').fetchall()
+            self._idx.clear()
+            for pid, blob in filas:
+                self._idx[pid] = np.frombuffer(blob, dtype=np.float32)
+
     @staticmethod
     def _ahora() -> str:
         return datetime.now().strftime('%Y-%m-%d %H:%M')
 
     # ── Reconocimiento ──────────────────────────────────────────────────────
     def reconocer(self, embedding, umbral: float = _SIM_THR):
-        """Devuelve (id, nombre, score) de la persona más parecida ≥ umbral, o None."""
-        if embedding is None:
+        if embedding is None or not self._idx:
+            return None
+        mejor_pid = None
+        mejor_score = -1.0
+        for pid, emb in self._idx.items():
+            score = float(np.dot(embedding, emb))
+            if score > mejor_score:
+                mejor_score = score
+                mejor_pid = pid
+        if mejor_pid is None or mejor_score < umbral:
             return None
         with self._lock:
-            filas = self._con.execute('SELECT id, nombre, embedding FROM personas').fetchall()
-        mejor = None
-        for pid, nombre, blob in filas:
-            if not blob:
-                continue
-            emb = np.frombuffer(blob, dtype=np.float32)
-            score = float(np.dot(embedding, emb))   # coseno (ambos normalizados)
-            if mejor is None or score > mejor[2]:
-                mejor = (pid, nombre, score)
-        if mejor and mejor[2] >= umbral:
-            return mejor
-        return None
+            r = self._con.execute(
+                'SELECT nombre FROM personas WHERE id=?', (mejor_pid,)).fetchone()
+        return (mejor_pid, r[0] if r else None, mejor_score)
 
     # ── Altas / actualizaciones ─────────────────────────────────────────────
     def registrar(self, nombre, embedding, edad=None) -> int:
@@ -81,7 +90,10 @@ class Memoria:
                 'VALUES(?,?,?,?,?)',
                 (nombre, edad, self._ahora(), self._ahora(), blob))
             self._con.commit()
-            return cur.lastrowid
+            pid = cur.lastrowid
+            if embedding is not None:
+                self._idx[pid] = embedding
+            return pid
 
     def marcar_visto(self, pid: int) -> None:
         with self._lock:
@@ -107,6 +119,7 @@ class Memoria:
             self._con.execute('UPDATE personas SET embedding=? WHERE id=?',
                               (embedding.tobytes(), pid))
             self._con.commit()
+            self._idx[pid] = embedding
 
     def registrar_interaccion(self, pid: int, d_amistad: int, d_confianza: int) -> None:
         """Suma una interacción y ajusta amistad/confianza (clamp 0..100)."""
