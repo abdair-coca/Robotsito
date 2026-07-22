@@ -22,7 +22,7 @@ import sys
 import asyncio
 import queue
 import subprocess
-import tempfile
+
 import threading
 import time
 import wave
@@ -443,14 +443,7 @@ class VoicePipeline:
             max_scan_tokens=WAKE_SCAN_TOKENS,
         )
 
-        # Pygame para reproducción local
-        import pygame
-        try:
-            if not pygame.mixer.get_init():
-                pygame.mixer.init(frequency=24000, size=-16, channels=1, buffer=512)
-        except Exception as e:
-            console.print(f'[red][voice] pygame error: {e}[/]')
-        self._pygame = pygame
+        sd.default.samplerate = 24000
 
         self._warmup()
         self._hilo = threading.Thread(target=self._loop, daemon=True, name='voice-pipeline')
@@ -1266,24 +1259,31 @@ class VoicePipeline:
         )
         return proc.stdout
 
+    @staticmethod
+    def _mp3_a_pcm_f32(mp3: bytes, sample_rate: int = 24000) -> Optional[np.ndarray]:
+        """Convierte MP3 → PCM f32 mono vía ffmpeg. Devuelve numpy array."""
+        proc = subprocess.run(
+            [FFMPEG, '-hide_banner', '-loglevel', 'error',
+             '-i', 'pipe:0',
+             '-ar', str(sample_rate), '-ac', '1',
+             '-f', 'f32le', 'pipe:1'],
+            input=mp3, capture_output=True, check=False,
+        )
+        if not proc.stdout:
+            return None
+        return np.frombuffer(proc.stdout, dtype=np.float32)
+
     def _reproducir_mp3_laptop(self, mp3: bytes) -> Optional[bytes]:
-        """Reproduce MP3 con pygame en parlantes de la laptop."""
-        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tf:
-            tf.write(mp3)
-            path = tf.name
-        try:
-            self._pygame.mixer.music.load(path)
-            self._pygame.mixer.music.play()
-            while self._pygame.mixer.music.get_busy():
-                time.sleep(0.05)
-                if self._detener.is_set():
-                    self._pygame.mixer.music.stop()
-                    break
-        finally:
-            try:
-                os.unlink(path)
-            except Exception:
-                pass
+        """Reproduce MP3 con sounddevice en parlantes de la laptop."""
+        pcm = self._mp3_a_pcm_f32(mp3)
+        if pcm is None or len(pcm) == 0:
+            return None
+        sd.play(pcm, samplerate=24000)
+        while sd.get_stream() and sd.get_stream().active:
+            time.sleep(0.05)
+            if self._detener.is_set():
+                sd.stop()
+                break
         return None
 
     def _stream_and_speak(self, texto: str) -> Optional[bytes]:

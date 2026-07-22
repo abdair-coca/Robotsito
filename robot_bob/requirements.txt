@@ -30,8 +30,7 @@ openai>=1.40
 insightface>=1.0
 onnxruntime>=1.16
 
-# Reproducción local
-pygame>=2.5
+# Reproducción local (vía sounddevice, sin archivos temporales)
 
 # P6 — control de música por Spotify (play/pause/volumen). Requiere cuenta premium
 # y credenciales en .env (SPOTIFY_CLIENT_ID/SECRET/REDIRECT_URI).
