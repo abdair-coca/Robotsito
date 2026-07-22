@@ -10,8 +10,11 @@ Carga pesada (modelos buffalo_l ~300 MB) → se inicializa en un hilo de fondo;
 """
 
 import threading
+from rich.console import Console
 import numpy as np
 
+
+console = Console(force_terminal=True, color_system="truecolor")
 
 class FaceID:
     def __init__(self, det_size=(320, 320)):
@@ -29,9 +32,9 @@ class FaceID:
             with self._lock:
                 self._app = app
             self._listo.set()
-            print('[face_id] InsightFace listo (buffalo_l).')
+            console.print('[bold green][face_id] InsightFace listo (buffalo_l).[/]')
         except Exception as e:
-            print(f'[face_id] No se pudo cargar InsightFace: {e}')
+            console.print(f'[red][face_id] No se pudo cargar InsightFace: {e}[/]')
 
     @property
     def listo(self) -> bool:
@@ -47,7 +50,7 @@ class FaceID:
             with self._lock:
                 faces = app.get(frame_bgr)
         except Exception as e:
-            print(f'[face_id] error analizando: {e}')
+            console.print(f'[red][face_id] error analizando: {e}[/]')
             return None, None
         if not faces:
             return None, None

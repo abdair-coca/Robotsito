@@ -39,6 +39,7 @@ import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from rich.console import Console
 from typing import Dict, Optional, Set
 
 # La consola de Windows suele venir en cp1252; forzamos UTF-8 para que →/—/í no
@@ -48,6 +49,8 @@ try:
     sys.stderr.reconfigure(encoding="utf-8")
 except Exception:
     pass
+
+console = Console(force_terminal=True, color_system="truecolor")
 
 # ── Mapa puerto -> rol ───────────────────────────────────────────────────────
 # El rol "audio" se sirve por 5005 (mic) y/o 5006 (speaker); cualquiera basta.
@@ -223,7 +226,7 @@ def classify(scan: Dict[str, Set[int]]) -> Dict[str, dict]:
     for role, ips in by_role.items():
         ips_sorted = sorted(ips, key=lambda x: int(x.rsplit(".", 1)[1]))
         if len(ips_sorted) > 1:
-            print(f"[discovery] AVISO: {len(ips_sorted)} candidatos para "
+            console.print(f"[yellow][discovery] AVISO: {len(ips_sorted)} candidatos para [/]"
                   f"'{role}': {ips_sorted} — uso {ips_sorted[0]}")
         ip = ips_sorted[0]
         mac = arp.get(ip)
@@ -299,7 +302,7 @@ def discover(subnet: Optional[str] = None, timeout: float = 0.3,
             raise RuntimeError("No pude determinar la IP local. ¿WiFi conectado?")
         subnet = subnet_base(ip)
     if verbose:
-        print(f"[discovery] escaneando {subnet}.1-254 puertos {SCAN_PORTS} ...")
+        console.print(f"[bold cyan][discovery] escaneando {subnet}.1-254 puertos {SCAN_PORTS} ...[/]")
     t0 = time.time()
     scan = scan_subnet(subnet, timeout=timeout)
 
@@ -325,11 +328,11 @@ def discover(subnet: Optional[str] = None, timeout: float = 0.3,
                            "mac": mac, "espressif": is_espressif(mac),
                            "via": "mdns"}
             if verbose:
-                print(f"[discovery] {host} -> {ip} (mDNS)")
+                console.print(f"[dim][discovery] {host} -> {ip} (mDNS)[/]")
 
     save_cache(roles, subnet)
     if verbose:
-        print(f"[discovery] listo en {time.time()-t0:.1f}s — "
+        console.print(f"[bold green][discovery] listo en {time.time()-t0:.1f}s — [/]"
               f"{len(roles)}/3 roles resueltos. Cache: {CACHE_PATH}")
     return roles
 
@@ -368,18 +371,18 @@ def resolve_mdns_only(timeout: float = 1.5) -> Dict[str, str]:
 # ── CLI ──────────────────────────────────────────────────────────────────────
 def _print_table(roles: Dict[str, dict]) -> None:
     nombre = {"cam": "ESP32-CAM", "control": "DevKit control", "audio": "DevKit audio"}
-    print("\n  ROL              IP               PUERTOS        MAC               ESP?")
-    print("  " + "-" * 74)
+    console.print("\n[bold cyan]  ROL              IP               PUERTOS        MAC               ESP?[/]")
+    console.print("  " + "-" * 74)
     for role in ("cam", "control", "audio"):
         info = roles.get(role)
         if info:
             mac = info.get("mac") or "(desconocida)"
             esp = "sí" if info.get("espressif") else "—"
             ports = ",".join(str(p) for p in info["ports"])
-            print(f"  {nombre[role]:<15}  {info['ip']:<15}  {ports:<13}  {mac:<17} {esp}")
+            console.print(f"  {nombre[role]:<15}  {info['ip']:<15}  {ports:<13}  {mac:<17} {esp}")
         else:
-            print(f"  {nombre[role]:<15}  {'NO ENCONTRADO':<15}  {'-':<13}  {'-':<17} -")
-    print()
+            console.print(f"[yellow]  {nombre[role]:<15}  {'NO ENCONTRADO':<15}  {'-':<13}  {'-':<17} -[/]")
+    console.print()
 
 
 def main(argv) -> int:
@@ -392,7 +395,7 @@ def main(argv) -> int:
     if not force and not subnet and verify_cache():
         roles = load_cache()["roles"]
         if not as_json:
-            print("[discovery] cache vigente (todas las IPs responden). "
+            console.print("[bold green][discovery] cache vigente (todas las IPs responden). [/]"
                   "Usa --force para re-escanear.")
     else:
         roles = discover(subnet=subnet, verbose=not as_json)
@@ -403,8 +406,8 @@ def main(argv) -> int:
         _print_table(roles)
         faltan = [r for r in ("cam", "control", "audio") if r not in roles]
         if faltan:
-            print(f"[discovery] AVISO: sin resolver {faltan}. "
-                  "¿Placa apagada o en otra subred? Revisa que estén en el mismo WiFi.")
+            console.print(f"[yellow][discovery] AVISO: sin resolver {faltan}. [/]"
+                  "Placa apagada o en otra subred? Revisa que esten en el mismo WiFi.")
     return 0
 
 

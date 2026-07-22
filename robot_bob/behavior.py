@@ -25,6 +25,7 @@ import math
 import random
 import threading
 import time
+from rich.console import Console
 from state_machine import RobotState
 from expression_engine import random_mueca
 from facial_tracker import (
@@ -76,6 +77,7 @@ SLEEP_PAN   = float(PAN_HOME)    # alineada al centro
 # Despertar: el tilt sube desde SLEEP_TILT hasta este offset sobre HOME (mirar arriba con CURIOSO)
 WAKE_TILT_PEAK = TILT_HOME - 18.0  # 72° — mira hacia arriba mientras se despierta
 
+console = Console(force_terminal=True, color_system="truecolor")
 
 class BehaviorEngine:
     def __init__(self, serial_mgr, state_machine, facial_tracker):
@@ -283,8 +285,7 @@ class BehaviorEngine:
         elif desvio < -GIRO_PAN_THRESHOLD:
             base = _GIRO_IZQ if GIRO_INVERTIR else _GIRO_DER
         if MOTOR_DEBUG:
-            print('[giro] pan=%.0f desvio=%+.0f -> %s' % (
-                self._tracker.pan_actual, desvio, base))
+            console.print(f'[dim][giro] pan={self._tracker.pan_actual:.0f} desvio={desvio:+.0f} -> {base}[/]')
         if base is not None:
             self._arrancar_giro(base, ahora)
 
@@ -340,7 +341,7 @@ class BehaviorEngine:
         dur_ms = random_mueca(self._serial, self._sm)
         self._sm.oled_ocupar(dur_ms)
         self._mueca_last = ahora
-        print('[mueca]')
+        console.print('[dim][mueca][/]')
 
         # Micro-gesto de cabeza suave (se salta dormido: brownout + romper pose).
         if MUECA_HEAD_ENABLED and not self._sm.is_asleep():

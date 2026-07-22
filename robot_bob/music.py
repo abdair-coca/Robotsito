@@ -22,6 +22,7 @@ from __future__ import annotations
 import re
 import threading
 from dataclasses import dataclass
+from rich.console import Console
 from typing import Optional
 
 from config import MUSICA_ENABLED, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REDIRECT_URI, SPOTIFY_CACHE_PATH
@@ -30,6 +31,7 @@ _SCOPE = ("user-modify-playback-state user-read-playback-state "
           "playlist-read-private playlist-read-collaborative")
 _VOL_STEP = 15            # cuánto sube/baja el volumen por comando (%)
 
+console = Console(force_terminal=True, color_system="truecolor")
 _sp = None                # cliente spotipy perezoso (se crea al primer uso)
 _sp_lock = threading.Lock()
 
@@ -207,7 +209,7 @@ def _cliente():
             )
             _sp = spotipy.Spotify(auth_manager=auth, requests_timeout=8)
         except Exception as e:
-            print(f"[music] no se pudo iniciar Spotify: {e}")
+            console.print(f"[yellow][music] no se pudo iniciar Spotify: {e}[/]")
             _sp = None
     return _sp
 
@@ -317,5 +319,5 @@ def ejecutar(intent: MusicIntent) -> str:
         return "No entendí qué hacer con la música."
 
     except Exception as e:
-        print(f"[music] error: {e}")
+        console.print(f"[red][music] error: {e}[/]")
         return "Uy, algo falló con Spotify; fijate que esté abierto y sea cuenta premium."

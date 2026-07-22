@@ -22,6 +22,7 @@ import queue
 import socket
 import threading
 import time
+from rich.console import Console
 import serial
 
 from config import USE_WIFI_SERIAL, CONTROL_IP, CONTROL_PORT
@@ -32,6 +33,7 @@ _PRIO_SERVO    = 0
 _PRIO_ESTADO   = 1
 _PRIO_SIGUIENDO = 2
 
+console = Console(force_terminal=True, color_system="truecolor")
 
 class SerialManager:
     def __init__(self, port: str, baud: int = 115200,
@@ -130,7 +132,7 @@ class SerialManager:
         if self._use_wifi and self._control_ip and self._control_port:
             if self._conectar_wifi():
                 return
-            print('[serial] WiFi no disponible, intentando USB...')
+            console.print('[yellow][serial] WiFi no disponible, intentando USB...[/]')
         self._conectar_usb()
 
     def _conectar_wifi(self) -> bool:
@@ -142,10 +144,10 @@ class SerialManager:
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self._sock = s
             self._modo = 'wifi'
-            print(f'[serial] Conectado WiFi {self._control_ip}:{self._control_port}')
+            console.print(f'[bold green][serial] Conectado WiFi {self._control_ip}:{self._control_port}[/]')
             return True
         except Exception as e:
-            print(f'[serial] No conecta WiFi {self._control_ip}:{self._control_port}: {e}')
+            console.print(f'[red][serial] No conecta WiFi {self._control_ip}:{self._control_port}: {e}[/]')
             self._sock = None
             return False
 
@@ -161,10 +163,10 @@ class SerialManager:
             esp.open()
             self._esp32 = esp
             self._modo  = 'usb'
-            print(f'[serial] Conectado en {self._port}')
+            console.print(f'[bold green][serial] Conectado en {self._port}[/]')
         except Exception as e:
-            print(f'[serial] No conecta en {self._port}: {e}')
-            print('[serial] Continuando en modo sin ESP32 (solo visión)')
+            console.print(f'[red][serial] No conecta en {self._port}: {e}[/]')
+            console.print('[yellow][serial] Continuando en modo sin ESP32 (solo vision)[/]')
             self._esp32 = None
             self._modo  = 'none'
 
@@ -194,7 +196,7 @@ class SerialManager:
                 pass
             self._esp32 = None
         if self._modo != 'none':
-            print('[serial] Transporte caído (¿reinicio del DevKit?). Reconectando...')
+            console.print('[red][serial] Transporte caido (reinicio del DevKit?). Reconectando...[/]')
         self._modo = 'none'
 
     def _reconectar(self) -> None:

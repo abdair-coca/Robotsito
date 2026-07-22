@@ -25,7 +25,11 @@ from mediapipe.tasks.python import vision
 import socket
 import threading
 import time
+from rich.console import Console
 from urllib.parse import urlparse
+from rich.console import Console
+
+console = Console(force_terminal=True, color_system="truecolor")
 
 # ── Configuración ──────────────────────────────────────────────────────────────
 STREAM_TIMEOUT_S  = 5.0    # tolerante a hipos del ESP32-CAM bajo carga
@@ -102,7 +106,7 @@ class LectorStream:
             except Exception as e:
                 self.ok = False
                 if not self._detener:
-                    print(f'[stream] No conecta ({e}). Reintento en 1s...')
+                    console.print(f'[yellow][stream] No conecta ({e}). Reintento en 1s...[/]')
                     time.sleep(1)
                 continue
 
@@ -115,7 +119,7 @@ class LectorStream:
                     buf.extend(chunk)
                 del buf[:buf.find(b'\r\n\r\n') + 4]
 
-                print('[stream] Conectado.')
+                console.print('[bold green][stream] Conectado.[/]')
                 self.ok = True
 
                 while not self._detener:
@@ -134,7 +138,7 @@ class LectorStream:
             except Exception as e:
                 self.ok = False
                 if not self._detener:
-                    print(f'[stream] Reconectando ({e})...')
+                    console.print(f'[yellow][stream] Reconectando ({e})...[/]')
             finally:
                 try:
                     sock.close()
@@ -421,12 +425,12 @@ class FacialTracker:
                 self.h, self.w = frame.shape[:2]
                 self.cx_centro = self.w // 2
                 self.cy_centro = self.h // 2
-                print(f'[tracker] Cámara lista: {self.w}x{self.h}')
+                console.print(f'[bold green][tracker] Camara lista: {self.w}x{self.h}[/]')
                 self._iniciar_detector()
                 self._camera_ready.set()
                 return
             time.sleep(0.05)
-        print('[tracker] ERROR: No llegan frames de la cámara.')
+        console.print('[red][tracker] ERROR: No llegan frames de la camara.[/]')
 
     def _iniciar_detector(self):
         base_options = mp_python.BaseOptions(model_asset_path=self._modelo)

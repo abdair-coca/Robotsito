@@ -17,6 +17,7 @@ import sys
 import time
 import cv2
 import threading
+from rich.console import Console
 
 try:
     sys.stdout.reconfigure(encoding='utf-8')
@@ -24,9 +25,9 @@ try:
 except Exception:
     pass
 
-# Limitar OpenCV a 1 hilo evita que se coma todos los cores y deje al
-# hilo stream-reader sin CPU para drenar el socket TCP del ESP32-CAM.
+# force_terminal=True + color_system obligan ANSI aun en Windows sin VT.
 cv2.setNumThreads(1)
+console = Console(force_terminal=True, color_system="truecolor")
 
 # ── Configuración ──────────────────────────────────────────────────────────────
 # Toda la configuración modificable vive en config.py (en esta misma carpeta).
@@ -66,35 +67,29 @@ from config import MEMORIA_ENABLED
 
 
 def _enrolar_async(frame, face_id, memoria) -> None:
-    """Enrolado manual en hilo aparte: no congela el video mientras se escribe
-    el nombre en la consola. Memoria es thread-safe (lock interno)."""
     emb, edad = (face_id.analizar(frame) if face_id.listo else (None, None))
     if emb is None:
-        print('[enrolar] no hay cara o InsightFace aún no cargó.')
+        console.print('[bold magenta][enrolar][/] no hay cara o InsightFace aun no cargo.')
         return
     nombre = input('[enrolar] nombre de la persona: ').strip()
     if not nombre:
-        print('[enrolar] cancelado (nombre vacío).')
+        console.print('[bold magenta][enrolar][/] cancelado (nombre vacio).')
         return
     m = memoria.reconocer(emb)
     if m:
         memoria.actualizar(m[0], nombre=nombre)
-        print(f'[enrolar] actualizado id={m[0]} → {nombre}')
+        console.print(f'[bold magenta][enrolar][/] actualizado id={m[0]} -> [bold green]{nombre}[/]')
     else:
         pid = memoria.registrar(nombre, emb, edad)
-        print(f'[enrolar] nuevo id={pid} → {nombre}')
+        console.print(f'[bold magenta][enrolar][/] nuevo id={pid} -> [bold green]{nombre}[/]')
 
 
 def main() -> None:
-    print('═' * 60)
-    print('  Robot Bob — Sistema Integrado')
-    print('═' * 60)
+    console.print(f'[bold cyan]{"=" * 58}\n  Robot Bob \u2014 Sistema Integrado\n{"=" * 58}[/]')
 
-    # ── 1. SerialManager ───────────────────────────────────────────────────────
     serial_mgr = SerialManager(PUERTO_SERIAL, BAUD_RATE)
     serial_mgr.cmd_estado('ESPERANDO')
 
-    # ── 2. StateMachine ────────────────────────────────────────────────────────
     sm = StateMachine(
         serial_mgr,
         t_permanencia_min  = T_PERMANENCIA_MIN,
@@ -104,47 +99,44 @@ def main() -> None:
         timeout_rostro     = TIMEOUT_ROSTRO,
     )
 
-    # ── 3. FacialTracker ───────────────────────────────────────────────────────
-    print('Conectando al stream de la cámara...')
+    console.print('[bold cyan][stream][/] Conectando a la camara...')
     tracker = FacialTracker(URL_STREAM, MODELO_TFLITE, serial_mgr, sm)
 
-    print('Esperando primer frame (máx 15 s)...')
+    console.print('[bold cyan][stream][/] Esperando primer frame (max 15 s)...')
     if not tracker.camera_ready.wait(timeout=15.0):
-        print('ERROR: No llegan frames de la cámara. ¿Está encendido el ESP32-CAM?')
+        console.print('[red][stream] ERROR: No llegan frames de la camara. Esta encendido el ESP32-CAM?[/]')
         serial_mgr.cerrar()
         return
 
+    console.print('[bold green][stream] Camara lista.[/]')
     cx_c = tracker.cx_centro
     cy_c = tracker.cy_centro
 
-    # ── 4. VoicePipeline (con AudioIO opcional al ESP32) ───────────────────────
     audio_io = None
     if USE_ROBOT_MIC or USE_ROBOT_SPEAKER:
         try:
-            # Cargar AudioIO desde shared/voicechatLap
             sys.path.append(os.path.abspath(
                 os.path.join(os.path.dirname(__file__), '..', 'shared', 'voicechatLap')))
             from audio_io import AudioIO
-            print(f'[audio] Conectando al ESP32 audio TCP...')
+            console.print('[dim][audio] Conectando al ESP32 audio TCP...[/]')
             audio_io = AudioIO()
             audio_io.connect(timeout_s=5.0)
-            print(f'[audio] ✓ Conectado. MIC={USE_ROBOT_MIC} SPEAKER={USE_ROBOT_SPEAKER}')
+            console.print(f'[bold green][audio] Conectado. MIC={USE_ROBOT_MIC} SPEAKER={USE_ROBOT_SPEAKER}[/]')
         except Exception as e:
-            print(f'[audio] ✗ No se pudo conectar al ESP32 audio: {e}')
-            print(f'[audio]   Fallback automático a laptop (mic + speaker).')
+            console.print(f'[yellow][audio] No se pudo conectar al ESP32 audio: {e}[/]')
+            console.print('[yellow][audio] Fallback automatico a laptop (mic + speaker).[/]')
             audio_io = None
 
-    # ── Memoria persistente (P1): reconocimiento facial + SQLite ───────────────
     face_id = memoria = None
     if MEMORIA_ENABLED:
         try:
             from face_id import FaceID
             from memory import Memoria
-            face_id = FaceID()                  # carga InsightFace en hilo de fondo
+            face_id = FaceID()
             memoria = Memoria()
-            print(f'[memoria] activa. Personas en la base: {memoria.total_personas()}')
+            console.print(f'[bold green][memoria] activa. Personas en la base: {memoria.total_personas()}[/]')
         except Exception as e:
-            print(f'[memoria] desactivada (no se pudo iniciar): {e}')
+            console.print(f'[yellow][memoria] desactivada (no se pudo iniciar): {e}[/]')
             face_id = memoria = None
 
     voice = VoicePipeline(serial_mgr, sm, audio_io=audio_io,
@@ -170,7 +162,7 @@ def main() -> None:
     # y procesar cada frame satura el GIL → el stream-reader no drena el socket.
     TARGET_PERIOD = 1.0 / TARGET_FPS
 
-    print('\nRobot Bob activo. Presiona Q para salir.')
+    console.print('\n[bold green]Robot Bob activo. Presiona Q para salir.[/]')
     serial_mgr.cmd_servo(PAN_HOME, TILT_HOME)
 
     try:
@@ -268,7 +260,7 @@ def main() -> None:
                 # mientras se escribe el nombre. Frame LIMPIO del tracker (el
                 # local ya tiene el HUD dibujado encima de la cara).
                 if enroll_hilo is not None and enroll_hilo.is_alive():
-                    print('[enrolar] ya hay un enrolado en curso — escribí el nombre en la consola.')
+                    console.print('[bold magenta][enrolar][/] ya hay un enrolado en curso — escribe el nombre en la consola.')
                 else:
                     frame_limpio = tracker.leer_frame()
                     if frame_limpio is not None:
@@ -284,7 +276,7 @@ def main() -> None:
                 time.sleep(TARGET_PERIOD - elapsed)
 
     finally:
-        print('\nCerrando...')
+        console.print('[bold yellow]Cerrando...[/]')
         behavior.cerrar()
         voice.cerrar()
         tracker.cerrar()
@@ -304,7 +296,7 @@ def main() -> None:
         serial_mgr.cmd_estado('ESPERANDO')
         time.sleep(0.1)
         serial_mgr.cerrar()
-        print('Robot Bob detenido.')
+        console.print('[bold green]Robot Bob detenido.[/]')
 
 
 if __name__ == '__main__':
