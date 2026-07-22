@@ -30,7 +30,15 @@ Registra el progreso paso a paso, pruebas realizadas, aciertos, errores/desacier
   - Subdominio CAM: `bobcreeper-cam.duckdns.org`
   - Procedimiento: Ejecución de `certbot` con el plugin `certbot-dns-duckdns` desde la laptop del usuario.
 - **Aciertos:** El desafío DNS-01 genera registros TXT en los servidores de DuckDNS para validar el dominio ante Let's Encrypt. Esto permite generar certificados SSL 100% válidos para dominios que resuelven a IPs privadas de LAN (`192.168.X.Y`).
-- **Desaciertos / Lecciones:** `certbot` no viene instalado por defecto en el sistema operativo Windows nativo; se recomienda ejecutar el comando de Certbot mediante Python / script de renovación o Docker / WSL.
+- **Guía de Creación en DuckDNS:**
+  1. Ingresar a [https://www.duckdns.org](https://www.duckdns.org) e iniciar sesión (con Google, GitHub, etc.).
+  2. Copiar el **token de la cuenta** (necesario para Certbot y para que el ESP32 actualice su IP).
+  3. En el campo *subdomain*, registrar `bobcreeper` y hacer clic en *add domain*.
+  4. En el campo *subdomain*, registrar `bobcreeper-cam` y hacer clic en *add domain*.
+- **Automatización creada ([tools/generate_certs.py](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/tools/generate_certs.py)):**
+  - Se instalaron `certbot` y `certbot-dns-duckdns` en el entorno virtual Python `robot_bob/venv311/`.
+  - Se creó el script `tools/generate_certs.py` para solicitar automáticamente los certificados SSL de `bobcreeper.duckdns.org` y `bobcreeper-cam.duckdns.org` ejecutando Certbot en modo DNS-01.
+- **Desaciertos / Lecciones:** `certbot` no viene instalado por defecto en el sistema operativo Windows nativo; se resolvió instalando los paquetes `certbot` y `certbot-dns-duckdns` directamente dentro del venv de Python 3.11 del proyecto.
 
 #### [2026-07-22] Paso 2: Creación de la Estructura de Proyectos C++ para DevKit y CAM
 - **Objetivo:** Iniciar la estructura compilada C++ (Arduino framework sobre ESP-IDF) para los dos microcontroladores en `firmware/esp32_devkit_cpp/` y `firmware/esp32_cam_cpp/`.
