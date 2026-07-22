@@ -19,7 +19,6 @@ import os
 import random
 import re
 import sys
-import asyncio
 import queue
 import subprocess
 
@@ -32,10 +31,8 @@ from typing import Optional, List, Dict, Iterator
 
 import numpy as np
 import webrtcvad
-import edge_tts
 import imageio_ffmpeg
 import sounddevice as sd
-from scipy.signal import butter, sosfilt
 from groq import Groq
 from rich.console import Console
 
@@ -88,52 +85,18 @@ from expression_engine import (
     EMO_STT_FAIL, EMO_LLM_ERROR,
     PULSE_FAST, PULSE_NORM, PULSE_SLOW,
 )
+from audio_helpers import (
+    extract_emo_tag, ensure_emo_tag, rms_uint8, uint8_to_wav,
+    is_happy, es_alucinacion, intent_giro, extraer_nombre,
+    is_exit, is_goodbye, synthesize_mp3, split_sentence,
+)
 
-# ── Tags de emoción del LLM (InteractiveGoal Fase A) ───────────────────────────
-# El LLM prefija cada frase con [EMO:X]. Lo extraemos para el OLED y lo
-# quitamos del texto antes del TTS (no debe leerse en voz alta).
-_EMO_TAG_RE = re.compile(r'\[EMO:([A-ZÁÉÍÓÚÜÑ_]+)\]', re.IGNORECASE)
-# Debe coincidir con los estados que el firmware (oled_ojos.py ESTADOS) sabe
-# dibujar. Si un tag no está aquí, _extract_emo_tag lo descarta y el OLED cae al
-# fallback por keyword (la emoción no se muestra).
-_VALID_EMOS = {'FELIZ', 'MUY_FELIZ', 'EMOCIONADO', 'CURIOSO', 'TRAVIESO',
-               'PENSANDO', 'SORPRENDIDO', 'ASUSTADO', 'CONFUNDIDO', 'AVERGONZADO',
-               'TRISTE', 'MUY_TRISTE', 'ENOJADO', 'SOSPECHANDO', 'ORGULLOSO',
-               'AMOR', 'HABLANDO'}
-
-
-def _extract_emo_tag(text: str) -> tuple:
-    """
-    Devuelve (emo | None, texto_limpio).
-    Usa el primer tag válido encontrado; borra TODOS los tags del texto.
-    """
-    emo = None
-    for m in _EMO_TAG_RE.finditer(text):
-        cand = m.group(1).upper()
-        if emo is None and cand in _VALID_EMOS:
-            emo = cand
-    clean = _EMO_TAG_RE.sub('', text).strip()
-    return emo, clean
-
-
-def _ensure_emo_tag(sent: str) -> str:
-    """
-    Garantiza que la frase abra con un tag [EMO:X] válido. Si el LLM (típico en
-    modelos locales chicos) no puso ninguno, antepone [EMO:HABLANDO] (neutral)
-    para que el OLED no quede sin emoción. Si ya hay un tag válido, no toca nada.
-    """
-    for m in _EMO_TAG_RE.finditer(sent):
-        if m.group(1).upper() in _VALID_EMOS:
-            return sent
-    return '[EMO:HABLANDO] ' + sent
 
 FFMPEG  = imageio_ffmpeg.get_ffmpeg_exe()
 console = Console()
 
 # ── Constantes locales ─────────────────────────────────────────────────────────
 _LAP_SAMPLE_RATE = 16000  # sounddevice graba a 16 kHz
-_SILENCE_FRAMES  = SILENCE_END_MS // FRAME_MS
-_MAX_FRAMES      = (MAX_RECORDING_S * 1000) // FRAME_MS
 
 # Saludos rápidos cuando el usuario gatilla wake word ("Bob ...")
 WAKE_GREETINGS = [
@@ -184,157 +147,6 @@ SOLILOQUIO_LLM_PROMPT = (
     "Solo la frase con su tag."
 )
 
-# Filtro pasa-banda de voz (pre-calculado, reutilizable)
-_VOICE_BANDPASS = butter(4, [80, 3500], btype='band', fs=SAMPLE_RATE, output='sos')
-
-
-# ── Helpers de audio ───────────────────────────────────────────────────────────
-
-def _rms_uint8(buf: bytes) -> float:
-    a = np.frombuffer(buf, dtype=np.uint8).astype(np.float32)
-    if not a.size:
-        return 0.0
-    a = a - a.mean()
-    return float(np.sqrt(np.mean(a * a)))
-
-def _uint8_to_int16_bytes(buf: bytes) -> bytes:
-    a = np.frombuffer(buf, dtype=np.uint8).astype(np.float32)
-    if not a.size:
-        return b''
-    a = (a - a.mean()) * 256.0
-    return np.clip(a, -32768, 32767).astype(np.int16).tobytes()
-
-def _uint8_to_wav(uint8_audio: bytes) -> bytes:
-    arr = np.frombuffer(uint8_audio, dtype=np.uint8).astype(np.float32) - 128.0
-    arr -= arr.mean()
-    arr = sosfilt(_VOICE_BANDPASS, arr).astype(np.float32)
-    peak = np.max(np.abs(arr))
-    if peak > 1.0:
-        arr = arr / peak * 0.9 * 32767.0
-    int16 = arr.astype(np.int16)
-    buf = _io.BytesIO()
-    with wave.open(buf, 'wb') as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(SAMPLE_RATE)
-        wf.writeframes(int16.tobytes())
-    return buf.getvalue()
-
-def _is_happy(text: str) -> bool:
-    HAPPY_KEYWORDS = {
-        'bien', 'genial', 'excelente', 'perfecto', 'fantástico', 'claro', 'por supuesto',
-        'feliz', 'alegre', 'encantado', 'maravilloso', 'increíble', 'buenísimo',
-    }
-    words = set(text.lower().split())
-    return bool(words & HAPPY_KEYWORDS)
-
-# Frases que Whisper alucina con silencio/ruido — se ignoran en el wake monitor.
-_ALUCINACIONES = {
-    'gracias', 'muchas gracias', 'gracias por ver el video', 'gracias por ver',
-    'no', 'si', 'ya', 'eh', 'ah', 'mmm', 'chau', 'ok', 'okay', 'a', 'y', 'the',
-}
-
-def _es_alucinacion(texto: str) -> bool:
-    t = texto.lower().strip(' .,!?¿¡')
-    if not t:
-        return True
-    if 'amara' in t or 'subtitul' in t or 'suscrib' in t:
-        return True
-    return t in _ALUCINACIONES
-
-# Comandos de voz para que Bob gire buscando al que habla.
-_GIRO_DER_KW = ('a la derecha', 'tu derecha', 'a tu derecha', 'por la derecha',
-                'hacia la derecha')
-_GIRO_IZQ_KW = ('a la izquierda', 'tu izquierda', 'a tu izquierda', 'por la izquierda',
-                'hacia la izquierda')
-_GIRO_BUSCAR_KW = ('date la vuelta', 'date vuelta', 'da la vuelta', 'date media vuelta',
-                   'date la media vuelta', 'voltea', 'volteate', 'voltéate', 'gira',
-                   'girate', 'gírate', 'date la vueltita', 'estoy detras', 'estoy detrás',
-                   'detras de ti', 'detrás de ti', 'atras de ti', 'atrás de ti',
-                   'aca atras', 'acá atrás', 'aqui atras', 'aquí atrás', 'mira atras',
-                   'mira atrás', 'date la vue')
-
-def _intent_giro(texto: str):
-    """Devuelve 'derecha' | 'izquierda' | 'buscar' | None según el comando de voz."""
-    t = texto.lower()
-    if any(k in t for k in _GIRO_DER_KW):
-        return 'derecha'
-    if any(k in t for k in _GIRO_IZQ_KW):
-        return 'izquierda'
-    if any(k in t for k in _GIRO_BUSCAR_KW):
-        return 'buscar'
-    return None
-
-# Extracción del nombre cuando el usuario se presenta.
-_RE_NOMBRE = re.compile(
-    r'\b(?:me llamo|mi nombre es|me dicen|soy)\s+([a-záéíóúñ]{2,20})', re.IGNORECASE)
-_NO_NOMBRE = {'de', 'un', 'una', 'el', 'la', 'muy', 'yo', 'estudiante', 'ingeniero',
-              'ingeniera', 'profe', 'profesor', 'doctor', 'el', 'tu', 'su', 'que',
-              'bien', 'mal', 'feliz', 'triste', 'de', 'del', 'para', 'medio'}
-
-def _extraer_nombre(texto: str):
-    """Devuelve un nombre si el usuario se presentó ('me llamo X'), o None."""
-    m = _RE_NOMBRE.search(texto)
-    if not m:
-        return None
-    n = m.group(1).strip()
-    if n.lower() in _NO_NOMBRE:
-        return None
-    return n.capitalize()
-
-def _is_exit(text: str) -> bool:
-    return text.lower().strip(' .,!?¿¡') in EXIT_PHRASES
-
-def _is_goodbye(text: str) -> bool:
-    return text.lower().strip(' .,!?¿¡') in GOODBYE_PHRASES
-
-
-# ── TTS ────────────────────────────────────────────────────────────────────────
-
-def _prosody_for_emo(emo: Optional[str]) -> tuple:
-    """Devuelve (rate, pitch) edge-tts según la emoción; default = base."""
-    if emo:
-        p = TTS_EMO_PROSODY.get(emo.upper())
-        if p:
-            return p
-    return (TTS_RATE_BASE, TTS_PITCH_BASE)
-
-async def _edge_tts_bytes(text: str, rate: str, pitch: str) -> bytes:
-    chunks = []
-    async for c in edge_tts.Communicate(text, voice=VOICE, rate=rate, pitch=pitch).stream():
-        if c['type'] == 'audio':
-            chunks.append(c['data'])
-    return b''.join(chunks)
-
-def _synthesize_mp3(text: str, emo: Optional[str] = None) -> bytes:
-    if not text.strip():
-        return b''
-    rate, pitch = _prosody_for_emo(emo)
-    return asyncio.run(_edge_tts_bytes(text, rate, pitch))
-
-def _mp3_to_wav(mp3: bytes) -> bytes:
-    proc = subprocess.run(
-        [FFMPEG, '-hide_banner', '-loglevel', 'error',
-         '-i', 'pipe:0',
-         '-af', TTS_FFMPEG_FILTERS,
-         '-ar', str(SAMPLE_RATE), '-ac', '1',
-         '-acodec', 'pcm_u8', '-f', 'u8', 'pipe:1'],
-        input=mp3, capture_output=True, check=False,
-    )
-    return proc.stdout
-
-
-# ── Sentence splitter ──────────────────────────────────────────────────────────
-
-_SENT_RE = re.compile(r'[.!?¡¿…\n]+[\s"\')\]]*')
-
-def _split_sentence(buf: str) -> tuple[Optional[str], str]:
-    if len(buf) < SENTENCE_MIN_CHARS:
-        return None, buf
-    m = _SENT_RE.search(buf, SENTENCE_MIN_CHARS - 1)
-    if m is None:
-        return None, buf
-    return buf[:m.end()].strip(), buf[m.end():]
 
 
 # ── VoicePipeline ──────────────────────────────────────────────────────────────
@@ -444,6 +256,11 @@ class VoicePipeline:
         )
 
         sd.default.samplerate = 24000
+
+        from tts_engine import TTSEngine
+        from recorder import Recorder
+        self._tts = TTSEngine(self._audio_io, self._detener)
+        self._grabador = Recorder(self._audio_io, self._detener, self._serial, self._sm)
 
         self._warmup()
         self._hilo = threading.Thread(target=self._loop, daemon=True, name='voice-pipeline')
@@ -580,7 +397,7 @@ class VoicePipeline:
         except Exception as e:
             console.print(f'[dim][P7] opener memoria falló: {e}[/]')
             return None
-        emo, clean = _extract_emo_tag(txt)
+        emo, clean = extract_emo_tag(txt)
         if not clean or not any(c.isalnum() for c in clean):
             return None
         return clean, (emo or 'FELIZ')
@@ -755,7 +572,7 @@ class VoicePipeline:
 
             # ── Memoria: ¿se presentó? ("me llamo X") → guardar nombre ─────────
             if self._memoria_activa():
-                nombre = _extraer_nombre(texto)
+                nombre = extraer_nombre(texto)
                 if nombre and nombre != self._persona_nombre:
                     self._persona_nombre = nombre
                     self._nombre_pendiente = nombre
@@ -798,7 +615,7 @@ class VoicePipeline:
                 continue
 
             # ── Comando de giro: "date la vuelta", "a tu derecha", etc. ─────────
-            intent = _intent_giro(texto)
+            intent = intent_giro(texto)
             if intent:
                 self._sm.scan_request = intent
                 self._sm.iniciar_hablando()
@@ -860,10 +677,10 @@ class VoicePipeline:
                     continue
 
             # ── 4. Comandos de salida (cualquier turno) ────────────────────────
-            if _is_exit(texto):
+            if is_exit(texto):
                 self._hablar('Hasta luego.')
                 break
-            if _is_goodbye(texto):
+            if is_goodbye(texto):
                 self._hablar('Hasta pronto.')
                 break
 
@@ -891,168 +708,7 @@ class VoicePipeline:
     # ── Grabación ────────────────────────────────────────────────────────────
 
     def _grabar(self, initial_timeout: float = 8.0) -> Optional[bytes]:
-        """
-        Graba con VAD. Despacha a robot (ESP32 TCP) o laptop (sounddevice)
-        según el flag USE_ROBOT_MIC y la disponibilidad del AudioIO.
-        """
-        if USE_ROBOT_MIC and self._audio_io is not None and self._audio_io.connected:
-            return self._grabar_robot(initial_timeout)
-        return self._grabar_laptop(initial_timeout)
-
-    def _grabar_robot(self, initial_timeout: float) -> Optional[bytes]:
-        """
-        Graba uint8 @ 8 kHz desde el mic del ESP32 vía AudioIO.
-        Misma lógica de VAD + endpointing que la versión laptop.
-        """
-        self._audio_io.drain_mic()  # tirar audio viejo
-        vad_local   = webrtcvad.Vad(VAD_AGGRESSIVENESS)
-        u8_per_frame = SAMPLE_RATE * FRAME_MS // 1000  # 240 bytes / frame VAD a 8 kHz
-
-        preroll: deque[bytes] = deque(maxlen=PREROLL_FRAMES)
-        recorded: List[bytes] = []
-        buffer = bytearray()
-        speech_started = False
-        silence_streak = 0
-        speech_ms      = 0
-        waited_ms      = 0
-        initial_timeout_ms = int(initial_timeout * 1000)
-
-        while True:
-            chunk = self._audio_io.get_mic(timeout=0.5)
-            if chunk is None:
-                waited_ms += 500
-                if not speech_started and waited_ms > initial_timeout_ms:
-                    return None
-                continue
-            buffer.extend(chunk)
-
-            # Slice frames VAD de tamaño fijo
-            while len(buffer) >= u8_per_frame:
-                frame_u8 = bytes(buffer[:u8_per_frame])
-                del buffer[:u8_per_frame]
-
-                # webrtcvad requiere int16 → convertir
-                frame_i16 = _uint8_to_int16_bytes(frame_u8)
-                try:
-                    is_vad = vad_local.is_speech(frame_i16, SAMPLE_RATE)
-                except Exception:
-                    is_vad = False
-
-                rms = _rms_uint8(frame_u8)
-
-                if not speech_started:
-                    preroll.append(frame_u8)
-                    waited_ms += FRAME_MS
-                    if is_vad and rms > NOISE_FLOOR_MIN:
-                        speech_started = True
-                        recorded.extend(preroll)
-                        speech_ms = FRAME_MS * len(preroll)
-                    elif waited_ms > initial_timeout_ms:
-                        return None
-                else:
-                    recorded.append(frame_u8)
-                    speech_ms += FRAME_MS
-                    if is_vad and rms > NOISE_FLOOR_MIN:
-                        silence_streak = 0
-                    else:
-                        silence_streak += 1
-                    if silence_streak >= _SILENCE_FRAMES:
-                        if speech_ms < MIN_SPEECH_S * 1000:
-                            return None
-                        raw = b''.join(recorded)
-                        return _uint8_to_wav(raw)
-                    if speech_ms >= MAX_RECORDING_S * 1000:
-                        raw = b''.join(recorded)
-                        return _uint8_to_wav(raw)
-
-    def _grabar_laptop(self, initial_timeout: float = 8.0) -> Optional[bytes]:
-        """
-        Graba desde micrófono de laptop con VAD + gate adaptativo.
-        initial_timeout: segundos máximo de silencio inicial antes de devolver None.
-        """
-        q: queue.Queue = queue.Queue()
-
-        def callback(indata, frames, t, status):
-            q.put(bytes(indata))
-
-        frame_bytes = int(_LAP_SAMPLE_RATE * FRAME_MS / 1000) * 2  # int16
-        vad_local   = webrtcvad.Vad(VAD_AGGRESSIVENESS)
-        initial_timeout_ms = int(initial_timeout * 1000)
-
-        preroll:  deque[bytes] = deque(maxlen=PREROLL_FRAMES)
-        recorded: List[bytes]  = []
-        speech_started = False
-        silence_streak = 0
-        speech_ms      = 0
-        waited_ms      = 0
-        invite_sent    = False  # Fase D: CURIOSO de invitación a los 3 s
-
-        with sd.RawInputStream(samplerate=_LAP_SAMPLE_RATE, channels=1,
-                               dtype='int16', blocksize=frame_bytes // 2,
-                               callback=callback):
-            while True:
-                try:
-                    chunk = q.get(timeout=1.0)
-                except queue.Empty:
-                    chunk = None
-
-                if chunk is None:
-                    waited_ms += 1000
-                    if not speech_started and waited_ms > initial_timeout_ms:
-                        return None
-                    continue
-
-                # El VAD de webrtcvad necesita frames de 10/20/30 ms exactos
-                if len(chunk) < frame_bytes:
-                    continue
-                frame = chunk[:frame_bytes]
-
-                try:
-                    is_vad = vad_local.is_speech(frame, _LAP_SAMPLE_RATE)
-                except Exception:
-                    is_vad = False
-
-                arr   = np.frombuffer(frame, dtype=np.int16).astype(np.float32)
-                level = float(np.sqrt(np.mean(arr * arr))) / 32767.0 * 100.0
-
-                if not speech_started:
-                    preroll.append(frame)
-                    waited_ms += FRAME_MS
-                    # Fase D: a los 3 s sin hablar, Bob "te invita" con ojos curiosos
-                    if not invite_sent and waited_ms > 3000:
-                        invite_sent = True
-                        pulse_emotion(self._serial, self._sm, 'CURIOSO', 700)
-                    if is_vad and level > 1.5:
-                        speech_started = True
-                        recorded.extend(preroll)
-                        speech_ms = FRAME_MS * len(preroll)
-                    elif waited_ms > initial_timeout_ms:
-                        return None
-                else:
-                    recorded.append(frame)
-                    speech_ms += FRAME_MS
-
-                    if is_vad and level > 1.5:
-                        silence_streak = 0
-                    else:
-                        silence_streak += 1
-
-                    if silence_streak >= _SILENCE_FRAMES:
-                        break
-                    if speech_ms >= MAX_RECORDING_S * 1000:
-                        break
-
-        if speech_ms < MIN_SPEECH_S * 1000:
-            return None
-
-        raw = b''.join(recorded)
-        buf = _io.BytesIO()
-        with wave.open(buf, 'wb') as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(_LAP_SAMPLE_RATE)
-            wf.writeframes(raw)
-        return buf.getvalue()
+        return self._grabador.grabar(initial_timeout)
 
     # ── STT ──────────────────────────────────────────────────────────────────
 
@@ -1138,7 +794,7 @@ class VoicePipeline:
         # frase y se arrastran al fragmento siguiente, para no perder su tag ni
         # truncar la respuesta a media frase.
         def _hablable(s: str) -> bool:
-            return any(c.isalnum() for c in _EMO_TAG_RE.sub('', s))
+            return any(c.isalnum() for c in extract_emo_tag(s)[1])
 
         buf       = ''
         dicho     = []     # frases efectivamente habladas
@@ -1149,7 +805,7 @@ class VoicePipeline:
             delta = (chunk.choices[0].delta.content or '') if chunk.choices else ''
             buf += delta
             while True:
-                sent, buf = _split_sentence(buf)
+                sent, buf = split_sentence(buf)
                 if sent is None:
                     break
                 sent = pendiente + sent
@@ -1157,7 +813,7 @@ class VoicePipeline:
                 if not _hablable(sent):
                     pendiente = sent        # arrastrar tag/signo al siguiente
                     continue
-                sent = _ensure_emo_tag(sent)
+                sent = ensure_emo_tag(sent)
                 dicho.append(sent)
                 yield sent
                 n_frases += 1
@@ -1174,7 +830,7 @@ class VoicePipeline:
         else:
             tail = (pendiente + buf).strip()
             if _hablable(tail):
-                sent = _ensure_emo_tag(tail)
+                sent = ensure_emo_tag(tail)
                 dicho.append(sent)
                 yield sent
         self._convo.append({'role': 'assistant', 'content': ' '.join(dicho)})
@@ -1182,109 +838,10 @@ class VoicePipeline:
     # ── TTS + Reproducción ────────────────────────────────────────────────────
 
     def _hablar(self, texto: str, emo: Optional[str] = None) -> None:
-        mp3 = _synthesize_mp3(texto, emo)
-        if not mp3:
-            return
-        self._reproducir_mp3(mp3)
+        self._tts._hablar(texto, emo)
 
     def _reproducir_mp3(self, mp3: bytes) -> Optional[bytes]:
-        """Reproduce MP3 — vía speaker del ESP32 (TCP) o pygame local según flag."""
-        if USE_ROBOT_SPEAKER and self._audio_io is not None:
-            if not self._audio_io.connected:
-                self._audio_reconectar()   # el DevKit rebootó → reenganchar
-            if self._audio_io.connected:
-                return self._reproducir_mp3_robot(mp3)
-        return self._reproducir_mp3_laptop(mp3)
-
-    def _audio_reconectar(self) -> None:
-        """Reintenta el TCP de audio al ESP32. Un reboot/brownout del DevKit (o
-        abrir COM3, que lo resetea) tira los sockets y AudioIO NO reconecta
-        solo — sin esto el robot queda mudo hasta reiniciar main. Throttle 10 s.
-        Refresca la IP desde el cache de discovery por si la placa cambió de red."""
-        ahora = time.monotonic()
-        if ahora - self._t_audio_retry < 10.0:
-            return
-        self._t_audio_retry = ahora
-        try:
-            import discovery
-            ip = discovery.cache_ips().get('ESP32_IP')
-            if ip:
-                self._audio_io.ip = ip
-        except Exception:
-            pass
-        try:
-            self._audio_io.close()
-            self._audio_io.connect(timeout_s=3.0)
-            console.print(f'[green][audio] ✓ reconectado al ESP32 ({self._audio_io.ip})[/]')
-        except Exception as e:
-            console.print(f'[dim][audio] ESP32 no responde ({e}); hablo por la laptop[/]')
-
-    def _reproducir_mp3_robot(self, mp3: bytes) -> Optional[bytes]:
-        """Convierte mp3 → uint8 @ 8 kHz y lo manda al ESP32 de una vez."""
-        u8 = self._mp3_a_u8(mp3)
-        if not u8:
-            return None
-        total = len(u8)
-        if not self._audio_io.send_audio_header(total):
-            return None
-        # TODO el body en un sendall. El envío por chunks con pacing dejaba MUDO
-        # el 2º playback en adelante (bug de firmware sin resolver: play_mode
-        # consume los bytes a ritmo correcto pero el DAC no suena); de golpe el
-        # DAC reproduce siempre. TCP bufferea; el firmware consume a 8 kHz.
-        t0 = time.monotonic()
-        if not self._audio_io.send_audio_body(u8):
-            return None
-        # sendall vuelve cuando el buffer TCP acepta los bytes, NO cuando terminó
-        # de sonar: esperar la duración real del audio (anti-eco / auto-wake).
-        restante = total / SAMPLE_RATE - (time.monotonic() - t0)
-        if restante > 0:
-            self._detener.wait(restante)
-        time.sleep(TTS_TAIL_S)
-        return None
-
-    @staticmethod
-    def _mp3_a_u8(mp3: bytes) -> bytes:
-        """Convierte mp3 → PCM uint8 mono @ SAMPLE_RATE Hz vía ffmpeg + filtros TTS."""
-        proc = subprocess.run(
-            [FFMPEG, '-hide_banner', '-loglevel', 'error',
-             '-i', 'pipe:0',
-             '-af', TTS_FFMPEG_FILTERS,
-             '-ar', str(SAMPLE_RATE), '-ac', '1',
-             # dither_method triangular al bajar a 8 bits: rompe el ruido de
-             # cuantización (grano áspero) y lo vuelve un hiss suave, mucho más
-             # tolerable en el DAC de 8 bits del ESP32.
-             '-dither_method', 'triangular',
-             '-acodec', 'pcm_u8', '-f', 'u8', 'pipe:1'],
-            input=mp3, capture_output=True, check=False,
-        )
-        return proc.stdout
-
-    @staticmethod
-    def _mp3_a_pcm_f32(mp3: bytes, sample_rate: int = 24000) -> Optional[np.ndarray]:
-        """Convierte MP3 → PCM f32 mono vía ffmpeg. Devuelve numpy array."""
-        proc = subprocess.run(
-            [FFMPEG, '-hide_banner', '-loglevel', 'error',
-             '-i', 'pipe:0',
-             '-ar', str(sample_rate), '-ac', '1',
-             '-f', 'f32le', 'pipe:1'],
-            input=mp3, capture_output=True, check=False,
-        )
-        if not proc.stdout:
-            return None
-        return np.frombuffer(proc.stdout, dtype=np.float32)
-
-    def _reproducir_mp3_laptop(self, mp3: bytes) -> Optional[bytes]:
-        """Reproduce MP3 con sounddevice en parlantes de la laptop."""
-        pcm = self._mp3_a_pcm_f32(mp3)
-        if pcm is None or len(pcm) == 0:
-            return None
-        sd.play(pcm, samplerate=24000)
-        while sd.get_stream() and sd.get_stream().active:
-            time.sleep(0.05)
-            if self._detener.is_set():
-                sd.stop()
-                break
-        return None
+        return self._tts._reproducir_mp3(mp3)
 
     def _stream_and_speak(self, texto: str) -> Optional[bytes]:
         """LLM streaming + TTS en paralelo, reproducción en cuanto llega cada frase."""
@@ -1316,13 +873,13 @@ class VoicePipeline:
                     audio_q.put(None)
                     return
                 # Extraer el tag [EMO:X] ANTES del TTS para que no se lea
-                emo, clean = _extract_emo_tag(sent)
+                emo, clean = extract_emo_tag(sent)
                 # Saltar fragmentos sin contenido hablable (solo tag, puntuación,
                 # espacios) — edge-tts lanza NoAudioReceived con esos.
                 if not any(ch.isalnum() for ch in clean):
                     continue
                 try:
-                    mp3 = _synthesize_mp3(clean, emo)
+                    mp3 = synthesize_mp3(clean, emo)
                 except Exception as e:
                     # Una frase mala no debe matar el hilo TTS entero
                     console.print(f'[red][voice] TTS error ("{clean[:40]}"): {e}[/]')
@@ -1374,7 +931,7 @@ class VoicePipeline:
                 console.print(f'[bold green]Bob[/] [dim]({emo})[/]: {sent_text}')
             else:
                 # Fallback si el LLM olvidó el tag: keywords como antes
-                oled = 'FELIZ' if _is_happy(sent_text) else 'HABLANDO'
+                oled = 'FELIZ' if is_happy(sent_text) else 'HABLANDO'
                 self._serial.cmd_estado(oled)
                 console.print(f'[bold green]Bob:[/] {sent_text}')
                 react_to_bob_text(self._serial, self._sm, sent_text)
@@ -1579,7 +1136,7 @@ class VoicePipeline:
             return None
         # Anti-repetición: evitar las frases dichas hace poco.
         candidatas = [f for f in frases
-                      if _extract_emo_tag(f)[1].lower() not in self._soliloquio_reciente]
+                      if extract_emo_tag(f)[1].lower() not in self._soliloquio_reciente]
         return random.choice(candidatas or frases)
 
     def _soliloquio_llm(self, categoria: str, estado) -> Optional[str]:
@@ -1621,7 +1178,7 @@ class VoicePipeline:
     def decir_soliloquio(self, frase: str) -> None:
         """Dice UNA frase espontánea: muta el mic (anti-eco), pone el OLED según
         su tag [EMO], habla, restaura el OLED y deja decaer el eco."""
-        emo, clean = _extract_emo_tag(frase)
+        emo, clean = extract_emo_tag(frase)
         if not any(ch.isalnum() for ch in clean):
             return
         self._soliloquio_reciente.append(clean.lower())   # anti-repetición
@@ -1672,7 +1229,7 @@ class VoicePipeline:
             texto = self._transcribir(audio)
             if not texto:
                 continue
-            if _es_alucinacion(texto):
+            if es_alucinacion(texto):
                 continue   # silencio/ruido alucinado por Whisper → ignorar
 
             ww = self._wake.detect(texto)
@@ -1709,16 +1266,16 @@ class VoicePipeline:
                 collected.extend(chunk)
                 ahora = time.monotonic()
                 # Escala u8: gate de silencio es 4.0 → voz clara ~2x eso.
-                if _rms_uint8(bytes(chunk)) >= 8.0:
+                if rms_uint8(bytes(chunk)) >= 8.0:
                     t_ultima_voz = ahora
                 elif t_ultima_voz and ahora - t_ultima_voz >= WAKE_SILENCE_CUT_S:
                     break
         if not collected:
             return None
         raw = bytes(collected)
-        if _rms_uint8(raw) < 4.0:        # silencio → no transcribir
+        if rms_uint8(raw) < 4.0:        # silencio → no transcribir
             return None
-        return _uint8_to_wav(raw)
+        return uint8_to_wav(raw)
 
     def _grabar_wake_laptop(self) -> Optional[bytes]:
         """Graba hasta WAKE_WINDOW_S desde el mic local. Devuelve WAV int16 @ 16 kHz.
