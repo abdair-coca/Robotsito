@@ -1,12 +1,11 @@
 """
 generate_certs.py — Script automatizado para obtener los certificados SSL de Let's Encrypt (DNS-01)
-para Bob usando certbot-dns-duckdns en Python.
+para Bob usando certbot-dns-duckdns en Python con rutas locales (sin requerir permisos de Administrador).
 """
 
 import os
 import sys
 import subprocess
-import shutil
 from pathlib import Path
 
 def main():
@@ -29,8 +28,19 @@ def main():
     full_dev_domain = f"{dev_domain}.duckdns.org"
     full_cam_domain = f"{cam_domain}.duckdns.org"
 
+    # Directorios locales para certificados
+    project_root = Path(__file__).resolve().parent.parent
+    certs_dir = project_root / "certs"
+    config_dir = certs_dir / "config"
+    work_dir = certs_dir / "work"
+    logs_dir = certs_dir / "logs"
+
+    config_dir.mkdir(parents=True, exist_ok=True)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
     # Crear duckdns.ini
-    ini_path = Path("duckdns.ini").resolve()
+    ini_path = (project_root / "duckdns.ini").resolve()
     with open(ini_path, "w", encoding="utf-8") as f:
         f.write(f"dns_duckdns_token = {token}\n")
 
@@ -40,6 +50,9 @@ def main():
         "--authenticator", "dns-duckdns",
         "--dns-duckdns-credentials", str(ini_path),
         "--dns-duckdns-propagation-seconds", "30",
+        "--config-dir", str(config_dir),
+        "--work-dir", str(work_dir),
+        "--logs-dir", str(logs_dir),
         "-d", full_dev_domain,
         "--non-interactive", "--agree-tos",
         "-m", email
@@ -53,6 +66,9 @@ def main():
         "--authenticator", "dns-duckdns",
         "--dns-duckdns-credentials", str(ini_path),
         "--dns-duckdns-propagation-seconds", "30",
+        "--config-dir", str(config_dir),
+        "--work-dir", str(work_dir),
+        "--logs-dir", str(logs_dir),
         "-d", full_cam_domain,
         "--non-interactive", "--agree-tos",
         "-m", email
@@ -60,14 +76,18 @@ def main():
 
     res2 = subprocess.run(cmd_cam)
 
-    # Eliminar duckdns.ini por seguridad
+    # Limpiar archivo de credenciales
     if ini_path.exists():
         os.remove(ini_path)
 
     if res1.returncode == 0 and res2.returncode == 0:
-        print("\n[ÉXITO] Certificados SSL generados correctamente con Let's Encrypt.")
+        print("\n" + "=" * 60)
+        print(" [ÉXITO] Certificados SSL generados correctamente:")
+        print(f" DevKit certs: {config_dir / 'live' / full_dev_domain}")
+        print(f" CAM certs:    {config_dir / 'live' / full_cam_domain}")
+        print("=" * 60)
     else:
-        print("\n[ATENCIÓN] Revisa los logs superiores si ocurrió alguna advertencia o error.")
+        print("\n[ATENCIÓN] Revisa los mensajes de error superiores.")
 
 if __name__ == "__main__":
     main()

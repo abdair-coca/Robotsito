@@ -15,3 +15,6 @@ ffmpeg-*.log
 .claude/worktrees/
 graphify-out/
 *.FCBak
+certs/
+duckdns.ini
+

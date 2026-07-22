@@ -37,8 +37,8 @@ Registra el progreso paso a paso, pruebas realizadas, aciertos, errores/desacier
   4. En el campo *subdomain*, registrar `bobcreeper-cam` y hacer clic en *add domain*.
 - **Automatización creada ([tools/generate_certs.py](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/tools/generate_certs.py)):**
   - Se instalaron `certbot` y `certbot-dns-duckdns` en el entorno virtual Python `robot_bob/venv311/`.
-  - Se creó el script `tools/generate_certs.py` para solicitar automáticamente los certificados SSL de `bobcreeper.duckdns.org` y `bobcreeper-cam.duckdns.org` ejecutando Certbot en modo DNS-01.
-- **Desaciertos / Lecciones:** `certbot` no viene instalado por defecto en el sistema operativo Windows nativo; se resolvió instalando los paquetes `certbot` y `certbot-dns-duckdns` directamente dentro del venv de Python 3.11 del proyecto.
+  - Se optimizó `tools/generate_certs.py` usando las banderas `--config-dir certs/config`, `--work-dir certs/work` y `--logs-dir certs/logs`. Esto permite generar y guardar los certificados SSL (`fullchain.pem` y `privkey.pem`) directamente en la carpeta local `certs/config/live/` sin requerir permisos de Administrador en Windows.
+- **Desaciertos / Lecciones:** Se evitó el requisito de permisos de administrador en Windows al redireccionar las carpetas por defecto de Certbot (`C:\Certbot`) a la carpeta del proyecto `certs/`.
 
 #### [2026-07-22] Paso 2: Creación de la Estructura de Proyectos C++ para DevKit y CAM
 - **Objetivo:** Iniciar la estructura compilada C++ (Arduino framework sobre ESP-IDF) para los dos microcontroladores en `firmware/esp32_devkit_cpp/` y `firmware/esp32_cam_cpp/`.
