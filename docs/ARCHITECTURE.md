@@ -55,7 +55,10 @@ directo.
 | `serial_manager.py` | Único dueño del canal de control. Cola priorizada SERVO > ESTADO > SIGUIENDO, throttle, dedup. WiFi/USB/none. |
 | `state_machine.py` | Máquina de estados central + mood drift emocional. |
 | `facial_tracker.py` | `LectorStream` (socket MJPEG) + `DetectorFacial` (MediaPipe). Delega al SerialManager. |
-| `voice_pipeline.py` | STT (Whisper) → LLM (Llama) → TTS (edge-tts). Wake word, barge-in, multi-turno, parser de tags `[EMO:X]`. |
+| `voice_pipeline.py` | Orquestador delgado (~1209 lns). Delega a `tts_engine`, `recorder`, `audio_helpers`. |
+| `tts_engine.py` | Síntesis edge-tts + reproducción (laptop vía sounddevice / ESP32 vía TCP). |
+| `recorder.py` | Grabación con VAD (laptop mic / ESP32 mic). |
+| `audio_helpers.py` | Funciones puras: RMS, WAV, alucinaciones, intención de giro, splitter de frases, etc. |
 | `behavior.py` | Motor de movimiento humano @20 Hz (incluye soliloquio/muecas y giro de cuerpo). |
 | `expression_engine.py` | Reacciones instantáneas a lo que dice el usuario (`react_to_user_text`). |
 | `memory.py` / `memoria_admin.py` | Memoria persistente (cara↔nombre + SQLite) y su CLI de administración. |

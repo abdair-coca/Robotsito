@@ -4,18 +4,18 @@ Priorizado: 🔴 alto impacto/bajo esfuerzo → 🟡 medio → 🟢 calidad de v
 
 ---
 
-## 🔴 1. Dividir `voice_pipeline.py` (1846 líneas)
+## 🔴 1. Dividir `voice_pipeline.py` (1846→1209 líneas)
 
-Monolito: VAD, grabación, STT, LLM streaming, TTS, wake word, soliloquio,
-reminders, baile, anti-eco, prosodia, splitter, reconexión.
+✅ Extraído:
+- `audio_helpers.py` — funciones puras (RMS, WAV, splitter, intención de giro, alucinaciones)
+- `tts_engine.py` — edge-tts + reproducción (ESP32/laptop)
+- `recorder.py` — grabación mic laptop/robot, VAD, endpointing, anti-eco
 
-**Acción:**
-- `recorder/` — grabación laptop + robot, VAD, endpointing
-- `llm_client.py` — cliente LLM (Groq/Ollama/Gemini), streaming, guard de frases
-- `tts_engine.py` — edge-tts + ffmpeg + reproducción (ESP32/laptop)
-- `wake_monitor.py` — wake word loop, anti-eco, alucinaciones
+❌ Queda dentro de `voice_pipeline.py`:
+- `llm_client.py` — cliente LLM (Groq/Gemini), streaming, guard de frases
+- `wake_monitor.py` — wake word loop
 - `soliloquy.py` — soliloquio loop, banco local, generación LLM
-- `voice_pipeline.py` queda como orquestador delgado
+- reminders, background monitors, baile, reconexión
 
 ---
 
