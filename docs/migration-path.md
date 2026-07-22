@@ -29,16 +29,13 @@ Registra el progreso paso a paso, pruebas realizadas, aciertos, errores/desacier
   - Subdominio DevKit: `bobcreeper.duckdns.org`
   - Subdominio CAM: `bobcreeper-cam.duckdns.org`
   - Procedimiento: Ejecución de `certbot` con el plugin `certbot-dns-duckdns` desde la laptop del usuario.
-- **Aciertos:** El desafío DNS-01 genera registros TXT en los servidores de DuckDNS para validar el dominio ante Let's Encrypt. Esto permite generar certificados SSL 100% válidos para dominios que resuelven a IPs privadas de LAN (`192.168.X.Y`).
-- **Guía de Creación en DuckDNS:**
-  1. Ingresar a [https://www.duckdns.org](https://www.duckdns.org) e iniciar sesión (con Google, GitHub, etc.).
-  2. Copiar el **token de la cuenta** (necesario para Certbot y para que el ESP32 actualice su IP).
-  3. En el campo *subdomain*, registrar `bobcreeper` y hacer clic en *add domain*.
-  4. En el campo *subdomain*, registrar `bobcreeper-cam` y hacer clic en *add domain*.
-- **Automatización creada ([tools/generate_certs.py](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/tools/generate_certs.py)):**
-  - Se instalaron `certbot` y `certbot-dns-duckdns` en el entorno virtual Python `robot_bob/venv311/`.
-  - Se optimizó `tools/generate_certs.py` usando las banderas `--config-dir certs/config`, `--work-dir certs/work` y `--logs-dir certs/logs`. Esto permite generar y guardar los certificados SSL (`fullchain.pem` y `privkey.pem`) directamente en la carpeta local `certs/config/live/` sin requerir permisos de Administrador en Windows.
-- **Desaciertos / Lecciones:** Se evitó el requisito de permisos de administrador en Windows al redireccionar las carpetas por defecto de Certbot (`C:\Certbot`) a la carpeta del proyecto `certs/`.
+- **Aciertos:**
+  - El desafío DNS-01 genera registros TXT en los servidores de DuckDNS para validar el dominio ante Let's Encrypt. Esto permite generar certificados SSL 100% válidos para dominios que resuelven a IPs privadas de LAN (`192.168.X.Y`).
+  - **Emisión Exitosa ([tools/issue_certs_acme.py](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/tools/issue_certs_acme.py)):** Se implementó un cliente ACME v2 puro en Python que negoció con Let's Encrypt y DuckDNS, generando exitosamente `fullchain.pem` y `privkey.pem` para `bobcreeper.duckdns.org` y `bobcreeper-cam.duckdns.org` sin requerir elevación de privilegios de Administrador en Windows.
+  - **Copia a Firmware ([tools/copy_certs_to_firmware.py](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/tools/copy_certs_to_firmware.py)):** Se formatearon y copiaron las llaves y certificados a `firmware/esp32_devkit_cpp/data/cert/` y `firmware/esp32_cam_cpp/data/cert/` para su incrustación en la memoria flash LittleFS.
+- **Desaciertos / Lecciones:**
+  - Certbot nativo en Windows exige ser ejecutado desde un shell con permisos de Administrador para crear carpetas en `C:\Certbot`. Se resolvió usando el módulo `acme` + `cryptography` de Python directamente en `tools/issue_certs_acme.py`.
+
 
 #### [2026-07-22] Paso 2: Creación de la Estructura de Proyectos C++ para DevKit y CAM
 - **Objetivo:** Iniciar la estructura compilada C++ (Arduino framework sobre ESP-IDF) para los dos microcontroladores en `firmware/esp32_devkit_cpp/` y `firmware/esp32_cam_cpp/`.

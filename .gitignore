@@ -17,4 +17,6 @@ graphify-out/
 *.FCBak
 certs/
 duckdns.ini
+firmware/*/data/cert/
+
 
