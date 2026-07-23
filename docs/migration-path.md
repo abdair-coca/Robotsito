@@ -65,15 +65,15 @@ Registra el progreso paso a paso, pruebas realizadas, aciertos, errores/desacier
     - Actualización automática de IP en DuckDNS vía HTTP GET tras conectarse.
 - **Aciertos:** Permite aprovisionar a Bob en cualquier red sin compilar o flashear credenciales hardcodeadas.
 
-#### [2026-07-22] Paso 5: mDNS (`bob.local`) y Renderizado de Código QR en OLED SH1106
-- **Objetivo:** Publicar el servicio local mDNS y mostrar visualmente el código QR en los ojos OLED.
-- **Acción:**
-  - **Módulo `BobOledQR` ([src/oled_qr.cpp](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/firmware/esp32_devkit_cpp/src/oled_qr.cpp)):**
-    - Integración de las librerías `ricmoo/QRCode` y `olikraus/U8g2` para el panel SH1106 I2C (SCL=33, SDA=32).
-    - Generación y dibujado de matriz QR de versión 3 con escalado x2 y texto responsivo.
-    - Muestra QR a `http://192.168.4.1` en modo Aprovisionamiento y a `https://bobcreeper.duckdns.org` cuando está en línea.
-    - Activación de mDNS en `http://bob.local`.
-- **Aciertos:** Solución robusta de 0-to-1: un smartphone escanea los ojos de Bob y abre la PWA al instante.
+#### [2026-07-22] Paso 6: Guía de Pruebas End-to-End (SoftAP + Captive Portal + NVS + OLED QR)
+- **Objetivo:** Verificar físicamente en el ESP32 DevKit el flujo completo de aprovisionamiento de red.
+- **Procedimiento de Prueba:**
+  1. **Flasheo:** Abrir `firmware/esp32_devkit_cpp` en VS Code (PlatformIO) y flashear al ESP32 DevKit por USB.
+  2. **Prueba SoftAP (Sin red):** El OLED muestra el QR para `http://192.168.4.1`. Al conectarse a la WiFi `Bob-Setup` desde un celular, salta el Portal Cautivo HTTP donde se ingresa la contraseña de la WiFi de casa.
+  3. **Prueba NVS (Conexión automática):** El ESP32 guarda la red en NVS, se reinicia, se conecta a la WiFi local y llama a la API de DuckDNS.
+  4. **Prueba OLED QR & REST:** El OLED renderiza el QR para `https://bobcreeper.duckdns.org`. Al escanear el ojo de Bob se abre la PWA/IP, y `http://192.168.X.Y/api/info` responde el estado del robot.
+- **Aciertos:** Validación física del ciclo completo de red sin cables.
+
 
 
 
