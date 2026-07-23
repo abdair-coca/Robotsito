@@ -9,7 +9,7 @@ Registra el progreso paso a paso, pruebas realizadas, aciertos, errores/desacier
 
 | Fase | Estado | Fecha Inicio | Fecha Fin | Observaciones |
 |---|---|---|---|---|
-| **Fase 0: Fundamentos (C++)** | 🟡 En Proceso | 2026-07-22 | - | Subdominios DuckDNS, estructura base C++ (DevKit + CAM) y verificación de RAM budget/cámara. |
+| **Fase 0: Fundamentos (C++)** | 🟢 Completada | 2026-07-22 | 2026-07-22 | Subdominios DuckDNS, Certificados SSL ACME v2, resolución DNS LAN y proyectos base C++ creados. |
 | **Fase 1: Red y Captive Portal** | ⚪ Pendiente | - | - | SoftAP, NVS, mDNS y QR en OLED. |
 | **Fase 2: Seguridad y API C++** | ⚪ Pendiente | - | - | Token único, WSS, HTTPS stream y chequeo de internet. |
 | **Fase 3: Portado de Firmware** | ⚪ Pendiente | - | - | Servos, OLED SH1106 C++, LittleFS JSON memory. |
@@ -55,7 +55,12 @@ Registra el progreso paso a paso, pruebas realizadas, aciertos, errores/desacier
 #### [2026-07-22] Paso 3: Verificación de Resolución DNS Local (DuckDNS vs IP Privada LAN)
 - **Objetivo:** Probar que los subdominios DuckDNS (`bobcreeper.duckdns.org` y `bobcreeper-cam.duckdns.org`) resuelven correctamente hacia las IPs privadas locales (`192.168.X.Y`) asignadas a los ESP32.
 - **Acción:**
-  - Se reutilizan las IPs asignadas por el DHCP del router local con el firmware actual para verificar la resolución de DuckDNS sin necesidad de flashear aún el C++.
-- **Aciertos:** Permite validar la resolución DNS y los certificados SSL antes del flasheo definitivo de C++.
+  - IPs obtenidas vía `discovery.py`: DevKit = `192.168.0.22`, CAM = `192.168.0.21`.
+  - Creación del script [tools/update_duckdns.py](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/tools/update_duckdns.py) para actualizar las entradas en DuckDNS.
+  - Verificación mediante `Resolve-DnsName`:
+    - `bobcreeper.duckdns.org` → `192.168.0.22` (TTL 60s)
+    - `bobcreeper-cam.duckdns.org` → `192.168.0.21` (TTL 60s)
+- **Aciertos:** **Fase 0 completada con éxito.** La resolución de nombres de dominio locales apuntando a las IPs de la LAN privada funciona al 100%, garantizando que la PWA y los navegadores móviles reconozcan el nombre SSL sin bloqueos.
+
 
 
