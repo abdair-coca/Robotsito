@@ -10,7 +10,7 @@ Registra el progreso paso a paso, pruebas realizadas, aciertos, errores/desacier
 | Fase | Estado | Fecha Inicio | Fecha Fin | Observaciones |
 |---|---|---|---|---|
 | **Fase 0: Fundamentos (C++)** | 🟢 Completada | 2026-07-22 | 2026-07-22 | Subdominios DuckDNS, Certificados SSL ACME v2, resolución DNS LAN y proyectos base C++ creados. |
-| **Fase 1: Red y Captive Portal** | ⚪ Pendiente | - | - | SoftAP, NVS, mDNS y QR en OLED. |
+| **Fase 1: Red y Captive Portal** | 🟡 En Proceso | 2026-07-22 | - | Módulos C++ WiFiManager (NVS + SoftAP + Portal Cautivo) y OLED QR (SH1106 + mDNS) implementados. |
 | **Fase 2: Seguridad y API C++** | ⚪ Pendiente | - | - | Token único, WSS, HTTPS stream y chequeo de internet. |
 | **Fase 3: Portado de Firmware** | ⚪ Pendiente | - | - | Servos, OLED SH1106 C++, LittleFS JSON memory. |
 | **Fase 4: OTA y SSL Remote** | ⚪ Pendiente | - | - | ArduinoOTA doble partición y subida de certs. |
@@ -52,15 +52,29 @@ Registra el progreso paso a paso, pruebas realizadas, aciertos, errores/desacier
 - **Desaciertos / Lecciones:**
   - `pio` (PlatformIO CLI) debe instalarse en el entorno local para compilaciones y flasheos automáticos desde consola.
 
-#### [2026-07-22] Paso 3: Verificación de Resolución DNS Local (DuckDNS vs IP Privada LAN)
-- **Objetivo:** Probar que los subdominios DuckDNS (`bobcreeper.duckdns.org` y `bobcreeper-cam.duckdns.org`) resuelven correctamente hacia las IPs privadas locales (`192.168.X.Y`) asignadas a los ESP32.
+### 📍 Fase 1 — Red y Captive Portal
+
+#### [2026-07-22] Paso 4: Implementación de WiFiManager, NVS y Portal Cautivo HTTP en C++
+- **Objetivo:** Crear el módulo de gestión de red autónoma para el ESP32 DevKit.
 - **Acción:**
-  - IPs obtenidas vía `discovery.py`: DevKit = `192.168.0.22`, CAM = `192.168.0.21`.
-  - Creación del script [tools/update_duckdns.py](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/tools/update_duckdns.py) para actualizar las entradas en DuckDNS.
-  - Verificación mediante `Resolve-DnsName`:
-    - `bobcreeper.duckdns.org` → `192.168.0.22` (TTL 60s)
-    - `bobcreeper-cam.duckdns.org` → `192.168.0.21` (TTL 60s)
-- **Aciertos:** **Fase 0 completada con éxito.** La resolución de nombres de dominio locales apuntando a las IPs de la LAN privada funciona al 100%, garantizando que la PWA y los navegadores móviles reconozcan el nombre SSL sin bloqueos.
+  - **Módulo `BobWiFiManager` ([src/wifi_manager.cpp](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/firmware/esp32_devkit_cpp/src/wifi_manager.cpp)):**
+    - Persistencia en NVS mediante `Preferences.h` para almacenar y consultar pares (SSID, Password).
+    - Intento automático de conexión secuencial a redes guardadas.
+    - Caída a modo **SoftAP** (SSID: `Bob-Setup`, IP: `192.168.4.1`) e inicialización de `DNSServer` redirigiendo todas las consultas al portal cautivo.
+    - Interfaz web del Portal Cautivo inyectada por HTML en memoria flash (`CAPTIVE_PORTAL_HTML`).
+    - Actualización automática de IP en DuckDNS vía HTTP GET tras conectarse.
+- **Aciertos:** Permite aprovisionar a Bob en cualquier red sin compilar o flashear credenciales hardcodeadas.
+
+#### [2026-07-22] Paso 5: mDNS (`bob.local`) y Renderizado de Código QR en OLED SH1106
+- **Objetivo:** Publicar el servicio local mDNS y mostrar visualmente el código QR en los ojos OLED.
+- **Acción:**
+  - **Módulo `BobOledQR` ([src/oled_qr.cpp](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/firmware/esp32_devkit_cpp/src/oled_qr.cpp)):**
+    - Integración de las librerías `ricmoo/QRCode` y `olikraus/U8g2` para el panel SH1106 I2C (SCL=33, SDA=32).
+    - Generación y dibujado de matriz QR de versión 3 con escalado x2 y texto responsivo.
+    - Muestra QR a `http://192.168.4.1` en modo Aprovisionamiento y a `https://bobcreeper.duckdns.org` cuando está en línea.
+    - Activación de mDNS en `http://bob.local`.
+- **Aciertos:** Solución robusta de 0-to-1: un smartphone escanea los ojos de Bob y abre la PWA al instante.
+
 
 
 

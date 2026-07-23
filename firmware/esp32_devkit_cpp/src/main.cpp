@@ -1,80 +1,68 @@
 /*
  * main.cpp — Robot Bob ESP32 DevKit (Firmware C++ / Arduino sobre ESP-IDF)
  *
- * Fase 0: Verificación de RAM budget, mbedTLS, WiFi, WSS y Heap inicial.
+ * Fase 1: SoftAP, Captive Portal, mDNS, NVS WiFi Manager y OLED QR Code.
  */
 
 #include <Arduino.h>
-#include <WiFi.h>
-#include <WiFiClientSecure.h>
 #include <ESPAsyncWebServer.h>
+#include <ESPmDNS.h>
 #include <LittleFS.h>
-#include <ArduinoJson.h>
+#include <U8g2lib.h>
 
-// Definición de Servidor Web Asíncrono en puerto 8080 (WSS) y 80 (HTTP)
+#include "wifi_manager.h"
+#include "oled_qr.h"
+
+// OLED SH1106 I2C (SCL=33, SDA=32)
+U8G2_SH1106_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, /* clock=*/ 33, /* data=*/ 32, /* reset=*/ U8X8_PIN_NONE);
+
 AsyncWebServer server(80);
-AsyncWebSocket ws("/ws");
+BobWiFiManager wifiMgr;
+BobOledQR oledQr;
 
-void printMemoryStatus() {
-    Serial.println("=========================================");
-    Serial.printf(" Free Heap: %u bytes\n", ESP.getFreeHeap());
-    Serial.printf(" Min Free Heap: %u bytes\n", ESP.getMinFreeHeap());
-    Serial.printf(" Max Alloc Heap: %u bytes\n", ESP.getMaxAllocHeap());
-    if (psramFound()) {
-        Serial.printf(" Free PSRAM: %u bytes\n", ESP.getFreePsram());
-    } else {
-        Serial.println(" PSRAM: No detectada");
-    }
-    Serial.println("=========================================");
-}
-
-void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
-    if (type == WS_EVT_CONNECT) {
-        Serial.printf("[WSS] Cliente #%u conectado desde %s\n", client->id(), client->remoteIP().toString().c_str());
-        printMemoryStatus();
-    } else if (type == WS_EVT_DISCONNECT) {
-        Serial.printf("[WSS] Cliente #%u desconectado\n", client->id());
-    } else if (type == WS_EVT_DATA) {
-        // Manejo de mensajes de control
-        Serial.printf("[WSS] Datos recibidos: %.*s\n", (int)len, (char*)data);
-    }
-}
+// Token y subdominio de DuckDNS
+const char* DUCKDNS_TOKEN = "8c12cd1d-1e94-48ea-b2ce-2396fac678aa";
+const char* DUCKDNS_SUBDOMAIN = "bobcreeper";
 
 void setup() {
     Serial.begin(115200);
     delay(1000);
-    Serial.println("\n[Bob DevKit C++] Iniciando Fase 0: Verificación de Sistema...");
+    Serial.println("\n[Bob DevKit C++] Iniciando Fase 1: Red y Captive Portal...");
 
-    printMemoryStatus();
+    // Inicializar OLED
+    u8g2.begin();
+    oledQr.begin(&u8g2);
+    oledQr.drawEyeStatus("Iniciando...");
 
     // Inicializar LittleFS
     if (!LittleFS.begin(true)) {
         Serial.println("[LittleFS] Error al montar el sistema de archivos");
     } else {
-        Serial.printf("[LittleFS] Montado correctamente. Total: %u KB, Usado: %u KB\n",
-                      LittleFS.totalBytes() / 1024, LittleFS.usedBytes() / 1024);
+        Serial.println("[LittleFS] Montado correctamente.");
     }
 
-    // Configuración WebSocket
-    ws.onEvent(onWebSocketEvent);
-    server.addHandler(&ws);
+    // Inicializar WiFi Manager y Captive Portal
+    wifiMgr.begin(&server, DUCKDNS_TOKEN, DUCKDNS_SUBDOMAIN);
 
-    server.on("/api/info", HTTP_GET, [](AsyncWebServerRequest *request) {
-        StaticJsonDocument<256> doc;
-        doc["status"] = "online";
-        doc["robot"] = "Bob";
-        doc["free_heap"] = ESP.getFreeHeap();
-        doc["min_free_heap"] = ESP.getMinFreeHeap();
+    // Configurar mDNS (bob.local)
+    if (MDNS.begin("bob")) {
+        Serial.println("[mDNS] Responder activo en http://bob.local");
+        MDNS.addService("http", "tcp", 80);
+    }
 
-        String response;
-        serializeJson(doc, response);
-        request->send(200, "application/json", response);
-    });
+    // Renderizar QR en OLED
+    if (wifiMgr.isSoftAP()) {
+        oledQr.drawQRCode("http://192.168.4.1", "AP Mode");
+    } else {
+        String urlDuck = "https://bobcreeper.duckdns.org";
+        oledQr.drawQRCode(urlDuck.c_str(), "Online");
+    }
 
-    Serial.println("[Bob DevKit C++] Sistema listo para conexión WiFi.");
+    server.begin();
+    Serial.println("[Bob DevKit C++] Servidor HTTP iniciado.");
 }
 
 void loop() {
-    ws.cleanupClients();
+    wifiMgr.loop();
     delay(10);
 }
