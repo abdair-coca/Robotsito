@@ -13,14 +13,14 @@ void BobMotorManager::begin(int pinIN1, int pinIN2, int pinIN3, int pinIN4, int 
     pinMode(_pinIN3, OUTPUT);
     pinMode(_pinIN4, OUTPUT);
 
-    // Configurar canales PWM para ENA (canal 0) y ENB (canal 1)
-    ledcSetup(0, 1000, 8);
-    ledcAttachPin(_pinENA, 0);
-    ledcSetup(1, 1000, 8);
-    ledcAttachPin(_pinENB, 1);
+    // Configurar canales PWM aislados para motores: ENA (canal 6) y ENB (canal 7)
+    ledcSetup(6, 1000, 8);
+    ledcAttachPin(_pinENA, 6);
+    ledcSetup(7, 1000, 8);
+    ledcAttachPin(_pinENB, 7);
 
     stop();
-    Serial.println("[MotorManager] Pines y PWM de motores L298N inicializados.");
+    Serial.println("[MotorManager] Pines y PWM (canales 6 y 7) de motores L298N inicializados.");
 }
 
 void BobMotorManager::setSpeeds(int speedLeft, int speedRight) {
@@ -28,7 +28,7 @@ void BobMotorManager::setSpeeds(int speedLeft, int speedRight) {
     _speedRight = constrain(speedRight, -100, 100);
     _lastCommandTime = millis();
 
-    // Motor Izquierdo (IN1, IN2, ENA - Canal 0)
+    // Motor Izquierdo (IN1, IN2, ENA - Canal 6)
     if (_speedLeft > 0) {
         digitalWrite(_pinIN1, HIGH);
         digitalWrite(_pinIN2, LOW);
@@ -40,9 +40,9 @@ void BobMotorManager::setSpeeds(int speedLeft, int speedRight) {
         digitalWrite(_pinIN2, LOW);
     }
     int pwmLeft = map(abs(_speedLeft), 0, 100, 0, 255);
-    ledcWrite(0, pwmLeft);
+    ledcWrite(6, pwmLeft);
 
-    // Motor Derecho (IN3, IN4, ENB - Canal 1)
+    // Motor Derecho (IN3, IN4, ENB - Canal 7)
     if (_speedRight > 0) {
         digitalWrite(_pinIN3, HIGH);
         digitalWrite(_pinIN4, LOW);
@@ -54,7 +54,7 @@ void BobMotorManager::setSpeeds(int speedLeft, int speedRight) {
         digitalWrite(_pinIN4, LOW);
     }
     int pwmRight = map(abs(_speedRight), 0, 100, 0, 255);
-    ledcWrite(1, pwmRight);
+    ledcWrite(7, pwmRight);
 }
 
 void BobMotorManager::stop() {
@@ -62,8 +62,8 @@ void BobMotorManager::stop() {
     _speedRight = 0;
     digitalWrite(_pinIN1, LOW); digitalWrite(_pinIN2, LOW);
     digitalWrite(_pinIN3, LOW); digitalWrite(_pinIN4, LOW);
-    ledcWrite(0, 0);
-    ledcWrite(1, 0);
+    ledcWrite(6, 0);
+    ledcWrite(7, 0);
 }
 
 void BobMotorManager::loop() {

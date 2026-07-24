@@ -6,12 +6,14 @@ BobServoManager::BobServoManager()
 void BobServoManager::begin(int pinPan, int pinTilt) {
     ESP32PWM::allocateTimer(0);
     ESP32PWM::allocateTimer(1);
+    ESP32PWM::allocateTimer(2);
+    ESP32PWM::allocateTimer(3);
 
     _servoPan.setPeriodHertz(50);
     _servoTilt.setPeriodHertz(50);
 
-    _servoPan.attach(pinPan, 500, 2400);
-    _servoTilt.attach(pinTilt, 500, 2400);
+    _servoPan.attach(pinPan, 500, 2500);
+    _servoTilt.attach(pinTilt, 500, 2500);
 
     goHome();
     Serial.printf("[ServoManager] Servos asignados en GPIO %d (Pan) y GPIO %d (Tilt).\n", pinPan, pinTilt);
