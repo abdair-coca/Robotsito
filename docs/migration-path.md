@@ -111,7 +111,9 @@ Registra el progreso paso a paso, pruebas realizadas, aciertos, errores/desacier
     - Verificación periódica (cada 30s) de conectividad exterior mediante HTTP HEAD a `http://www.gstatic.com/generate_204`. Superpone automáticamente el icono de "Sin Internet" en los ojos OLED cuando no hay salida exterior.
   - **Endpoint REST `/api/ssl/update` ([src/main.cpp](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/firmware/esp32_devkit_cpp/src/main.cpp)):**
     - Recibe el payload JSON con los certificados Let's Encrypt actualizados (`cert` y `key`) y los almacena directamente en `/cert/cert.pem` y `/cert/key.pem` en LittleFS.
+  - **Script de Verificación Automatizado ([tools/test_phase4.py](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/tools/test_phase4.py)):** Pruebas E2E de estado de internet `net_checker`, puerto inalámbrico `ArduinoOTA` (3232) y renovación remota de SSL certs en `/api/ssl/update`.
 - **Aciertos:** **Fase 4 completada con éxito.** Compilación limpia en C++ con uso de RAM de 16.4% (53.7 KB) y Flash de 87.1%.
+
 
 
 
