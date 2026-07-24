@@ -6,6 +6,7 @@ export default function VideoFeed({ streamUrl, onFaceDetected }) {
   const [faceCount, setFaceCount] = useState(0);
   const [recognizedName, setRecognizedName] = useState(null);
   const [isVisionActive, setIsVisionActive] = useState(true);
+  const [isFlipped180, setIsFlipped180] = useState(true); // Rotada 180° por defecto
   const canvasRef = useRef(null);
 
   const handleImageLoad = () => {
@@ -71,6 +72,12 @@ export default function VideoFeed({ streamUrl, onFaceDetected }) {
           <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>Cámara en Vivo & Visión IA</h3>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <button
+            onClick={() => setIsFlipped180(!isFlipped180)}
+            style={{ fontSize: '0.75rem', padding: '4px 8px', borderRadius: '8px', background: isFlipped180 ? 'rgba(139, 92, 246, 0.2)' : 'rgba(255,255,255,0.05)', color: isFlipped180 ? '#a78bfa' : '#94a3b8', border: '1px solid rgba(139, 92, 246, 0.3)' }}
+          >
+            180° {isFlipped180 ? 'ON' : 'OFF'}
+          </button>
           <button 
             onClick={() => setIsVisionActive(!isVisionActive)}
             style={{ fontSize: '0.75rem', padding: '4px 10px', borderRadius: '8px', background: isVisionActive ? 'rgba(6, 182, 212, 0.2)' : 'rgba(255,255,255,0.05)', color: isVisionActive ? '#06b6d4' : '#94a3b8', border: '1px solid rgba(6, 182, 212, 0.3)' }}
@@ -89,10 +96,17 @@ export default function VideoFeed({ streamUrl, onFaceDetected }) {
             alt="Stream ESP32-CAM"
             onLoad={handleImageLoad}
             onError={handleImageError}
-            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+            style={{ 
+              width: '100%', 
+              height: '100%', 
+              objectFit: 'cover',
+              transform: isFlipped180 ? 'rotate(180deg)' : 'none',
+              transition: 'transform 0.3s ease'
+            }}
           />
         ) : (
           <div style={{ textAlign: 'center', padding: '20px' }}>
+
             <Camera size={48} color="#475569" style={{ marginBottom: '12px' }} />
             <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginBottom: '12px' }}>
               Esperando Stream MJPEG de ESP32-CAM ({streamUrl})

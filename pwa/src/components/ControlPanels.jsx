@@ -54,7 +54,7 @@ export default function ControlPanels({ onSendCmd }) {
           {/* Pad Direccional para Servos */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 44px)', gap: '8px' }}>
             <div />
-            <button onClick={() => handleServoChange(pan, tilt + 10)} className="glass-panel" style={{ height: '44px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <button onClick={() => handleServoChange(pan, tilt - 10)} className="glass-panel" style={{ height: '44px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <ArrowUp size={20} color="#06b6d4" />
             </button>
             <div />
@@ -68,7 +68,7 @@ export default function ControlPanels({ onSendCmd }) {
               <ArrowRight size={20} color="#06b6d4" />
             </button>
             <div />
-            <button onClick={() => handleServoChange(pan, tilt - 10)} className="glass-panel" style={{ height: '44px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <button onClick={() => handleServoChange(pan, tilt + 10)} className="glass-panel" style={{ height: '44px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <ArrowDown size={20} color="#06b6d4" />
             </button>
             <div />
