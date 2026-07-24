@@ -23,37 +23,41 @@ export default function App() {
 
   // Conexión WebSocket a Bob DevKit
   useEffect(() => {
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = devKitDomain.includes('http') || devKitDomain.includes('ws') 
+    let isIP = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(devKitDomain.trim());
+    
+    // Para IPs (192.168.0.22) usar ws:// siempre. Para dominios DuckDNS usar wss:// si la web es HTTPS.
+    let wsProtocol = isIP ? 'ws:' : (window.location.protocol === 'https:' ? 'wss:' : 'ws:');
+    
+    let wsUrl = devKitDomain.includes('http') || devKitDomain.includes('ws') 
       ? devKitDomain 
       : `${wsProtocol}//${devKitDomain}/ws`;
 
-    console.log('[PWA] Conectando WSS a:', wsUrl);
+    console.log('[PWA] Conectando WebSocket a:', wsUrl);
     let socket;
+    let isCancelled = false;
 
     try {
       socket = new WebSocket(wsUrl);
       wsRef.current = socket;
 
       socket.onopen = () => {
+        if (isCancelled) return;
         setIsConnected(true);
-        console.log('[WSS] Conectado exitosamente');
+        console.log('[WSS] Conectado exitosamente a', wsUrl);
 
-        // Si tenemos un token guardado, autenticar la sesión
+        // Autenticar o vincular
         const storedToken = localStorage.getItem('bob_token');
         if (storedToken) {
           socket.send(JSON.stringify({ action: 'auth', token: storedToken }));
         } else {
-          // Si no hay token, solicitar vincular este dispositivo
           socket.send(JSON.stringify({ action: 'pair', device_name: pairedDevice }));
         }
       };
 
       socket.onmessage = (event) => {
+        if (isCancelled) return;
         try {
           const data = JSON.parse(event.data);
-          console.log('[WSS] Mensaje recibido:', data);
-
           if (data.status === 'paired' && data.token) {
             setPairedToken(data.token);
             localStorage.setItem('bob_token', data.token);
@@ -68,22 +72,26 @@ export default function App() {
       };
 
       socket.onclose = () => {
+        if (isCancelled) return;
         setIsConnected(false);
         console.log('[WSS] Conexión cerrada');
       };
 
       socket.onerror = (err) => {
+        if (isCancelled) return;
         setIsConnected(false);
-        console.error('[WSS] Error de conexión:', err);
+        console.warn('[WSS] Error de conexión WebSocket con:', wsUrl);
       };
     } catch (e) {
-      console.error(e);
+      console.warn('[WSS] Excepción al crear WebSocket:', e);
     }
 
     return () => {
+      isCancelled = true;
       if (socket) socket.close();
     };
-  }, [devKitDomain, pairedDevice]);
+  }, [devKitDomain]);
+
 
   // Enviar Comando genérico a Bob (WebSocket con respaldo HTTP REST para la nube)
   const sendCmd = async (type, payload) => {

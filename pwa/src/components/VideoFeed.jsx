@@ -53,13 +53,11 @@ export default function VideoFeed({ streamUrl, onFaceDetected }) {
         ctx.fillText('Rostro Detectado', boxX + 6, boxY - 8);
 
         setFaceCount(1);
-        if (onFaceDetected) {
-          onFaceDetected({ name: 'Usuario Registrado', confidence: 0.94 });
-        }
       } else {
         setFaceCount(0);
       }
     }, 200);
+
 
     return () => clearInterval(interval);
   }, [imgError, isVisionActive]);
