@@ -13,9 +13,8 @@ Registra el progreso paso a paso, pruebas realizadas, aciertos, errores/desacier
 | **Fase 1: Red y Captive Portal** | 🟢 Completada | 2026-07-22 | 2026-07-24 | Flasheo exitoso, WiFiManager (NVS + SoftAP + Portal Cautivo) y OLED QR (SH1106 + mDNS) validados. |
 | **Fase 2: Seguridad y API C++** | 🟢 Completada | 2026-07-24 | 2026-07-24 | Token único de pairing en LittleFS, servidor WSS `/ws` asíncrono y REST `/api/info` compilados y validados. |
 | **Fase 3: Portado de Firmware** | 🟢 Completada | 2026-07-24 | 2026-07-24 | Servos Pan/Tilt, Motores L298N con PWM/watchdog, Ojos OLED SH1106 C++ y Memoria KV LittleFS compilados y validados. |
-| **Fase 4: OTA y SSL Remote** | 🟡 En Proceso | 2026-07-24 | - | Configurar ArduinoOTA con esquema de doble particion y endpoint HTTPS para renovacion remota de SSL certs en LittleFS. |
-
-| **Fase 5: PWA React + ONNX** | ⚪ Pendiente | - | - | PWA en React, BlazeFace/MobileFaceNet, Web Audio + Groq API. |
+| **Fase 4: OTA y SSL Remote** | 🟢 Completada | 2026-07-24 | 2026-07-24 | ArduinoOTA flasheo inalambrico, net_checker periodico y endpoint REST /api/ssl/update compilados y validados. |
+| **Fase 5: PWA React + ONNX** | 🟡 En Proceso | 2026-07-24 | - | App Web / PWA en React, Service Worker, BlazeFace + MobileFaceNet (WASM/WebGL), Web Audio + Groq API. |
 | **Fase 6: Pruebas de Campo** | ⚪ Pendiente | - | - | Pruebas multi-red reales y benchmarks FPS/latencia. |
 
 ---
@@ -101,8 +100,19 @@ Registra el progreso paso a paso, pruebas realizadas, aciertos, errores/desacier
     - Almacenamiento KV JSON en `/memory/faces.json` (embeddings de 512 dimensiones de rostros conocidos) y `/memory/history.json`.
   - **`BobOledEyes` ([src/oled_eyes.cpp](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/firmware/esp32_devkit_cpp/src/oled_eyes.cpp)):**
     - Animación de ojos no bloqueante en pantalla SH1106 I2C con emociones (`Esperando`, `Conectando`, `Activo`, `FELIZ`, `SORPRENDIDO`, `PENSANDO`, `TRISTE`, `ENOJADO`) e icono superpuesto de sin internet.
-  - **Script de Verificación Automatizado ([tools/test_phase3.py](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/tools/test_phase3.py)):** Pruebas E2E de movimiento de servos Pan/Tilt, emociones en ojos OLED, tracción diferencial L298N y consultas de memoria LittleFS.
-- **Aciertos:** **Fase 3 completada con éxito.** Compilación limpia en C++ con uso de RAM 15.8% (51.8 KB) y Flash 85.9%.
+### 📍 Fase 4 — OTA y Renovación Remota SSL
+
+#### [2026-07-24] Paso 10: Implementación de ArduinoOTA, Monitoreo de Red y Renovación SSL Remote
+- **Objetivo:** Permitir actualizaciones de firmware 100% inalámbricas por WiFi y renovación remota de certificados SSL en LittleFS.
+- **Acción:**
+  - **Módulo `BobOTAManager` ([src/ota_manager.cpp](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/firmware/esp32_devkit_cpp/src/ota_manager.cpp)):**
+    - Habilitación del servicio `ArduinoOTA` escuchando en `bob-devkit`. Permite flashear el ESP32 sin cable USB.
+  - **Módulo `BobNetChecker` ([src/net_checker.cpp](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/firmware/esp32_devkit_cpp/src/net_checker.cpp)):**
+    - Verificación periódica (cada 30s) de conectividad exterior mediante HTTP HEAD a `http://www.gstatic.com/generate_204`. Superpone automáticamente el icono de "Sin Internet" en los ojos OLED cuando no hay salida exterior.
+  - **Endpoint REST `/api/ssl/update` ([src/main.cpp](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/firmware/esp32_devkit_cpp/src/main.cpp)):**
+    - Recibe el payload JSON con los certificados Let's Encrypt actualizados (`cert` y `key`) y los almacena directamente en `/cert/cert.pem` y `/cert/key.pem` en LittleFS.
+- **Aciertos:** **Fase 4 completada con éxito.** Compilación limpia en C++ con uso de RAM de 16.4% (53.7 KB) y Flash de 87.1%.
+
 
 
 

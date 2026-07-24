@@ -1,7 +1,7 @@
 /*
  * main.cpp — Robot Bob ESP32 DevKit (Firmware C++ / Arduino sobre ESP-IDF)
  *
- * Fase 3: Servos Pan/Tilt, Motores L298N, Ojos OLED SH1106 C++ y Memoria LittleFS KV.
+ * Fase 4: ArduinoOTA, Monitoreo de Internet y Renovación Remota de SSL Certs en LittleFS.
  */
 
 #include <Arduino.h>
@@ -18,6 +18,8 @@
 #include "motor_manager.h"
 #include "memory_manager.h"
 #include "oled_eyes.h"
+#include "ota_manager.h"
+#include "net_checker.h"
 
 // OLED SH1106 I2C (SCL=32, SDA=33)
 U8G2_SH1106_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, /* clock=*/ 32, /* data=*/ 33, /* reset=*/ U8X8_PIN_NONE);
@@ -32,6 +34,8 @@ BobServoManager servoMgr;
 BobMotorManager motorMgr;
 BobMemoryManager memoryMgr;
 BobOledEyes oledEyes;
+BobOTAManager otaMgr;
+BobNetChecker netCheck;
 
 // Token y subdominio de DuckDNS
 const char* DUCKDNS_TOKEN = "8c12cd1d-1e94-48ea-b2ce-2396fac678aa";
@@ -66,9 +70,6 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len, AsyncWebSocket
                         c.text(revJson);
                     }
                 }
-
-
-
             }
 
             String newToken = authMgr.generateToken(deviceName);
@@ -154,7 +155,7 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsE
 void setup() {
     Serial.begin(115200);
     delay(1000);
-    Serial.println("\n[Bob DevKit C++] Iniciando Fase 3: Hardware, Ojos OLED y Memoria LittleFS...");
+    Serial.println("\n[Bob DevKit C++] Iniciando Fase 4: ArduinoOTA & SSL Remote Manager...");
 
     // Inicializar OLED
     u8g2.begin();
@@ -184,6 +185,9 @@ void setup() {
         MDNS.addService("http", "tcp", 80);
     }
 
+    // Inicializar ArduinoOTA para flasheo inalámbrico
+    otaMgr.begin("bob-devkit");
+
     // Configurar CORS
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "*");
@@ -203,6 +207,7 @@ void setup() {
         doc["has_active_token"] = authMgr.hasActiveToken();
         doc["pan"] = servoMgr.getPan();
         doc["tilt"] = servoMgr.getTilt();
+        doc["internet"] = netCheck.isConnectedToInternet();
         doc["free_heap"] = ESP.getFreeHeap();
 
         String response;
@@ -216,6 +221,41 @@ void setup() {
         request->send(200, "application/json", facesJson);
     });
 
+    // REST: Renovación Remota de Certificados SSL (Guarda en LittleFS /cert/)
+    server.on("/api/ssl/update", HTTP_POST, [](AsyncWebServerRequest *request) {
+        // Manejador del cuerpo POST
+    }, nullptr, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+        // Parsear JSON con cert y key
+        StaticJsonDocument<4096> doc;
+        DeserializationError err = deserializeJson(doc, data, len);
+        if (err) {
+            request->send(400, "application/json", "{\"status\":\"error\",\"msg\":\"JSON invalido\"}");
+            return;
+        }
+
+        String token = doc["token"] | "";
+        if (!authMgr.validateToken(token)) {
+            request->send(401, "application/json", "{\"status\":\"unauthorized\"}");
+            return;
+        }
+
+        String cert = doc["cert"] | "";
+        String key = doc["key"] | "";
+
+        if (cert.length() > 0 && key.length() > 0) {
+            if (!LittleFS.exists("/cert")) LittleFS.mkdir("/cert");
+            File fCert = LittleFS.open("/cert/cert.pem", "w");
+            if (fCert) { fCert.print(cert); fCert.close(); }
+            File fKey = LittleFS.open("/cert/key.pem", "w");
+            if (fKey) { fKey.print(key); fKey.close(); }
+
+            Serial.println("[SSL Remote] Nuevos certificados SSL guardados en LittleFS.");
+            request->send(200, "application/json", "{\"status\":\"ok\",\"msg\":\"Certificados guardados\"}");
+        } else {
+            request->send(400, "application/json", "{\"status\":\"error\",\"msg\":\"Cert o Key vacios\"}");
+        }
+    });
+
     // Renderizar QR en OLED o Cambiar a Modo Ojos
     if (wifiMgr.isSoftAP()) {
         oledQr.drawQRCode("http://192.168.4.1", "AP Mode");
@@ -227,13 +267,16 @@ void setup() {
     }
 
     server.begin();
-    Serial.println("[Bob DevKit C++] Servidor HTTP, Servos, Motores y Memoria activos.");
+    Serial.println("[Bob DevKit C++] Servidor HTTP, WSS, ArduinoOTA y SSL Remote activos.");
 }
 
 void loop() {
     wifiMgr.loop();
     motorMgr.loop(); // Watchdog de seguridad para motores
+    netCheck.loop(); // Monitoreo de conectividad exterior
+    oledEyes.setNoInternet(!netCheck.isConnectedToInternet());
     oledEyes.loop(); // Animación de parpadeo no bloqueante
+    otaMgr.loop();   // Escuchar peticiones de flasheo inalámbrico OTA
     ws.cleanupClients();
     delay(10);
 }
