@@ -1,17 +1,31 @@
 import React, { useState } from 'react';
 import { Move, Navigation, Smile, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Square, RotateCcw } from 'lucide-react';
+import Joystick from './Joystick';
 
 export default function ControlPanels({ onSendCmd }) {
   const [pan, setPan] = useState(90);
   const [tilt, setTilt] = useState(90);
   const [activeEmotion, setActiveEmotion] = useState('Esperando');
 
-  const handleServoChange = (newPan, newTilt) => {
+  // Mover la cabeza de forma fluida con el Joystick
+  const handleJoystickMove = (normX, normY) => {
+    // normX: -1 (izq) a +1 (der) -> Pan: 160 a 20 (90 al centro)
+    // normY: -1 (arriba) a +1 (abajo) -> Tilt: 40 a 140 (90 al centro)
+    const newPan = Math.round(90 - normX * 70);
+    const newTilt = Math.round(90 + normY * 50);
+
     const clampedPan = Math.max(20, Math.min(160, newPan));
     const clampedTilt = Math.max(40, Math.min(140, newTilt));
+
     setPan(clampedPan);
     setTilt(clampedTilt);
     onSendCmd('servo', { pan: clampedPan, tilt: clampedTilt });
+  };
+
+  const handleCenterServos = () => {
+    setPan(90);
+    setTilt(90);
+    onSendCmd('servo', { pan: 90, tilt: 90 });
   };
 
   const handleMotorCmd = (izq, der) => {
@@ -35,44 +49,32 @@ export default function ControlPanels({ onSendCmd }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px' }}>
       
-      {/* 1. Control de Servos (Cabeza Pan / Tilt) */}
-      <div className="glass-panel" style={{ padding: '16px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+      {/* 1. Joystick Interactivo 2D para Cabeza (Pan / Tilt) */}
+      <div className="glass-panel" style={{ padding: '16px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', marginBottom: '12px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Move size={18} color="#06b6d4" />
-            <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>Cabeza Pan / Tilt</h3>
+            <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>Joystick Cabeza (Pan/Tilt)</h3>
           </div>
           <button 
-            onClick={() => handleServoChange(90, 90)}
+            onClick={handleCenterServos}
             style={{ padding: '4px 8px', borderRadius: '8px', background: 'rgba(255,255,255,0.05)', color: '#94a3b8', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px' }}
           >
             <RotateCcw size={12} /> Centrar
           </button>
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
-          {/* Pad Direccional para Servos */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 44px)', gap: '8px' }}>
-            <div />
-            <button onClick={() => handleServoChange(pan, tilt - 10)} className="glass-panel" style={{ height: '44px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <ArrowUp size={20} color="#06b6d4" />
-            </button>
-            <div />
-            <button onClick={() => handleServoChange(pan + 15, tilt)} className="glass-panel" style={{ height: '44px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <ArrowLeft size={20} color="#06b6d4" />
-            </button>
-            <div style={{ height: '44px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-              {pan}°/{tilt}°
-            </div>
-            <button onClick={() => handleServoChange(pan - 15, tilt)} className="glass-panel" style={{ height: '44px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <ArrowRight size={20} color="#06b6d4" />
-            </button>
-            <div />
-            <button onClick={() => handleServoChange(pan, tilt + 10)} className="glass-panel" style={{ height: '44px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <ArrowDown size={20} color="#06b6d4" />
-            </button>
-            <div />
-          </div>
+        {/* Componente Joystick Táctil y Suave */}
+        <div style={{ margin: '10px 0', display: 'flex', justifyContent: 'center' }}>
+          <Joystick
+            size={150}
+            color="#06b6d4"
+            onMove={handleJoystickMove}
+          />
+        </div>
+
+        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', background: 'rgba(15, 23, 42, 0.6)', padding: '4px 12px', borderRadius: '12px', marginTop: '6px' }}>
+          Ángulos: <strong style={{ color: '#06b6d4' }}>Pan: {pan}°</strong> | <strong style={{ color: '#06b6d4' }}>Tilt: {tilt}°</strong>
         </div>
       </div>
 
