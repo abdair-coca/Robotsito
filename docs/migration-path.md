@@ -95,7 +95,9 @@ Registra el progreso paso a paso, pruebas realizadas, aciertos, errores/desacier
     - `action: "auth"`: Valida el token del cliente contra LittleFS.
     - `action: "cmd"`: Valida el token y procesa comandos de servos (`pan`/`tilt`), ojos OLED (`val`) y motores (`izq`/`der`).
   - Endpoint REST `/api/info` que informa el dispositivo actualmente vinculado (`paired_device`) y estado de memoria.
+  - **Script de Verificación Automatizado ([tools/test_phase2.py](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/tools/test_phase2.py)):** Creado script para probar E2E la REST API, pairing de token único, envío de comandos y revocación en tiempo real.
 - **Aciertos:** **Fase 2 completada exitosamente.** Compilación limpia en C++ con uso de RAM de solo 15.7% (51.3 KB) y Flash 83.9%.
+
 
 
 
