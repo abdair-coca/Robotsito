@@ -101,7 +101,9 @@ Registra el progreso paso a paso, pruebas realizadas, aciertos, errores/desacier
     - Almacenamiento KV JSON en `/memory/faces.json` (embeddings de 512 dimensiones de rostros conocidos) y `/memory/history.json`.
   - **`BobOledEyes` ([src/oled_eyes.cpp](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/firmware/esp32_devkit_cpp/src/oled_eyes.cpp)):**
     - Animación de ojos no bloqueante en pantalla SH1106 I2C con emociones (`Esperando`, `Conectando`, `Activo`, `FELIZ`, `SORPRENDIDO`, `PENSANDO`, `TRISTE`, `ENOJADO`) e icono superpuesto de sin internet.
+  - **Script de Verificación Automatizado ([tools/test_phase3.py](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/tools/test_phase3.py)):** Pruebas E2E de movimiento de servos Pan/Tilt, emociones en ojos OLED, tracción diferencial L298N y consultas de memoria LittleFS.
 - **Aciertos:** **Fase 3 completada con éxito.** Compilación limpia en C++ con uso de RAM 15.8% (51.8 KB) y Flash 85.9%.
+
 
 
 
