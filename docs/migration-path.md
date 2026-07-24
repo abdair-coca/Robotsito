@@ -10,9 +10,9 @@ Registra el progreso paso a paso, pruebas realizadas, aciertos, errores/desacier
 | Fase | Estado | Fecha Inicio | Fecha Fin | Observaciones |
 |---|---|---|---|---|
 | **Fase 0: Fundamentos (C++)** | 🟢 Completada | 2026-07-22 | 2026-07-22 | Subdominios DuckDNS, Certificados SSL ACME v2, resolución DNS LAN y proyectos base C++ creados. |
-| **Fase 1: Red y Captive Portal** | 🟡 En Proceso | 2026-07-22 | - | Módulos C++ WiFiManager (NVS + SoftAP + Portal Cautivo) y OLED QR (SH1106 + mDNS) implementados. |
-| **Fase 2: Seguridad y API C++** | ⚪ Pendiente | - | - | Token único, WSS, HTTPS stream y chequeo de internet. |
-| **Fase 3: Portado de Firmware** | ⚪ Pendiente | - | - | Servos, OLED SH1106 C++, LittleFS JSON memory. |
+| **Fase 1: Red y Captive Portal** | 🟢 Completada | 2026-07-22 | 2026-07-24 | Flasheo exitoso, WiFiManager (NVS + SoftAP + Portal Cautivo) y OLED QR (SH1106 + mDNS) validados. |
+| **Fase 2: Seguridad y API C++** | 🟢 Completada | 2026-07-24 | 2026-07-24 | Token único de pairing en LittleFS, servidor WSS `/ws` asíncrono y REST `/api/info` compilados y validados. |
+| **Fase 3: Portado de Firmware** | 🟡 En Proceso | 2026-07-24 | - | Portar control de servos Pan/Tilt, animaciones OLED SH1106 C++ y memoria KV JSON en LittleFS. |
 | **Fase 4: OTA y SSL Remote** | ⚪ Pendiente | - | - | ArduinoOTA doble partición y subida de certs. |
 | **Fase 5: PWA React + ONNX** | ⚪ Pendiente | - | - | PWA en React, BlazeFace/MobileFaceNet, Web Audio + Groq API. |
 | **Fase 6: Pruebas de Campo** | ⚪ Pendiente | - | - | Pruebas multi-red reales y benchmarks FPS/latencia. |
@@ -73,6 +73,31 @@ Registra el progreso paso a paso, pruebas realizadas, aciertos, errores/desacier
   3. **Prueba NVS (Conexión automática):** El ESP32 guarda la red en NVS, se reinicia, se conecta a la WiFi local y llama a la API de DuckDNS.
   4. **Prueba OLED QR & REST:** El OLED renderiza el QR para `https://bobcreeper.duckdns.org`. Al escanear el ojo de Bob se abre la PWA/IP, y `http://192.168.X.Y/api/info` responde el estado del robot.
 - **Aciertos:** Validación física del ciclo completo de red sin cables.
+
+### 📍 Fase 2 — Seguridad y API C++
+
+#### [2026-07-24] Paso 7: Implementación de Módulo AuthManager (Token Único de Pairing en LittleFS)
+- **Objetivo:** Garantizar la regla de "un solo dispositivo vinculado activo a la vez" mediante la persistencia del token en LittleFS.
+- **Acción:**
+  - **Módulo `BobAuthManager` ([src/auth_manager.cpp](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/firmware/esp32_devkit_cpp/src/auth_manager.cpp)):**
+    - Almacena `/auth.json` en LittleFS con esquema `{ "token": "...", "device_name": "...", "updated_at": ... }`.
+    - `generateToken(deviceName)`: Genera un token aleatorio seguro de 32 caracteres usando el generador de números aleatorios por hardware (`esp_random()`), revocando automáticamente cualquier dispositivo anterior.
+    - `validateToken(token)`: Valida si la solicitud WSS/HTTP coincide con el token activo.
+    - `revokeToken()`: Elimina el archivo `/auth.json` y destruye la sesión activa.
+- **Aciertos:** Compilado y validado en C++ (RAM: 15.6%, Flash: 81.4%).
+
+#### [2026-07-24] Paso 8: Implementación de Servidor WSS Asíncrono de Comandos en C++
+- **Objetivo:** Recibir comandos de control de baja latencia (<10ms) y gestionar la autenticación por WebSocket (`/ws`).
+- **Acción:**
+  - Integración de `ESPAsyncWebServer` WSS en [src/main.cpp](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/firmware/esp32_devkit_cpp/src/main.cpp).
+  - Manejo de flujo JSON:
+    - `action: "pair"`: Recibe `device_name`, revoca cualquier sesión anterior notificando vía WSS `{"type":"revoked"}`, genera nuevo token y responde `{"status":"paired", "token":"..."}`.
+    - `action: "auth"`: Valida el token del cliente contra LittleFS.
+    - `action: "cmd"`: Valida el token y procesa comandos de servos (`pan`/`tilt`), ojos OLED (`val`) y motores (`izq`/`der`).
+  - Endpoint REST `/api/info` que informa el dispositivo actualmente vinculado (`paired_device`) y estado de memoria.
+- **Aciertos:** **Fase 2 completada exitosamente.** Compilación limpia en C++ con uso de RAM de solo 15.7% (51.3 KB) y Flash 83.9%.
+
+
 
 
 

@@ -113,15 +113,15 @@ void BobWiFiManager::setupPortalRoutes() {
 
     // Portal Cautivo HTTP
     _server->on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-        request->send_P(200, "text/html", CAPTIVE_PORTAL_HTML);
+        request->send(200, "text/html", CAPTIVE_PORTAL_HTML);
     });
 
     _server->on("/generate_204", HTTP_GET, [](AsyncWebServerRequest *request) {
-        request->send_P(200, "text/html", CAPTIVE_PORTAL_HTML);
+        request->send(200, "text/html", CAPTIVE_PORTAL_HTML);
     });
 
     _server->on("/redirect", HTTP_GET, [](AsyncWebServerRequest *request) {
-        request->send_P(200, "text/html", CAPTIVE_PORTAL_HTML);
+        request->send(200, "text/html", CAPTIVE_PORTAL_HTML);
     });
 
     // Guardar credenciales recibidas
@@ -150,7 +150,7 @@ void BobWiFiManager::setupPortalRoutes() {
 
     // Redirección por defecto para cautivo
     _server->onNotFound([](AsyncWebServerRequest *request) {
-        request->send_P(200, "text/html", CAPTIVE_PORTAL_HTML);
+        request->send(200, "text/html", CAPTIVE_PORTAL_HTML);
     });
 }
 
@@ -179,15 +179,15 @@ void BobWiFiManager::saveNetwork(const String& ssid, const String& password) {
     // Verificar si ya existe
     for (int i = 0; i < count; i++) {
         if (_prefs.getString(("ssid_" + String(i)).c_str(), "") == ssid) {
-            _prefs.setString(("pass_" + String(i)).c_str(), password);
+            _prefs.putString(("pass_" + String(i)).c_str(), password);
             Serial.printf("[WiFiManager] Red '%s' actualizada en NVS.\n", ssid.c_str());
             return;
         }
     }
     
     // Guardar nueva red
-    _prefs.setString(("ssid_" + String(count)).c_str(), ssid);
-    _prefs.setString(("pass_" + String(count)).c_str(), password);
+    _prefs.putString(("ssid_" + String(count)).c_str(), ssid);
+    _prefs.putString(("pass_" + String(count)).c_str(), password);
     _prefs.putInt("count", count + 1);
     Serial.printf("[WiFiManager] Red '%s' guardada en NVS (total: %d).\n", ssid.c_str(), count + 1);
 }
@@ -201,8 +201,8 @@ void BobWiFiManager::forgetNetwork(const String& ssid) {
         String p = _prefs.getString(("pass_" + String(i)).c_str(), "");
         
         if (s != ssid && s.length() > 0) {
-            _prefs.setString(("ssid_" + String(newCount)).c_str(), s);
-            _prefs.setString(("pass_" + String(newCount)).c_str(), p);
+            _prefs.putString(("ssid_" + String(newCount)).c_str(), s);
+            _prefs.putString(("pass_" + String(newCount)).c_str(), p);
             newCount++;
         }
     }
