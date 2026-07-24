@@ -221,6 +221,35 @@ void setup() {
         request->send(200, "application/json", facesJson);
     });
 
+    // REST: Control de Comandos (Respaldo por HTTP POST si WebSocket falla o esta bloqueado)
+    server.on("/api/cmd", HTTP_POST, [](AsyncWebServerRequest *request) {
+        // Body handler below
+    }, nullptr, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+        StaticJsonDocument<512> doc;
+        DeserializationError err = deserializeJson(doc, data, len);
+        if (err) {
+            request->send(400, "application/json", "{\"status\":\"error\",\"msg\":\"JSON invalido\"}");
+            return;
+        }
+
+        String type = doc["type"] | "";
+        if (type == "servo") {
+            int pan = doc["pan"] | 90;
+            int tilt = doc["tilt"] | 90;
+            servoMgr.setPanTilt(pan, tilt);
+        } else if (type == "estado") {
+            String val = doc["val"] | "Esperando";
+            oledEyes.setState(val);
+        } else if (type == "motor") {
+            int izq = doc["izq"] | 0;
+            int der = doc["der"] | 0;
+            motorMgr.setSpeeds(izq, der);
+        }
+
+        request->send(200, "application/json", "{\"status\":\"ok\"}");
+    });
+
+
     // REST: Renovación Remota de Certificados SSL (Guarda en LittleFS /cert/)
     server.on("/api/ssl/update", HTTP_POST, [](AsyncWebServerRequest *request) {
         // Manejador del cuerpo POST

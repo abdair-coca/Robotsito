@@ -85,20 +85,33 @@ export default function App() {
     };
   }, [devKitDomain, pairedDevice]);
 
-  // Enviar Comando genérico a Bob
-  const sendCmd = (type, payload) => {
+  // Enviar Comando genérico a Bob (WebSocket con respaldo HTTP REST para la nube)
+  const sendCmd = async (type, payload) => {
+    const storedToken = localStorage.getItem('bob_token');
+    const cmdBody = {
+      action: 'cmd',
+      token: storedToken,
+      type,
+      ...payload
+    };
+
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      const storedToken = localStorage.getItem('bob_token');
-      wsRef.current.send(JSON.stringify({
-        action: 'cmd',
-        token: storedToken,
-        type,
-        ...payload
-      }));
+      wsRef.current.send(JSON.stringify(cmdBody));
     } else {
-      console.warn('[WSS] No conectado. No se pudo enviar comando:', type);
+      // Respaldo por HTTP REST cuando el WebSocket esta bloqueado por la nube (Mixed Content HTTPS -> HTTP/WS)
+      try {
+        const httpHost = devKitDomain.includes('http') ? devKitDomain : `http://${devKitDomain}`;
+        await fetch(`${httpHost}/api/cmd`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(cmdBody)
+        });
+      } catch (e) {
+        console.warn('[REST Fallback] No se pudo enviar comando por HTTP:', e);
+      }
     }
   };
+
 
   const handlePairNewDevice = () => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
