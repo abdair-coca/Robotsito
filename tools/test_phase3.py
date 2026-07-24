@@ -40,8 +40,11 @@ def main():
     }
     ws.send(json.dumps(pair_req))
     resp_pair = json.loads(ws.recv())
+    if resp_pair.get("status") != "paired" and "token" not in resp_pair:
+        resp_pair = json.loads(ws.recv())
     token = resp_pair.get("token")
     print(f"  [OK] Token obtenido: {token}")
+
 
     # 3. Mover Servos Pan/Tilt
     print(f"\n[3/6] Probando Mover Servos (Pan: 130°, Tilt: 60°)...")

@@ -19,8 +19,8 @@
 #include "memory_manager.h"
 #include "oled_eyes.h"
 
-// OLED SH1106 I2C (SCL=33, SDA=32)
-U8G2_SH1106_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, /* clock=*/ 33, /* data=*/ 32, /* reset=*/ U8X8_PIN_NONE);
+// OLED SH1106 I2C (SCL=32, SDA=33)
+U8G2_SH1106_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, /* clock=*/ 32, /* data=*/ 33, /* reset=*/ U8X8_PIN_NONE);
 
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
@@ -61,7 +61,14 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len, AsyncWebSocket
                 revDoc["new_device"] = deviceName;
                 String revJson;
                 serializeJson(revDoc, revJson);
-                ws.textAll(revJson);
+                for (auto& c : ws.getClients()) {
+                    if (c.id() != client->id()) {
+                        c.text(revJson);
+                    }
+                }
+
+
+
             }
 
             String newToken = authMgr.generateToken(deviceName);
