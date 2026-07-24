@@ -61,8 +61,13 @@ export default function App() {
           if (data.status === 'paired' && data.token) {
             setPairedToken(data.token);
             localStorage.setItem('bob_token', data.token);
+            console.log('[WSS] Dispositivo vinculado con éxito. Token:', data.token);
+          } else if (data.status === 'unauthorized') {
+            console.warn('[WSS] Token no autorizado. Re-vinculando automáticamente...');
+            localStorage.removeItem('bob_token');
+            socket.send(JSON.stringify({ action: 'pair', device_name: pairedDevice }));
           } else if (data.type === 'revoked') {
-            alert(`Tu sesión fue desvinculada porque se conectó un nuevo dispositivo: ${data.new_device}`);
+            console.warn(`[WSS] Sesión revocada por otro dispositivo: ${data.new_device}`);
             setPairedToken('');
             localStorage.removeItem('bob_token');
           }
@@ -70,6 +75,7 @@ export default function App() {
           console.error(e);
         }
       };
+
 
       socket.onclose = () => {
         if (isCancelled) return;
