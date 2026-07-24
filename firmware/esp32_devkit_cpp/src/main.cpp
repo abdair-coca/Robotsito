@@ -144,12 +144,18 @@ void setup() {
         MDNS.addService("http", "tcp", 80);
     }
 
+    // Configurar CORS
+    DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
+    DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "*");
+    DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+
     // Configurar WebSocket
     ws.onEvent(onWebSocketEvent);
     server.addHandler(&ws);
 
     // REST: Info del Robot
     server.on("/api/info", HTTP_GET, [](AsyncWebServerRequest *request) {
+        Serial.println("[HTTP] Recibida peticion GET /api/info");
         StaticJsonDocument<256> doc;
         doc["status"] = "online";
         doc["robot"] = "Bob";
@@ -162,7 +168,6 @@ void setup() {
         request->send(200, "application/json", response);
     });
 
-
     // Renderizar QR en OLED
     if (wifiMgr.isSoftAP()) {
         oledQr.drawQRCode("http://192.168.4.1", "AP Mode");
@@ -173,6 +178,7 @@ void setup() {
 
     server.begin();
     Serial.println("[Bob DevKit C++] Servidor HTTP y WSS activos.");
+
 }
 
 void loop() {
