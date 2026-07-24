@@ -1,0 +1,21 @@
+{
+  "short_name": "Robot Bob",
+  "name": "Robot Bob — PWA Control Center",
+  "icons": [
+    {
+      "src": "/robot_icon.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/robot_icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#090d16",
+  "theme_color": "#06b6d4",
+  "display": "standalone",
+  "orientation": "any"
+}

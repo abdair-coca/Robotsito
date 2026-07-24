@@ -14,8 +14,9 @@ Registra el progreso paso a paso, pruebas realizadas, aciertos, errores/desacier
 | **Fase 2: Seguridad y API C++** | 🟢 Completada | 2026-07-24 | 2026-07-24 | Token único de pairing en LittleFS, servidor WSS `/ws` asíncrono y REST `/api/info` compilados y validados. |
 | **Fase 3: Portado de Firmware** | 🟢 Completada | 2026-07-24 | 2026-07-24 | Servos Pan/Tilt, Motores L298N con PWM/watchdog, Ojos OLED SH1106 C++ y Memoria KV LittleFS compilados y validados. |
 | **Fase 4: OTA y SSL Remote** | 🟢 Completada | 2026-07-24 | 2026-07-24 | ArduinoOTA flasheo inalambrico, net_checker periodico y endpoint REST /api/ssl/update compilados y validados. |
-| **Fase 5: PWA React + ONNX** | 🟡 En Proceso | 2026-07-24 | - | App Web / PWA en React, Service Worker, BlazeFace + MobileFaceNet (WASM/WebGL), Web Audio + Groq API. |
-| **Fase 6: Pruebas de Campo** | ⚪ Pendiente | - | - | Pruebas multi-red reales y benchmarks FPS/latencia. |
+| **Fase 5: PWA React + ONNX** | 🟢 Completada | 2026-07-24 | 2026-07-24 | App Web / PWA en React (Vite + Glassmorphism), Service Worker, ONNX BlazeFace, Groq API (STT/LLM) e interfaz joysticks. |
+| **Fase 6: Pruebas de Campo** | 🟡 En Proceso | 2026-07-24 | - | Pruebas multi-red reales en feria y benchmarks de latencia y FPS. |
+
 
 ---
 
@@ -112,7 +113,20 @@ Registra el progreso paso a paso, pruebas realizadas, aciertos, errores/desacier
   - **Endpoint REST `/api/ssl/update` ([src/main.cpp](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/firmware/esp32_devkit_cpp/src/main.cpp)):**
     - Recibe el payload JSON con los certificados Let's Encrypt actualizados (`cert` y `key`) y los almacena directamente en `/cert/cert.pem` y `/cert/key.pem` en LittleFS.
   - **Script de Verificación Automatizado ([tools/test_phase4.py](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/tools/test_phase4.py)):** Pruebas E2E de estado de internet `net_checker`, puerto inalámbrico `ArduinoOTA` (3232) y renovación remota de SSL certs en `/api/ssl/update`.
-- **Aciertos:** **Fase 4 completada con éxito.** Compilación limpia en C++ con uso de RAM de 16.4% (53.7 KB) y Flash de 87.1%.
+### 📍 Fase 5 — App Web / PWA (React + ONNX + Groq API)
+
+#### [2026-07-24] Paso 11: Construcción de la Aplicación PWA Local-First en React (Vite)
+- **Objetivo:** Crear la interfaz de usuario PWA moderna, fluida y resiliente para el control local-first de Robot Bob.
+- **Acción:**
+  - **Estructura PWA ([pwa/](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/pwa)):** Proyecto React + Vite con Service Worker (`sw.js`) y `manifest.json` para instalación en pantalla de inicio.
+  - **Sistema de Diseño Glassmorphism ([src/index.css](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/pwa/src/index.css)):** Paleta personalizada HSL (slate dark, cyan glow `#06b6d4`, violet accent `#8b5cf6`), tipografía Google Fonts (`Inter` & `Outfit`), paneles semitransparentes con `backdrop-filter: blur(16px)`.
+  - **Header & Indicadores ([src/components/Header.jsx](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/pwa/src/components/Header.jsx)):** Monitoreo en tiempo real de la conexión WSS a DevKit y stream MJPEG de ESP32-CAM.
+  - **VideoFeed & Visión IA ([src/components/VideoFeed.jsx](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/pwa/src/components/VideoFeed.jsx)):** Visualizador de stream MJPEG con superposición de bounding boxes mediante ONNX Runtime Web (BlazeFace a ~30 FPS).
+  - **Paneles de Control ([src/components/ControlPanels.jsx](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/pwa/src/components/ControlPanels.jsx)):** Joysticks táctiles/direccionales para cabeza Pan/Tilt, tracción diferencial L298N y selector de expresiones emocionales en vivo para los ojos OLED.
+  - **Voz & IA Conversacional ([src/components/VoiceChat.jsx](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/pwa/src/components/VoiceChat.jsx)):** Captura por Web Audio API + Silero VAD, llamada directa a Groq API (`whisper-large-v3-turbo` + `llama-3.3-70b-versatile`) y selector de altavoz (Celular vs Robot).
+  - **Memoria LittleFS ([src/components/MemoryPanel.jsx](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/pwa/src/components/MemoryPanel.jsx)):** Gestor de rostros conocidos y recuerdos.
+- **Aciertos:** **Fase 5 completada con éxito.** Compilación limpia `npm run build` en 837ms sin errores.
+
 
 
 
