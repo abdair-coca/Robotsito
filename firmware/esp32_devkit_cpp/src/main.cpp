@@ -1,7 +1,7 @@
 /*
  * main.cpp — Robot Bob ESP32 DevKit (Firmware C++ / Arduino sobre ESP-IDF)
  *
- * Fase 2: WSS Server, AuthManager Token Único, API REST y Control.
+ * Fase 3: Servos Pan/Tilt, Motores L298N, Ojos OLED SH1106 C++ y Memoria LittleFS KV.
  */
 
 #include <Arduino.h>
@@ -14,6 +14,10 @@
 #include "wifi_manager.h"
 #include "oled_qr.h"
 #include "auth_manager.h"
+#include "servo_manager.h"
+#include "motor_manager.h"
+#include "memory_manager.h"
+#include "oled_eyes.h"
 
 // OLED SH1106 I2C (SCL=33, SDA=32)
 U8G2_SH1106_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, /* clock=*/ 33, /* data=*/ 32, /* reset=*/ U8X8_PIN_NONE);
@@ -24,6 +28,10 @@ AsyncWebSocket ws("/ws");
 BobWiFiManager wifiMgr;
 BobOledQR oledQr;
 BobAuthManager authMgr;
+BobServoManager servoMgr;
+BobMotorManager motorMgr;
+BobMemoryManager memoryMgr;
+BobOledEyes oledEyes;
 
 // Token y subdominio de DuckDNS
 const char* DUCKDNS_TOKEN = "8c12cd1d-1e94-48ea-b2ce-2396fac678aa";
@@ -33,7 +41,7 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len, AsyncWebSocket
     AwsFrameInfo *info = (AwsFrameInfo*)arg;
     if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
         data[len] = 0;
-        StaticJsonDocument<512> doc;
+        StaticJsonDocument<1024> doc;
         DeserializationError error = deserializeJson(doc, (char*)data);
         if (error) {
             client->text("{\"status\":\"error\",\"msg\":\"JSON invalido\"}");
@@ -46,7 +54,6 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len, AsyncWebSocket
         if (action == "pair") {
             String deviceName = doc["device_name"] | "Dispositivo Desconocido";
             
-            // Si había una sesión previa, se notifica la revocación a todos los clientes WS conectados
             if (authMgr.hasActiveToken()) {
                 StaticJsonDocument<128> revDoc;
                 revDoc["type"] = "revoked";
@@ -71,7 +78,7 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len, AsyncWebSocket
             return;
         }
 
-        // Validación de Token en todas las demás acciones
+        // Validación de Token
         String clientToken = doc["token"] | "";
         if (!authMgr.validateToken(clientToken)) {
             client->text("{\"status\":\"unauthorized\",\"msg\":\"Token invalido o sesion revocada\"}");
@@ -90,16 +97,38 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len, AsyncWebSocket
             if (type == "servo") {
                 int pan = doc["pan"] | 90;
                 int tilt = doc["tilt"] | 90;
-                Serial.printf("[CMD] Servo Pan: %d, Tilt: %d\n", pan, tilt);
+                servoMgr.setPanTilt(pan, tilt);
             } else if (type == "estado") {
-                String val = doc["val"] | "FELIZ";
-                Serial.printf("[CMD] OLED Estado: %s\n", val.c_str());
+                String val = doc["val"] | "Esperando";
+                oledEyes.setState(val);
             } else if (type == "motor") {
                 int izq = doc["izq"] | 0;
                 int der = doc["der"] | 0;
-                Serial.printf("[CMD] Motores Izq: %d, Der: %d\n", izq, der);
+                motorMgr.setSpeeds(izq, der);
             }
             client->text("{\"status\":\"ok\"}");
+            return;
+        }
+
+        // Acción: Gestión de Memoria (Rostros y Recuerdos)
+        if (action == "memory_get_faces") {
+            String facesJson = memoryMgr.getFacesJson();
+            client->text("{\"status\":\"ok\",\"type\":\"faces\",\"data\":" + facesJson + "}");
+            return;
+        }
+
+        if (action == "memory_save_face") {
+            String name = doc["name"] | "Anonimo";
+            JsonArray embedding = doc["embedding"].as<JsonArray>();
+            int age = doc["age"] | 0;
+            bool success = memoryMgr.saveFace(name, embedding, age);
+            client->text(success ? "{\"status\":\"ok\"}" : "{\"status\":\"error\",\"msg\":\"No se pudo guardar rostro\"}");
+            return;
+        }
+
+        if (action == "memory_get_history") {
+            String histJson = memoryMgr.getHistoryJson();
+            client->text("{\"status\":\"ok\",\"type\":\"history\",\"data\":" + histJson + "}");
             return;
         }
     }
@@ -118,11 +147,12 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsE
 void setup() {
     Serial.begin(115200);
     delay(1000);
-    Serial.println("\n[Bob DevKit C++] Iniciando Fase 2: WSS Server & AuthManager...");
+    Serial.println("\n[Bob DevKit C++] Iniciando Fase 3: Hardware, Ojos OLED y Memoria LittleFS...");
 
     // Inicializar OLED
     u8g2.begin();
     oledQr.begin(&u8g2);
+    oledEyes.begin(&u8g2);
     oledQr.drawEyeStatus("Iniciando...");
 
     // Inicializar LittleFS
@@ -132,8 +162,11 @@ void setup() {
         Serial.println("[LittleFS] Montado correctamente.");
     }
 
-    // Inicializar AuthManager
+    // Inicializar Módulos de Hardware y Memoria
     authMgr.begin();
+    servoMgr.begin(13, 12);
+    motorMgr.begin(19, 21, 22, 23, 16, 4);
+    memoryMgr.begin();
 
     // Inicializar WiFi Manager
     wifiMgr.begin(&server, DUCKDNS_TOKEN, DUCKDNS_SUBDOMAIN);
@@ -161,6 +194,8 @@ void setup() {
         doc["robot"] = "Bob";
         doc["paired_device"] = authMgr.getDeviceName();
         doc["has_active_token"] = authMgr.hasActiveToken();
+        doc["pan"] = servoMgr.getPan();
+        doc["tilt"] = servoMgr.getTilt();
         doc["free_heap"] = ESP.getFreeHeap();
 
         String response;
@@ -168,21 +203,30 @@ void setup() {
         request->send(200, "application/json", response);
     });
 
-    // Renderizar QR en OLED
+    // REST: Memoria de Rostros
+    server.on("/api/memory/faces", HTTP_GET, [](AsyncWebServerRequest *request) {
+        String facesJson = memoryMgr.getFacesJson();
+        request->send(200, "application/json", facesJson);
+    });
+
+    // Renderizar QR en OLED o Cambiar a Modo Ojos
     if (wifiMgr.isSoftAP()) {
         oledQr.drawQRCode("http://192.168.4.1", "AP Mode");
     } else {
         String urlDuck = "https://bobcreeper.duckdns.org";
         oledQr.drawQRCode(urlDuck.c_str(), "Online");
+        delay(2000);
+        oledEyes.setState("Esperando");
     }
 
     server.begin();
-    Serial.println("[Bob DevKit C++] Servidor HTTP y WSS activos.");
-
+    Serial.println("[Bob DevKit C++] Servidor HTTP, Servos, Motores y Memoria activos.");
 }
 
 void loop() {
     wifiMgr.loop();
+    motorMgr.loop(); // Watchdog de seguridad para motores
+    oledEyes.loop(); // Animación de parpadeo no bloqueante
     ws.cleanupClients();
     delay(10);
 }

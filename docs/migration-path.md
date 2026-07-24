@@ -12,8 +12,9 @@ Registra el progreso paso a paso, pruebas realizadas, aciertos, errores/desacier
 | **Fase 0: Fundamentos (C++)** | 🟢 Completada | 2026-07-22 | 2026-07-22 | Subdominios DuckDNS, Certificados SSL ACME v2, resolución DNS LAN y proyectos base C++ creados. |
 | **Fase 1: Red y Captive Portal** | 🟢 Completada | 2026-07-22 | 2026-07-24 | Flasheo exitoso, WiFiManager (NVS + SoftAP + Portal Cautivo) y OLED QR (SH1106 + mDNS) validados. |
 | **Fase 2: Seguridad y API C++** | 🟢 Completada | 2026-07-24 | 2026-07-24 | Token único de pairing en LittleFS, servidor WSS `/ws` asíncrono y REST `/api/info` compilados y validados. |
-| **Fase 3: Portado de Firmware** | 🟡 En Proceso | 2026-07-24 | - | Portar control de servos Pan/Tilt, animaciones OLED SH1106 C++ y memoria KV JSON en LittleFS. |
-| **Fase 4: OTA y SSL Remote** | ⚪ Pendiente | - | - | ArduinoOTA doble partición y subida de certs. |
+| **Fase 3: Portado de Firmware** | 🟢 Completada | 2026-07-24 | 2026-07-24 | Servos Pan/Tilt, Motores L298N con PWM/watchdog, Ojos OLED SH1106 C++ y Memoria KV LittleFS compilados y validados. |
+| **Fase 4: OTA y SSL Remote** | 🟡 En Proceso | 2026-07-24 | - | Configurar ArduinoOTA con esquema de doble particion y endpoint HTTPS para renovacion remota de SSL certs en LittleFS. |
+
 | **Fase 5: PWA React + ONNX** | ⚪ Pendiente | - | - | PWA en React, BlazeFace/MobileFaceNet, Web Audio + Groq API. |
 | **Fase 6: Pruebas de Campo** | ⚪ Pendiente | - | - | Pruebas multi-red reales y benchmarks FPS/latencia. |
 
@@ -86,17 +87,22 @@ Registra el progreso paso a paso, pruebas realizadas, aciertos, errores/desacier
     - `revokeToken()`: Elimina el archivo `/auth.json` y destruye la sesión activa.
 - **Aciertos:** Compilado y validado en C++ (RAM: 15.6%, Flash: 81.4%).
 
-#### [2026-07-24] Paso 8: Implementación de Servidor WSS Asíncrono de Comandos en C++
-- **Objetivo:** Recibir comandos de control de baja latencia (<10ms) y gestionar la autenticación por WebSocket (`/ws`).
+### 📍 Fase 3 — Portado de Firmware
+
+#### [2026-07-24] Paso 9: Portado de Servos, Motores L298N, Ojos OLED C++ y Memoria KV LittleFS
+- **Objetivo:** Completar todo el control de hardware periférico y persistencia de memoria local en C++.
 - **Acción:**
-  - Integración de `ESPAsyncWebServer` WSS en [src/main.cpp](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/firmware/esp32_devkit_cpp/src/main.cpp).
-  - Manejo de flujo JSON:
-    - `action: "pair"`: Recibe `device_name`, revoca cualquier sesión anterior notificando vía WSS `{"type":"revoked"}`, genera nuevo token y responde `{"status":"paired", "token":"..."}`.
-    - `action: "auth"`: Valida el token del cliente contra LittleFS.
-    - `action: "cmd"`: Valida el token y procesa comandos de servos (`pan`/`tilt`), ojos OLED (`val`) y motores (`izq`/`der`).
-  - Endpoint REST `/api/info` que informa el dispositivo actualmente vinculado (`paired_device`) y estado de memoria.
-  - **Script de Verificación Automatizado ([tools/test_phase2.py](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/tools/test_phase2.py)):** Creado script para probar E2E la REST API, pairing de token único, envío de comandos y revocación en tiempo real.
-- **Aciertos:** **Fase 2 completada exitosamente.** Compilación limpia en C++ con uso de RAM de solo 15.7% (51.3 KB) y Flash 83.9%.
+  - **`BobServoManager` ([src/servo_manager.cpp](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/firmware/esp32_devkit_cpp/src/servo_manager.cpp)):**
+    - Integración de `ESP32Servo` en GPIO 13 (Pan: 20°-160°, home 90°) y GPIO 12 (Tilt: 40°-140°, home 90°).
+  - **`BobMotorManager` ([src/motor_manager.cpp](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/firmware/esp32_devkit_cpp/src/motor_manager.cpp)):**
+    - Control de motores tracción diferencial L298N en GPIO 19, 21, 22, 23 con control de velocidad PWM (`ledcSetup`) en ENA/ENB (GPIO 16 y 4).
+    - Watchdog de seguridad (detiene motores automáticamente tras 400ms sin comando activo).
+  - **`BobMemoryManager` ([src/memory_manager.cpp](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/firmware/esp32_devkit_cpp/src/memory_manager.cpp)):**
+    - Almacenamiento KV JSON en `/memory/faces.json` (embeddings de 512 dimensiones de rostros conocidos) y `/memory/history.json`.
+  - **`BobOledEyes` ([src/oled_eyes.cpp](file:///c:/Users/abdai/Desktop/RobotCreeper/scripts/firmware/esp32_devkit_cpp/src/oled_eyes.cpp)):**
+    - Animación de ojos no bloqueante en pantalla SH1106 I2C con emociones (`Esperando`, `Conectando`, `Activo`, `FELIZ`, `SORPRENDIDO`, `PENSANDO`, `TRISTE`, `ENOJADO`) e icono superpuesto de sin internet.
+- **Aciertos:** **Fase 3 completada con éxito.** Compilación limpia en C++ con uso de RAM 15.8% (51.8 KB) y Flash 85.9%.
+
 
 
 
