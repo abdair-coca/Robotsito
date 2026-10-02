@@ -475,6 +475,14 @@ class VoicePipeline:
             self._llm_model = GROQ_LLM_MODEL
             console.print(f"[dim][llm] backend Groq → {self._llm_model}[/]")
 
+        # GPT-OSS usa parte de max_tokens para razonamiento interno. Con el
+        # nivel por defecto puede consumir todo el presupuesto y dejar cero
+        # texto hablable; Bob entonces vuelve a escuchar sin responder.
+        # `low` conserva razonamiento suficiente para charla y deja espacio
+        # para que llegue el contenido que consume el TTS.
+        if self._llm_model.startswith('openai/gpt-oss-'):
+            self._llm_extra = {'reasoning_effort': 'low'}
+
         # Prompt base según el backend efectivo: solo el modelo local chico usa el
         # prompt corto y estricto (no obedece el largo). Gemini/Groq usan el completo.
         self._system_prompt_base = SYSTEM_PROMPT_LOCAL if self._usando_ollama else SYSTEM_PROMPT
