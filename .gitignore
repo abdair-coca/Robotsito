@@ -15,3 +15,6 @@ ffmpeg-*.log
 .claude/worktrees/
 graphify-out/
 *.FCBak
+
+# Modelos de voz Piper (pesados, se descargan aparte)
+robot_bob/piper_voices/

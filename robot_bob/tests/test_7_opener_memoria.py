@@ -39,7 +39,10 @@ def _stub(mem, pid, nombre, llm, model):
     """Objeto mínimo con lo que _opener_memoria toca de self."""
     return SimpleNamespace(
         _convo_persona=pid, _memoria=mem, _persona_nombre=nombre,
-        _llm=llm, _llm_model=model)
+        _llm=llm, _llm_model=model,
+        # Mismo criterio que VoicePipeline: GPT-OSS limita su razonamiento.
+        _llm_extra=({'reasoning_effort': 'low'}
+                    if model.startswith('openai/gpt-oss-') else {}))
 
 
 def main() -> int:

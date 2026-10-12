@@ -60,6 +60,7 @@ from config import (
     WAKE_COOLDOWN_S, WAKE_MAX_UTTR_CHARS,
     GROQ_LLM_MODEL, GROQ_STT_MODEL, TEMPERATURE, MAX_TOKENS, MAX_RETRIES,
     VOICE, TTS_FFMPEG_FILTERS, SENTENCE_MIN_CHARS, TTS_TAIL_S,
+    TTS_BACKEND, PIPER_VOICE, PIPER_LENGTH_SCALE, PIPER_PITCH_FACTOR, PIPER_FFMPEG_FILTERS,
     SYSTEM_PROMPT, EXIT_PHRASES, GOODBYE_PHRASES,
     TTS_SEND_CHUNK_BYTES,
     SOLILOQUIO_ENABLED, SOLO_IDLE_MIN_S, PRESENCE_NUDGE_S,
@@ -198,6 +199,21 @@ console = Console()
 
 # ── Constantes locales ─────────────────────────────────────────────────────────
 _LAP_SAMPLE_RATE = 16000  # sounddevice graba a 16 kHz
+
+
+def _mic_device():
+    """Índice del mic Intel por DirectSound. El default de Windows (MME) en la
+    laptop captó casi nada; DirectSound a 16 kHz sí captura la voz.
+    None = dispositivo default del sistema (si no encuentra el Intel)."""
+    try:
+        for i, d in enumerate(sd.query_devices()):
+            api = sd.query_hostapis(d['hostapi'])['name']
+            if (d['max_input_channels'] > 0 and 'Intel' in d['name']
+                    and api == 'Windows DirectSound'):
+                return i
+    except Exception:
+        pass
+    return None
 _SILENCE_FRAMES  = SILENCE_END_MS // FRAME_MS
 _MAX_FRAMES      = (MAX_RECORDING_S * 1000) // FRAME_MS
 
@@ -372,9 +388,45 @@ async def _edge_tts_bytes(text: str, rate: str, pitch: str) -> bytes:
             chunks.append(c['data'])
     return b''.join(chunks)
 
+# Piper (local, CPU): la voz se carga una vez y se sintetiza con lock, porque
+# el TTS se llama desde varios hilos (charla, soliloquio, recordatorios).
+_PIPER = None
+_PIPER_LOCK = threading.Lock()
+
+def _piper_mp3(text: str) -> bytes:
+    global _PIPER
+    with _PIPER_LOCK:
+        if _PIPER is None:
+            from piper import PiperVoice
+            _PIPER = PiperVoice.load(PIPER_VOICE)
+        from piper import SynthesisConfig
+        chunks = list(_PIPER.synthesize(
+            text, syn_config=SynthesisConfig(length_scale=PIPER_LENGTH_SCALE)))
+    if not chunks:
+        return b''
+    pcm = b''.join(c.audio_int16_bytes for c in chunks)
+    sr = chunks[0].sample_rate
+    # Tono: asetrate sube pitch y velocidad; aresample+atempo devuelven la velocidad.
+    # Luego el EQ/compresor de carácter. PCM s16 → mp3 para que pygame lo reproduzca.
+    f = PIPER_PITCH_FACTOR
+    partes = []
+    if f != 1.0:
+        partes.append(f"asetrate={sr}*{f},aresample={sr},atempo={1/f:.5f}")
+    if PIPER_FFMPEG_FILTERS:
+        partes.append(PIPER_FFMPEG_FILTERS)
+    cmd = [FFMPEG, '-hide_banner', '-loglevel', 'error',
+           '-f', 's16le', '-ar', str(sr), '-ac', '1', '-i', 'pipe:0']
+    if partes:
+        cmd += ['-af', ','.join(partes)]
+    cmd += ['-f', 'mp3', 'pipe:1']
+    proc = subprocess.run(cmd, input=pcm, capture_output=True, check=False)
+    return proc.stdout
+
 def _synthesize_mp3(text: str, emo: Optional[str] = None) -> bytes:
     if not text.strip():
         return b''
+    if TTS_BACKEND == 'piper':
+        return _piper_mp3(text)
     rate, pitch = _prosody_for_emo(emo)
     return asyncio.run(_edge_tts_bytes(text, rate, pitch))
 
@@ -1067,7 +1119,7 @@ class VoicePipeline:
         waited_ms      = 0
         invite_sent    = False  # Fase D: CURIOSO de invitación a los 3 s
 
-        with sd.RawInputStream(samplerate=_LAP_SAMPLE_RATE, channels=1,
+        with sd.RawInputStream(device=_mic_device(), samplerate=_LAP_SAMPLE_RATE, channels=1,
                                dtype='int16', blocksize=frame_bytes // 2,
                                callback=callback):
             while True:
@@ -1782,7 +1834,7 @@ class VoicePipeline:
         t_ultima_voz = 0.0
 
         try:
-            with sd.RawInputStream(samplerate=_LAP_SAMPLE_RATE, channels=1,
+            with sd.RawInputStream(device=_mic_device(), samplerate=_LAP_SAMPLE_RATE, channels=1,
                                    dtype='int16', blocksize=frame_bytes // 2,
                                    callback=callback):
                 while time.monotonic() - t0 < WAKE_WINDOW_S and not self._detener.is_set():
