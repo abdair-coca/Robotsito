@@ -1,5 +1,5 @@
 """
-jev_decision.py — Decisiones de Bob con el modelo JEV (solo texto).
+jev_decision.py — Decisiones de Bob con el modelo JEV (solo texto), vía typesafe_sdk.
 
 Dos peticiones en paralelo, cada una con una sola pregunta:
   - ruta: musica | recordatorio | asistente | charla (None si JEV no respondió)
@@ -8,20 +8,21 @@ Dos peticiones en paralelo, cada una con una sola pregunta:
 Medido en J1: una petición con las dos preguntas tarda ~1.0 s (mediana); cada
 pregunta por separado en paralelo tarda ~0.5 s. Por eso van separadas.
 
-Si JEV no responde en JEV_TIMEOUT_S, falla, responde algo inválido o falta la
-clave, devuelve el respaldo para la parte que falló. Nunca lanza excepciones
+El SDK no reintenta (RetryPolicy(max_retries=0)) para que el plazo de
+JEV_TIMEOUT_S sea real. Si JEV no responde a tiempo, falla o responde algo
+inválido, devuelve el respaldo para la parte que falló. Nunca lanza excepciones
 hacia el pipeline.
 """
-import json
+import threading
 import time
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Optional
 
+from typesafe_sdk import Choice, RetryPolicy, TypeSafeClient
+
 from config import JEV_MODEL, JEV_TIMEOUT_S, TYPESAFE_API_KEY
 
-ENDPOINT = "https://api.typesafe.ai/v1/systemone"
 EMOCION_RESPALDO = "CURIOSO"
 
 RUTAS = {
@@ -67,34 +68,35 @@ class Decision:
     error: str = ""
 
 
-def _post(cuerpo: dict) -> dict:
-    """Llamada HTTP a JEV. Separada para poder simularla en pruebas."""
-    req = urllib.request.Request(
-        ENDPOINT,
-        data=json.dumps(cuerpo).encode("utf-8"),
-        method="POST",
-        headers={"Authorization": f"Bearer {TYPESAFE_API_KEY}",
-                 "Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=JEV_TIMEOUT_S) as r:
-        return json.loads(r.read().decode("utf-8"))
+_cliente: Optional[TypeSafeClient] = None
+_cliente_lock = threading.Lock()
 
 
-def _cuerpo(frase: str, ultimo_turno: str, clave: str) -> dict:
+def _get_cliente() -> TypeSafeClient:
+    """Cliente único del SDK, sin reintentos y con el timeout del módulo."""
+    global _cliente
+    with _cliente_lock:
+        if _cliente is None:
+            _cliente = TypeSafeClient(api_key=TYPESAFE_API_KEY, model=JEV_MODEL,
+                                      retry=RetryPolicy(max_retries=0),
+                                      timeout=JEV_TIMEOUT_S)
+        return _cliente
+
+
+def _consultar(clave: str, frase: str, ultimo_turno: str) -> tuple:
+    """Una pregunta a JEV. Devuelve (elección, confianza). Puede lanzar excepciones del SDK."""
     estado = {"message": frase}
     if ultimo_turno:
         estado["last_bob_turn"] = ultimo_turno
-    return {"model": JEV_MODEL, "state": estado,
-            "questions": {clave: {"type": "choice", **PREGUNTAS[clave]}}}
-
-
-def _eleccion(datos: Optional[dict], clave: str, opciones: dict):
-    """(elección, confianza) si la respuesta es válida; (None, 0.0) si no."""
-    d = ((datos or {}).get("answers") or {}).get(clave) or {}
-    elegida = d.get("choice")
-    if elegida not in opciones:
-        return None, 0.0
-    return elegida, float(d.get("confidence", 0.0))
+    pregunta = PREGUNTAS[clave]
+    resultado = _get_cliente().system_one(
+        model=JEV_MODEL,
+        state=estado,
+        questions={clave: Choice(instructions=pregunta["instructions"],
+                                 criteria=pregunta["criteria"])},
+    )
+    respuesta = resultado.answers[clave]
+    return respuesta.choice, float(respuesta.confidence)
 
 
 def decidir(frase: str, ultimo_turno: str = "") -> Decision:
@@ -105,32 +107,34 @@ def decidir(frase: str, ultimo_turno: str = "") -> Decision:
     t0 = time.monotonic()
     ejecutor = ThreadPoolExecutor(max_workers=2)
     try:
-        futuros = {clave: ejecutor.submit(_post, _cuerpo(frase, ultimo_turno, clave))
+        futuros = {clave: ejecutor.submit(_consultar, clave, frase, ultimo_turno)
                    for clave in PREGUNTAS}
         # Plazo total compartido: pasado JEV_TIMEOUT_S, lo que no llegó es respaldo.
         terminados, _ = wait(futuros.values(), timeout=JEV_TIMEOUT_S)
     finally:
         ejecutor.shutdown(wait=False)
 
-    errores, datos = [], {}
+    errores, resultados = [], {}
     for clave, futuro in futuros.items():
         if futuro not in terminados:
             errores.append(f"{clave}: plazo agotado")
             continue
         try:
-            datos[clave] = futuro.result()
-        except (OSError, ValueError) as e:   # OSError: URLError, HTTPError, timeouts; ValueError: JSON
+            resultados[clave] = futuro.result()
+        except Exception as e:   # errores del SDK (TypeSafeError y subclases), red, etc.
             errores.append(f"{clave}: {type(e).__name__}: {e}")
     latencia = time.monotonic() - t0
 
-    ruta, conf_ruta = _eleccion(datos.get("ruta"), "ruta", RUTAS)
-    emocion, conf_emocion = _eleccion(datos.get("emocion"), "emocion", EMOCIONES)
-    if ruta is None and "ruta" in datos:
-        errores.append(f"ruta inválida: {datos['ruta']!r}")
+    ruta, conf_ruta = resultados.get("ruta", (None, 0.0))
+    emocion, conf_emocion = resultados.get("emocion", (None, 0.0))
+    if "ruta" in resultados and ruta not in RUTAS:
+        errores.append(f"ruta inválida: {ruta!r}")
+        ruta, conf_ruta = None, 0.0
+    if "emocion" in resultados and emocion not in EMOCIONES:
+        errores.append(f"emoción inválida: {emocion!r}")
+        emocion = None
     if emocion is None:
-        emocion = EMOCION_RESPALDO
-        if "emocion" in datos:
-            errores.append("emoción inválida")
+        emocion, conf_emocion = EMOCION_RESPALDO, 0.0
 
     return Decision(ruta=ruta, emocion=emocion, confianza_ruta=conf_ruta,
                     confianza_emocion=conf_emocion, latencia_s=latencia,
