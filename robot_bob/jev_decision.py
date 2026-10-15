@@ -2,7 +2,7 @@
 jev_decision.py — Decisiones de Bob con el modelo JEV (solo texto), vía typesafe_sdk.
 
 Dos peticiones en paralelo, cada una con una sola pregunta:
-  - ruta: musica | recordatorio | asistente | charla (None si JEV no respondió)
+  - ruta: musica | recordatorio | asistente | charla | ajeno (None si JEV no respondió)
   - emocion: una de EMOCIONES para la respuesta (CURIOSO si no respondió)
 
 Medido en J1: una petición con las dos preguntas tarda ~1.0 s (mediana); cada
@@ -30,6 +30,8 @@ RUTAS = {
     "recordatorio": "Pide un recordatorio, temporizador o alarma",
     "asistente": "Pregunta por hora, fecha, clima o noticias",
     "charla": "Cualquier otra cosa: conversar, preguntar, pedir un chiste",
+    "ajeno": "Claramente no es para Bob: ruido o gente hablando entre sí sin nombrarlo. "
+             "Ante la duda, NO elijas ajeno",
 }
 
 EMOCIONES = {
@@ -51,7 +53,9 @@ EMOCIONES = {
 }
 
 PREGUNTAS = {
-    "ruta": {"instructions": "¿Qué quiere el usuario?", "criteria": RUTAS},
+    "ruta": {"instructions": "¿Le habla el usuario a Bob y qué quiere? Elige ajeno solo "
+                             "si está claro que no le habla a Bob; ante la duda, elige charla.",
+             "criteria": RUTAS},
     "emocion": {"instructions": "¿Qué emoción debe mostrar Bob al responder?",
                 "criteria": EMOCIONES},
 }

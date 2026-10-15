@@ -56,7 +56,7 @@ from config import (
     SPEECH_START_FRAMES,
     BARGE_IN_ENABLED, BARGE_IN_SUSTAINED_MS, BARGE_IN_SETTLE_MS, BARGE_IN_RMS_U8,
     WAKE_WORD_ENABLED, TRIGGER_MODE, CLIMA_ENABLED, NOTICIAS_ENABLED,
-    FRASE_RESPALDO_STT, FRASE_RESPALDO_LLM,
+    FRASE_RESPALDO_STT, FRASE_RESPALDO_LLM, JEV_ROUTING_ENABLED, JEV_SIN_WAKE,
     WAKE_CANONICAL, WAKE_PREFIXES, WAKE_MIN_CONF, WAKE_FUZZY_THR,
     WAKE_COOLDOWN_S, WAKE_MAX_UTTR_CHARS,
     GROQ_LLM_MODEL, GROQ_STT_MODEL, TEMPERATURE, MAX_TOKENS, MAX_RETRIES,
@@ -149,6 +149,7 @@ from music import (parse_music_command, ejecutar as ejecutar_musica,  # P6: Spot
                    esta_sonando as sonando_musica)                    # baile
 from show import es_comando_show, run_show     # modo presentación ("presentate")
 from reminders import parse_recordatorio, ReminderStore   # P9: recordatorios
+from jev_decision import decidir   # J2: ruta del turno con JEV (None = parsers)
 from expression_engine import (
     pulse_emotion, react_to_user_text, react_to_bob_text,
     mood_delta_for_user_text, is_love,
@@ -443,6 +444,20 @@ def _mp3_to_wav(mp3: bytes) -> bytes:
     return proc.stdout
 
 
+def _contexto_asistente_turno(texto: str, ruta: Optional[str]) -> str:
+    """J2: datos en vivo para el LLM según la ruta de JEV.
+    None (JEV no respondió): palabras clave de siempre.
+    'asistente' sin palabra clave: hora y fecha (locales, no dependen de red).
+    Otra ruta: no se inyecta nada."""
+    if ruta not in (None, 'asistente'):
+        return ''
+    ctx = contexto_asistente(texto)
+    if ruta == 'asistente' and not ctx:
+        # Las palabras clave de assistant.py son frases: "qué hora" y "qué fecha es".
+        ctx = contexto_asistente('qué hora es y qué fecha es')
+    return ctx
+
+
 # ── Sentence splitter ──────────────────────────────────────────────────────────
 
 _SENT_RE = re.compile(r'[.!?¡¿…\n]+[\s"\')\]]*')
@@ -563,6 +578,9 @@ class VoicePipeline:
         # esté prendido el monitor consulta a Spotify para sostener/cortar el baile.
         # Se apaga cuando la música efectivamente paró → el monitor deja de consultar.
         self._baile_hint = False
+        # J3: decisión de JEV que el monitor en reposo ya pidió para el primer turno.
+        # Se usa solo si el texto coincide; así no se llama a JEV dos veces.
+        self._jev_previa = None
 
         self._wake = WakeWordDetector(
             wake_word=WAKE_CANONICAL,
@@ -955,8 +973,12 @@ class VoicePipeline:
                 es_primer_turno = False
                 continue
 
+            # ── J2: ruta del turno con JEV (None = parsers de siempre) ─────────
+            ruta = self._decidir_ruta(texto)
+            self._ruta_turno = ruta
+
             # ── P9: crear recordatorio ("recuérdame en 5 min que...") ──────────
-            if RECORDATORIOS_ENABLED:
+            if RECORDATORIOS_ENABLED and ruta in (None, 'recordatorio'):
                 rec = parse_recordatorio(texto)
                 if rec:
                     self._recordatorios.agregar(rec)
@@ -982,7 +1004,7 @@ class VoicePipeline:
                 continue      # sin música: sigue la charla normal
 
             # ── P6: control de música (Spotify) ────────────────────────────────
-            if MUSICA_ENABLED:
+            if MUSICA_ENABLED and ruta in (None, 'musica'):
                 mintent = parse_music_command(texto)
                 if mintent:
                     self._sm.iniciar_hablando()
@@ -1036,14 +1058,15 @@ class VoicePipeline:
 
     # ── Grabación ────────────────────────────────────────────────────────────
 
-    def _grabar(self, initial_timeout: float = 8.0) -> Optional[bytes]:
+    def _grabar(self, initial_timeout: float = 8.0, invitar: bool = True) -> Optional[bytes]:
         """
         Graba con VAD. Despacha a robot (ESP32 TCP) o laptop (sounddevice)
         según el flag USE_ROBOT_MIC y la disponibilidad del AudioIO.
+        invitar: si False, no dispara el pulso CURIOSO de invitación (laptop).
         """
         if USE_ROBOT_MIC and self._audio_io is not None and self._audio_io.connected:
             return self._grabar_robot(initial_timeout)
-        return self._grabar_laptop(initial_timeout)
+        return self._grabar_laptop(initial_timeout, invitar)
 
     def _grabar_robot(self, initial_timeout: float) -> Optional[bytes]:
         """
@@ -1111,10 +1134,11 @@ class VoicePipeline:
                         raw = b''.join(recorded)
                         return _uint8_to_wav(raw)
 
-    def _grabar_laptop(self, initial_timeout: float = 8.0) -> Optional[bytes]:
+    def _grabar_laptop(self, initial_timeout: float = 8.0, invitar: bool = True) -> Optional[bytes]:
         """
         Graba desde micrófono de laptop con VAD + gate adaptativo.
         initial_timeout: segundos máximo de silencio inicial antes de devolver None.
+        invitar: pulso CURIOSO a los 3 s sin hablar (Fase D).
         """
         q: queue.Queue = queue.Queue()
 
@@ -1165,7 +1189,7 @@ class VoicePipeline:
                     preroll.append(frame)
                     waited_ms += FRAME_MS
                     # Fase D: a los 3 s sin hablar, Bob "te invita" con ojos curiosos
-                    if not invite_sent and waited_ms > 3000:
+                    if invitar and not invite_sent and waited_ms > 3000:
                         invite_sent = True
                         pulse_emotion(self._serial, self._sm, 'CURIOSO', 700)
                     if is_vad and level > 1.5:
@@ -1247,6 +1271,25 @@ class VoicePipeline:
                 "personalidad, de forma clara y directa (no lo omitas, no lo pospongas):\n"
                 + lineas)
 
+    def _pedir_jev(self, texto: str):
+        """Pregunta a JEV por la ruta de `texto` y la imprime. Devuelve la Decision."""
+        ultimo = next((m['content'] for m in reversed(self._convo)
+                       if m['role'] == 'assistant'), '')
+        d = decidir(texto, ultimo)
+        origen = 'respaldo' if d.respaldo else 'JEV'
+        console.print(f'[dim][jev] ruta={d.ruta} ({origen}, {d.latencia_s:.2f}s)[/]')
+        return d
+
+    def _decidir_ruta(self, texto: str) -> Optional[str]:
+        """J2: pide la ruta del turno a JEV. None = JEV no respondió (usar parsers).
+        Si el monitor en reposo ya la pidió para este mismo texto, la reutiliza."""
+        if not JEV_ROUTING_ENABLED:
+            return None
+        previa, self._jev_previa = self._jev_previa, None
+        if previa and previa[0] == texto:
+            return previa[1].ruta
+        return self._pedir_jev(texto).ruta
+
     def _stream_llm(self, texto: str) -> Iterator[str]:
         self._convo.append({'role': 'user', 'content': texto})
         # Recorte: solo los últimos N mensajes van al LLM (ahorro de tokens). La
@@ -1259,7 +1302,7 @@ class VoicePipeline:
         # contexto_asistente devuelve '' cuando no hay intención de asistente.
         sys_content = (self._system_prompt_actual
                        + self._sm.estado_interno_prompt()
-                       + contexto_asistente(texto)
+                       + _contexto_asistente_turno(texto, getattr(self, '_ruta_turno', None))
                        + self._contexto_recordatorios())
         messages = [{'role': 'system', 'content': sys_content}] + hist
 
@@ -1530,7 +1573,8 @@ class VoicePipeline:
     def iniciar_wake_monitor(self) -> None:
         """
         Hilo que graba continuamente en modo IDLE/PRESENCE solo para detectar wake word.
-        Cuando detecta "Bob", notifica StateMachine.notificar_wake_word().
+        Cuando detecta "Bob" (o JEV dice que le hablan, J3), notifica
+        StateMachine.notificar_wake_word().
         Se mantiene activo mientras el robot no esté en conversación.
         Con TRIGGER_MODE = "tecla" no escucha: ENTER en la consola dispara el turno.
         """
@@ -1774,6 +1818,8 @@ class VoicePipeline:
 
     def _wake_monitor_loop(self) -> None:
         from state_machine import RobotState
+        # J3: sin "Bob", cada frase oída en reposo va a JEV, que decide si le habla.
+        escucha_libre = JEV_SIN_WAKE and JEV_ROUTING_ENABLED
         while not self._detener.is_set():
             # Solo monitorear en estados no-conversacionales
             if self._sm.en_conversacion:
@@ -1786,9 +1832,15 @@ class VoicePipeline:
                 time.sleep(0.2)
                 continue
 
-            audio = self._grabar_wake()
+            if escucha_libre:
+                # Frase completa con VAD (no corta a 3 s). Sin pulso de invitación.
+                audio = self._grabar(initial_timeout=WAKE_WINDOW_S, invitar=False)
+            else:
+                audio = self._grabar_wake()
             if audio is None:
                 continue
+            if self._muted.is_set() or self._sm.en_conversacion:
+                continue   # Bob habló o arrancó una charla mientras grababa
 
             texto = self._transcribir(audio)
             if not texto:
@@ -1797,17 +1849,31 @@ class VoicePipeline:
                 continue   # silencio/ruido alucinado por Whisper → ignorar
 
             ww = self._wake.detect(texto)
+            payload = (ww.payload or '').strip() if ww.detected else texto.strip()
+            decision = None
+            if escucha_libre and payload:
+                decision = self._pedir_jev(payload)
+                if decision.ruta == 'ajeno' and not ww.detected:
+                    console.print(f'[dim][jev] "{texto}" no le habla a Bob → ignoro[/]')
+                    continue
+            # Activa si dijo "Bob" (respaldo) o si JEV dijo a qué ruta va el turno.
+            activar = ww.detected or (decision is not None and decision.ruta is not None)
+            if not activar:
+                console.print(f'[dim][wake?] heard: "{texto}"[/]')
+                continue
             if ww.detected:
-                payload = (ww.payload or '').strip()
                 if payload:
                     console.print(f'[bold yellow][wake] "{texto}" → payload: "{payload}"[/]')
                 else:
                     console.print(f'[bold yellow][wake] "{texto}" detectado![/]')
-                # Pulso emocional inmediato: ojos CURIOSOS al oír su nombre
-                pulse_emotion(self._serial, self._sm, EMO_WAKE_DETECTED, PULSE_FAST)
-                self._sm.notificar_wake_word(payload=payload or None)
             else:
-                console.print(f'[dim][wake?] heard: "{texto}"[/]')
+                console.print(f'[bold yellow][jev] "{texto}" → le habla a Bob[/]')
+            # Pulso emocional inmediato: ojos CURIOSOS al oír su nombre o al entender que le hablan
+            pulse_emotion(self._serial, self._sm, EMO_WAKE_DETECTED, PULSE_FAST)
+            if decision is not None:
+                # El primer turno reutiliza esta decisión (ver _decidir_ruta).
+                self._jev_previa = (payload, decision)
+            self._sm.notificar_wake_word(payload=payload or None)
 
     def _tecla_loop(self) -> None:
         """Modo TRIGGER_MODE = "tecla": ENTER en la consola inicia un turno.
