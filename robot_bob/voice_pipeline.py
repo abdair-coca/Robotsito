@@ -55,7 +55,7 @@ from config import (
     PREROLL_FRAMES, NOISE_FLOOR_INIT, NOISE_FLOOR_MARGIN, NOISE_FLOOR_MIN,
     SPEECH_START_FRAMES,
     BARGE_IN_ENABLED, BARGE_IN_SUSTAINED_MS, BARGE_IN_SETTLE_MS, BARGE_IN_RMS_U8,
-    WAKE_WORD_ENABLED,
+    WAKE_WORD_ENABLED, TRIGGER_MODE,
     WAKE_CANONICAL, WAKE_PREFIXES, WAKE_MIN_CONF, WAKE_FUZZY_THR,
     WAKE_COOLDOWN_S, WAKE_MAX_UTTR_CHARS,
     GROQ_LLM_MODEL, GROQ_STT_MODEL, TEMPERATURE, MAX_TOKENS, MAX_RETRIES,
@@ -1514,7 +1514,11 @@ class VoicePipeline:
         Hilo que graba continuamente en modo IDLE/PRESENCE solo para detectar wake word.
         Cuando detecta "Bob", notifica StateMachine.notificar_wake_word().
         Se mantiene activo mientras el robot no esté en conversación.
+        Con TRIGGER_MODE = "tecla" no escucha: ENTER en la consola dispara el turno.
         """
+        if TRIGGER_MODE == "tecla":
+            threading.Thread(target=self._tecla_loop, daemon=True, name='tecla-trigger').start()
+            return
         threading.Thread(target=self._wake_monitor_loop, daemon=True, name='wake-monitor').start()
 
     # ── Soliloquio / actitud (featuresAction.md Fase A) ───────────────────────
@@ -1786,6 +1790,22 @@ class VoicePipeline:
                 self._sm.notificar_wake_word(payload=payload or None)
             else:
                 console.print(f'[dim][wake?] heard: "{texto}"[/]')
+
+    def _tecla_loop(self) -> None:
+        """Modo TRIGGER_MODE = "tecla": ENTER en la consola inicia un turno.
+        Las teclas presionadas durante una conversación o mientras Bob habla se
+        descartan, para que no disparen un turno en cuanto termine."""
+        import msvcrt   # solo Windows; el proyecto corre en Windows
+        console.print('[dim][tecla] ENTER para hablar con Bob[/]')
+        while not self._detener.is_set():
+            if not msvcrt.kbhit():
+                time.sleep(0.05)
+                continue
+            tecla = msvcrt.getwch()
+            if self._sm.en_conversacion or self._muted.is_set():
+                continue
+            if tecla in ('\r', '\n'):
+                self._sm.notificar_wake_word(payload=None)
 
     def _grabar_wake(self) -> Optional[bytes]:
         """Versión corta para wake monitor: ~3 s, despacha a robot o laptop."""
