@@ -61,13 +61,27 @@ def check_red() -> None:
 
 
 def check_placas() -> None:
+    """Escaneo completo con discovery.py (guarda devices.json) y aplica las IPs
+    a config con la misma función que usa el arranque del robot."""
     import discovery
+    antes = {"IP_ESPCAM": config.IP_ESPCAM, "CONTROL_IP": config.CONTROL_IP}
+    print("[placas] escaneando la red (puede tardar unos segundos)...", flush=True)
     try:
-        ok = bool(discovery.verify_cache(timeout=1.0))
-        registrar("placas", ok,
-                  f"CAM {config.IP_ESPCAM} · DevKit {config.CONTROL_IP} (caché de discovery)")
+        roles = discovery.discover(verbose=False)
+        config.apply_discovery()   # relee devices.json recién guardado
+        faltan = [r for r in ("cam", "control", "audio") if r not in roles]
+        if faltan:
+            registrar("placas", False,
+                      f"sin resolver {faltan}: placa apagada o fuera de la red")
+            return
+        cambios = [f"{k} {antes[k]} -> {getattr(config, k)}"
+                   for k in ("IP_ESPCAM", "CONTROL_IP") if antes[k] != getattr(config, k)]
+        detalle = f"CAM {config.IP_ESPCAM} · DevKit {config.CONTROL_IP} (discovery)"
+        if cambios:
+            detalle += " · cambió: " + ", ".join(cambios)
+        registrar("placas", True, detalle)
     except Exception as e:
-        registrar("placas", False, f"error: {e}")
+        registrar("placas", False, f"discovery falló: {e}")
 
 
 def check_camara() -> None:
@@ -154,7 +168,8 @@ def check_groq() -> None:
 
 def main() -> int:
     print("Preflight de Bob", flush=True)
-    for check in [check_red, check_placas, check_camara, check_com3,
+    # Placas primero: las IPs que usan red y cámara salen de discovery.
+    for check in [check_placas, check_red, check_camara, check_com3,
                   check_microfono, check_piper, check_ollama, check_groq]:
         check()
     verdes = sum(resultados)
