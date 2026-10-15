@@ -39,3 +39,6 @@ spotipy>=2.23
 
 # UI terminal
 rich>=13.7
+
+# JEV — modelo de decisión de TypeSafe (jev_decision.py). Versión fijada.
+typesafe_sdk==0.7.5
