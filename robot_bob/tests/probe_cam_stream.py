@@ -16,7 +16,12 @@ Antes: power-cycle del CAM + navegador cerrado (cliente único).
 import socket
 import time
 
-HOST, PORT, PATH = '192.168.0.22', 81, '/stream'
+import os
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import config   # IP de la CAM desde devices.json (discovery), no fija
+
+HOST, PORT, PATH = config.IP_ESPCAM, 81, '/stream'
 DURACION_S = 10.0
 
 

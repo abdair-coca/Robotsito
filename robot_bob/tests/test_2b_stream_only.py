@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from facial_tracker import LectorStream
 
-URL_STREAM = 'http://192.168.0.22:81/stream'
+from config import URL_STREAM   # IP de la CAM desde devices.json (discovery), no fija
 
 
 def main() -> None:
