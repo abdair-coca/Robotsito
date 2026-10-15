@@ -56,6 +56,7 @@ from config import (
     SPEECH_START_FRAMES,
     BARGE_IN_ENABLED, BARGE_IN_SUSTAINED_MS, BARGE_IN_SETTLE_MS, BARGE_IN_RMS_U8,
     WAKE_WORD_ENABLED, TRIGGER_MODE, CLIMA_ENABLED, NOTICIAS_ENABLED,
+    FRASE_RESPALDO_STT, FRASE_RESPALDO_LLM,
     WAKE_CANONICAL, WAKE_PREFIXES, WAKE_MIN_CONF, WAKE_FUZZY_THR,
     WAKE_COOLDOWN_S, WAKE_MAX_UTTR_CHARS,
     GROQ_LLM_MODEL, GROQ_STT_MODEL, TEMPERATURE, MAX_TOKENS, MAX_RETRIES,
@@ -869,6 +870,14 @@ class VoicePipeline:
                 console.print('[voice] Transcribiendo...')
                 texto = self._transcribir(audio)
 
+            if not texto and getattr(self, '_stt_fallo', False):
+                # Groq caído (red/API): no es silencio. Lo decimos y cerramos el
+                # turno; el wake monitor vuelve a escuchar.
+                console.print('[red][voice] Groq STT caído → frase de respaldo[/]')
+                self._sm.iniciar_hablando()
+                self._hablar(FRASE_RESPALDO_STT, 'CONFUNDIDO')
+                break
+
             if not texto:
                 console.print('[dim][voice] Audio sin texto[/]')
                 # Pulso CONFUNDIDO para señalar visualmente que no entendió
@@ -1194,6 +1203,7 @@ class VoicePipeline:
     # ── STT ──────────────────────────────────────────────────────────────────
 
     def _transcribir(self, wav_bytes: bytes) -> str:
+        self._stt_fallo = False   # True solo si Groq falló (no si el audio era silencio)
         for attempt in range(MAX_RETRIES + 1):
             try:
                 resp = self._client.audio.transcriptions.create(
@@ -1210,6 +1220,7 @@ class VoicePipeline:
                 return resp.text.strip()
             except Exception as e:
                 if attempt == MAX_RETRIES:
+                    self._stt_fallo = True
                     console.print(f'[red][voice] STT error: {e}[/]')
                     return ''
                 time.sleep(0.5)
@@ -1262,7 +1273,9 @@ class VoicePipeline:
                 **self._llm_extra,
             )
         except Exception as e:
-            console.print(f'[red][voice] LLM error: {e}[/]')
+            console.print(f'[red][voice] LLM error: {e} → frase de respaldo[/]')
+            # Sin LLM: Bob lo dice en voz en vez de quedarse callado.
+            yield f'[EMO:CONFUNDIDO] {FRASE_RESPALDO_LLM}'
             return
 
         # Guard: corta el turno al llegar a MAX_FRASES_TURNO frases y garantiza
