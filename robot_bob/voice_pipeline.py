@@ -55,7 +55,7 @@ from config import (
     PREROLL_FRAMES, NOISE_FLOOR_INIT, NOISE_FLOOR_MARGIN, NOISE_FLOOR_MIN,
     SPEECH_START_FRAMES,
     BARGE_IN_ENABLED, BARGE_IN_SUSTAINED_MS, BARGE_IN_SETTLE_MS, BARGE_IN_RMS_U8,
-    WAKE_WORD_ENABLED, TRIGGER_MODE,
+    WAKE_WORD_ENABLED, TRIGGER_MODE, CLIMA_ENABLED, NOTICIAS_ENABLED,
     WAKE_CANONICAL, WAKE_PREFIXES, WAKE_MIN_CONF, WAKE_FUZZY_THR,
     WAKE_COOLDOWN_S, WAKE_MAX_UTTR_CHARS,
     GROQ_LLM_MODEL, GROQ_STT_MODEL, TEMPERATURE, MAX_TOKENS, MAX_RETRIES,
@@ -534,6 +534,11 @@ class VoicePipeline:
         # para que llegue el contenido que consume el TTS.
         if self._llm_model.startswith('openai/gpt-oss-'):
             self._llm_extra = {'reasoning_effort': 'low'}
+        # Backends efectivos (pueden diferir de config si Ollama no respondió).
+        console.print(f"[dim][perfil] LLM={self._llm_model} "
+                      f"({'ollama' if self._usando_ollama else 'nube'}) · "
+                      f"TTS={TTS_BACKEND} · STT=groq · "
+                      f"clima={CLIMA_ENABLED} · noticias={NOTICIAS_ENABLED} · musica={MUSICA_ENABLED}[/]")
 
         # Prompt base según el backend efectivo: solo el modelo local chico usa el
         # prompt corto y estricto (no obedece el largo). Gemini/Groq usan el completo.
