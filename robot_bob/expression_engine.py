@@ -46,7 +46,6 @@ EMO_WAKE_DETECTED   = 'CURIOSO'      # cuando se escucha "Bob"
 EMO_GREETING_PLAYED = 'TRAVIESO'     # cuando dice un saludo divertido
 EMO_AUTO_OPENER     = 'CURIOSO'      # cuando arranca él solo
 EMO_STT_FAIL        = 'CONFUNDIDO'   # cuando no entiende lo que dijiste
-EMO_HAPPY_RESPONSE  = 'FELIZ'        # cuando responde con contenido alegre
 EMO_GOODBYE         = 'TRISTE'       # cuando alguien se despide
 EMO_DOBLE_TOMA      = 'SORPRENDIDO'  # cara nueva tras larga ausencia
 EMO_LLM_ERROR       = 'CONFUNDIDO'   # cuando Groq falla
@@ -115,11 +114,6 @@ def pulse_sequence(serial_mgr, sm, steps: list,
 # DETECTORES DE CONTENIDO — para que Bob reaccione a lo que dicen
 # ═══════════════════════════════════════════════════════════════════════════
 
-_HAPPY_WORDS = {
-    'bien', 'genial', 'excelente', 'perfecto', 'fantástico', 'increíble',
-    'buenísimo', 'maravilloso', 'feliz', 'contento', 'alegre', 'super',
-    'súper', 'chévere', 'bárbaro', 'me gusta', 'me encanta',
-}
 _LOVE_WORDS = {
     'te quiero', 'te amo', 'me caes bien', 'eres genial', 'sos genial',
     'me agradas', 'precioso', 'lindo', 'hermoso', 'guapo', 'tierno',
@@ -161,11 +155,6 @@ _DEEP_QUESTION_WORDS = {
     'estas vivo', 'qué es la conciencia', 'que es la conciencia',
     'sueñan los robots', 'puedes sentir',
 }
-
-
-def is_happy(text: str) -> bool:
-    t = text.lower()
-    return any(w in t for w in _HAPPY_WORDS)
 
 
 def is_love(text: str) -> bool:
@@ -272,14 +261,6 @@ def react_to_user_text(serial_mgr, sm, texto: str) -> None:
         # Pregunta filosófica → cara de pensar sostenida (se funde con el
         # estado THINKING que llega enseguida)
         pulse_emotion(serial_mgr, sm, 'PENSANDO', 1500)
-
-
-def react_to_bob_text(serial_mgr, sm, texto: str) -> None:
-    """Pulsa la emoción apropiada según lo que Bob acaba de decir/leer."""
-    if not texto:
-        return
-    if is_happy(texto):
-        pulse_emotion(serial_mgr, sm, EMO_HAPPY_RESPONSE, PULSE_FAST)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
