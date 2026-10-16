@@ -2,8 +2,10 @@
 serial_manager.py — Único dueño del canal de control del DevKit (servos + OLED).
 
 Centraliza todos los envíos al ESP32 en un hilo dedicado con:
-  - Cola priorizada: SERVO (prio 0) > ESTADO (prio 1) > SIGUIENDO (prio 2)
-  - Throttle por tipo: servo ≥ 50 ms, OLED ≥ 80 ms
+  - Servo: solo cuenta la ÚLTIMA posición pedida (no es cola). Se manda cuando
+    pasan ≥ 50 ms desde el envío anterior; nunca se descarta una posición pendiente.
+  - Cola priorizada para lo demás: MOTOR (prio 0) > ESTADO (prio 1) > SIGUIENDO (prio 2)
+  - Throttle por tipo: OLED ≥ 80 ms
   - Deduplicación: mismo ESTADO no se reenvía en <1 s
   - Thread-safe: cualquier hilo puede llamar cmd_* sin lock externo
 
@@ -32,8 +34,7 @@ except Exception:               # config viejo sin estas claves → solo USB
     CONTROL_PORT    = 0
 
 # ── Prioridades de cola ────────────────────────────────────────────────────────
-_PRIO_MOTOR    = 0   # locomoción: tan prioritario como el servo (responsivo)
-_PRIO_SERVO    = 0
+_PRIO_MOTOR    = 0   # locomoción: prioridad máxima (responsivo)
 _PRIO_ESTADO   = 1
 _PRIO_SIGUIENDO = 2
 
@@ -75,10 +76,18 @@ class SerialManager:
         self._ultimo_motor    = 0.0
         self._ultimo_motor_cmd = None  # dedup: no reenviar la misma dirección
 
+        # Servo: la última posición pedida (la escriben los hilos con cmd_servo)
+        self._servo_lock      = threading.Lock()
+        self._servo_pendiente = None   # (pan, tilt) o None
+
         # Transportes (solo uno activo)
         self._modo: str = 'none'                       # 'wifi' | 'usb' | 'none'
         self._esp32: serial.Serial | None = None
         self._sock:  socket.socket  | None = None
+        # Si caímos a USB, reintentar WiFi cada N s. Escribir a COM3 no falla
+        # aunque nadie lea, así que sin este reintento nunca se vuelve a WiFi.
+        self._intervalo_wifi  = 10.0
+        self._t_reintento_wifi = 0.0
         self._conectar()
 
         self._hilo = threading.Thread(target=self._loop, daemon=True, name='serial-writer')
@@ -87,8 +96,9 @@ class SerialManager:
     # ── API pública (thread-safe) ──────────────────────────────────────────────
 
     def cmd_servo(self, pan: float, tilt: float) -> None:
-        """Enviar posición de servos. Prioridad máxima."""
-        self._encolar(_PRIO_SERVO, ('servo', pan, tilt))
+        """Enviar posición de servos. Reemplaza la posición pendiente (solo cuenta la última)."""
+        with self._servo_lock:
+            self._servo_pendiente = (pan, tilt)
 
     def cmd_estado(self, estado: str) -> None:
         """Enviar estado OLED (ESCUCHANDO, PENSANDO, etc.)."""
@@ -138,10 +148,10 @@ class SerialManager:
             print('[serial] WiFi no disponible, intentando USB...')
         self._conectar_usb()
 
-    def _conectar_wifi(self) -> bool:
+    def _conectar_wifi(self, timeout: float = 3.0) -> bool:
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(3.0)
+            s.settimeout(timeout)
             s.connect((self._control_ip, self._control_port))
             s.settimeout(None)
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -184,6 +194,35 @@ class SerialManager:
             # Marcamos caído; el loop reconectará. Este frame se pierde (ok).
             self._marcar_caido()
 
+    def _probar_wifi_desde_usb(self) -> None:
+        """Estando en USB: si el DevKit ya responde por WiFi, cambiar a WiFi."""
+        if not self._conectar_wifi(timeout=1.0):
+            return
+        if self._esp32 is not None:
+            try:
+                self._esp32.close()
+            except Exception:
+                pass
+            self._esp32 = None
+        print('[serial] WiFi disponible otra vez: cambio de USB a WiFi')
+        self._ultimo_estado = ''   # forzar reenvío del estado OLED
+
+    def _enviar_servo_pendiente(self) -> None:
+        """Manda la última posición de servo si ya pasó el intervalo. Si todavía no
+        toca, queda pendiente y sale en la próxima vuelta: no se pierde."""
+        ahora = time.monotonic()
+        if ahora - self._ultimo_servo < self._intervalo_servo:
+            return
+        with self._servo_lock:
+            pos, self._servo_pendiente = self._servo_pendiente, None
+        if pos is None:
+            return
+        pan, tilt = pos
+        pan_i  = int(max(0,   min(180, pan)))
+        tilt_i = int(max(0,   min(180, tilt)))
+        self._enviar(f'H:{pan_i},V:{tilt_i}\n')
+        self._ultimo_servo = ahora
+
     def _marcar_caido(self) -> None:
         """Cierra el transporte muerto y deja _modo='none' para forzar reconexión."""
         if self._sock is not None:
@@ -219,9 +258,16 @@ class SerialManager:
                 if ahora - self._t_reintento >= self._intervalo_reconexion:
                     self._t_reintento = ahora
                     self._reconectar()
+            elif self._modo == 'usb' and self._use_wifi and self._control_ip and self._control_port:
+                ahora = time.monotonic()
+                if ahora - self._t_reintento_wifi >= self._intervalo_wifi:
+                    self._t_reintento_wifi = ahora
+                    self._probar_wifi_desde_usb()
+
+            self._enviar_servo_pendiente()
 
             try:
-                prio, _seq, item = self._cola.get(timeout=0.1)
+                prio, _seq, item = self._cola.get(timeout=0.01)
             except queue.Empty:
                 continue
 
@@ -241,15 +287,6 @@ class SerialManager:
                 self._enviar(f'M:{izq},{der}\n')
                 self._ultimo_motor = ahora
                 self._ultimo_motor_cmd = cmd
-
-            elif tipo == 'servo':
-                if ahora - self._ultimo_servo < self._intervalo_servo:
-                    continue  # descarta, llegará uno más nuevo
-                _, pan, tilt = item
-                pan_i  = int(max(0,   min(180, pan)))
-                tilt_i = int(max(0,   min(180, tilt)))
-                self._enviar(f'H:{pan_i},V:{tilt_i}\n')
-                self._ultimo_servo = ahora
 
             elif tipo == 'estado':
                 if ahora - self._ultimo_oled < self._intervalo_oled:
