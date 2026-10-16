@@ -118,15 +118,16 @@ reproduciendo = False         # True mientras el DAC reproduce audio
 # ══════════════════════════════════════════════════════════════════
 
 def angulo_duty(grados):
-    """Grados (0-180) -> duty cycle PWM."""
+    """Grados (0-180) -> duty cycle PWM de 16 bits (duty_u16).
+    Con duty() de 10 bits cada paso era ~1.8°: diferencias de 1° no movían el servo."""
     pulso = 0.5 + (grados / 180.0) * 2.0    # 0.5–2.5 ms
-    return int((pulso / 20.0) * 1023)
+    return int((pulso / 20.0) * 65535)
 
 def mover_servos(pan_g, tilt_g):
     pan_g  = max(PAN_MIN,  min(PAN_MAX,  pan_g))
     tilt_g = max(TILT_MIN, min(TILT_MAX, tilt_g))
-    pan.duty(angulo_duty(pan_g))
-    tilt.duty(angulo_duty(tilt_g))
+    pan.duty_u16(angulo_duty(pan_g))
+    tilt.duty_u16(angulo_duty(tilt_g))
 
 def parsear_servo(cmd):
     """Parsea 'H:90,V:45'. Devuelve (h, v) o (None, None)."""
@@ -667,14 +668,21 @@ buf_ctrl  = b''
 print('Loop de control listo. WiFi puerto', PORT_CTRL, '+ USB serial (fallback).')
 
 while True:
-    # ── A) WiFi: aceptar/atender al cliente de control ───────────────
-    if conn_ctrl is None:
-        try:
-            conn_ctrl, addr = srv_ctrl.accept()
-            conn_ctrl.setblocking(False)
-            print('[Ctrl] Laptop conectada:', addr)
-        except OSError:
-            pass                              # nadie conectando ahora
+    # ── A) WiFi: aceptar al cliente de control (gana la conexión más nueva) ─
+    # Si la laptop reconecta y la conexión vieja quedó medio muerta, sin esto el
+    # firmware seguía leyendo el socket viejo y los comandos nuevos se quedaban
+    # en el buffer de TCP sin efecto (la laptop no ve error al enviar).
+    try:
+        nueva, addr = srv_ctrl.accept()
+        if conn_ctrl is not None:
+            print('[Ctrl] Reemplazo la conexión anterior')
+            conn_ctrl.close()
+        conn_ctrl = nueva
+        conn_ctrl.setblocking(False)
+        buf_ctrl  = b''
+        print('[Ctrl] Laptop conectada:', addr)
+    except OSError:
+        pass                              # nadie conectando ahora
 
     if conn_ctrl is not None:
         try:
