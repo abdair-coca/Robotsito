@@ -130,6 +130,8 @@ def main() -> None:
         # 4) Frase corta → no decide
         v = turno(construir(mem), cerca(base, 52), seg=1.0)
         check('frase corta: no decide', v._convo_persona is None and v._voz_turno is None)
+        v = turno(construir(mem), cerca(base, 56), seg=vp.VOZ_ID_MIN_S + 0.1)
+        check('frase de charla (1.3 s): identifica', v._convo_persona == dueno)
 
         # 5) Cara del dueño + su voz → confirma
         v = turno(construir(mem, dueno, 0.8), cerca(base, 53))
@@ -202,13 +204,13 @@ def main() -> None:
             si = no = total_a = total_o = 0
             for r in abd[5:]:
                 emb, seg = leer(r)
-                if emb is None or seg < vp.VOZ_MIN_S:
+                if emb is None or seg < vp.VOZ_ID_MIN_S:
                     continue
                 total_a += 1
                 si += turno(construir(mem2), emb, seg)._convo_persona == d2
             for r in ajenas:
                 emb, seg = leer(r)
-                if emb is None or seg < vp.VOZ_MIN_S:
+                if emb is None or seg < vp.VOZ_ID_MIN_S:
                     continue
                 total_o += 1
                 no += turno(construir(mem2), emb, seg)._convo_persona is None

@@ -123,10 +123,18 @@ except Exception:
 #                      (EXP-1-001: dueño mín 0.476, otra voz máx 0.275; provisional
 #                      hasta medir una voz masculina)
 #   VOZ_MIN_MUESTRAS   muestras necesarias antes de identificar por voz
+#   VOZ_ID_MIN_S       segundos de voz mínimos para identificar (las muestras que se
+#                      guardan siguen pidiendo VOZ_MIN_S). EXP-1-001: contra el
+#                      promedio, 1.2 s separa sin errores; las frases de charla
+#                      duran 1.2–1.7 s
 try:
     from config import VOZ_UMBRAL, VOZ_MIN_MUESTRAS
 except Exception:
     VOZ_UMBRAL, VOZ_MIN_MUESTRAS = 0.45, 5
+try:
+    from config import VOZ_ID_MIN_S
+except Exception:
+    VOZ_ID_MIN_S = 1.2
 # Backend del LLM (charla): "ollama" local o "groq" nube. Import guardado por si
 # un config viejo no lo define.
 try:
@@ -705,7 +713,7 @@ class VoicePipeline:
         """Similitud de la frase contra la voz del dueño, o None si no se puede
         decir (pocas muestras o frase corta)."""
         emb, seg = analisis
-        if emb is None or seg < VOZ_MIN_S:
+        if emb is None or seg < VOZ_ID_MIN_S:
             console.print(f'[dim][voz] frase de {seg:.1f} s: muy corta para reconocer la voz[/]')
             return None
         n = self._memoria.total_voces(DUENO_ID)
