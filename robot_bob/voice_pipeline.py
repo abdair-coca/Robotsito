@@ -26,7 +26,6 @@ import tempfile
 import threading
 import time
 import wave
-from datetime import datetime
 from collections import deque
 from typing import Optional, List, Dict, Iterator
 
@@ -66,7 +65,6 @@ from config import (
     TTS_SEND_CHUNK_BYTES,
     SOLILOQUIO_ENABLED, SOLO_IDLE_MIN_S, PRESENCE_NUDGE_S,
     P_SOLILOQUIO, SOLILOQUIO_COOLDOWN_S, SOLILOQUIO_SETTLE_MS, BANCO_SOLILOQUIO,
-    SOLILOQUIO_USA_LLM, SOLILOQUIO_LLM_RATIO, SOLILOQUIO_LLM_MAX_TOK,
     SOLILOQUIO_MAX_CARNADAS,
 )
 # Prosodia por emoción (config local, gitignoreado). Fallback neutro si falta.
@@ -80,10 +78,6 @@ try:
     from config import WAKE_MIN_LEVEL
 except Exception:
     WAKE_MIN_LEVEL = 1.3
-try:
-    from config import SOLILOQUIO_LLM_MODEL
-except Exception:
-    SOLILOQUIO_LLM_MODEL = None   # None = usar el mismo modelo del chat
 try:
     from config import WAKE_WINDOW_S, WAKE_VOICE_LEVEL, WAKE_SILENCE_CUT_S
 except Exception:
@@ -150,9 +144,9 @@ from music import (parse_music_command, ejecutar as ejecutar_musica,  # P6: Spot
                    intent_desde_jev)                                  # J4: acción por JEV
 from show import es_comando_show, run_show     # modo presentación ("presentate")
 from reminders import parse_recordatorio, ReminderStore   # P9: recordatorios
-from jev_decision import decidir   # J2: ruta del turno con JEV (None = parsers)
+from jev_decision import decidir, EMOCION_RESPALDO   # J2: ruta del turno; J3: emoción
 from expression_engine import (
-    pulse_emotion, react_to_user_text, react_to_bob_text,
+    pulse_emotion, react_to_user_text,
     mood_delta_for_user_text, is_love,
     EMO_WAKE_DETECTED, EMO_GREETING_PLAYED, EMO_AUTO_OPENER,
     EMO_STT_FAIL, EMO_LLM_ERROR,
@@ -162,7 +156,9 @@ from expression_engine import (
 # ── Tags de emoción del LLM (InteractiveGoal Fase A) ───────────────────────────
 # El LLM prefija cada frase con [EMO:X]. Lo extraemos para el OLED y lo
 # quitamos del texto antes del TTS (no debe leerse en voz alta).
-_EMO_TAG_RE = re.compile(r'\[EMO:([A-ZÁÉÍÓÚÜÑ_]+)\]', re.IGNORECASE)
+# Acepta también "¡EMO:FELIZ!" sin corchetes: el LLM a veces lo escribe así y,
+# si no se quita, el TTS lo lee en voz alta.
+_EMO_TAG_RE = re.compile(r'¡?\[?EMO:([A-ZÁÉÍÓÚÜÑ_]+)\]?!?', re.IGNORECASE)
 # Debe coincidir con los estados que el firmware (oled_ojos.py ESTADOS) sabe
 # dibujar. Si un tag no está aquí, _extract_emo_tag lo descarta y el OLED cae al
 # fallback por keyword (la emoción no se muestra).
@@ -186,16 +182,12 @@ def _extract_emo_tag(text: str) -> tuple:
     return emo, clean
 
 
-def _ensure_emo_tag(sent: str) -> str:
+def _marcar_emo(sent: str, emo: str) -> str:
     """
-    Garantiza que la frase abra con un tag [EMO:X] válido. Si el LLM (típico en
-    modelos locales chicos) no puso ninguno, antepone [EMO:HABLANDO] (neutral)
-    para que el OLED no quede sin emoción. Si ya hay un tag válido, no toca nada.
+    J3: la emoción la decide JEV, no el LLM. Quita los tags que el LLM escriba
+    y antepone el de JEV, para que el OLED y el TTS lo lean como antes.
     """
-    for m in _EMO_TAG_RE.finditer(sent):
-        if m.group(1).upper() in _VALID_EMOS:
-            return sent
-    return '[EMO:HABLANDO] ' + sent
+    return f'[EMO:{emo}] ' + _EMO_TAG_RE.sub('', sent).strip()
 
 FFMPEG  = imageio_ffmpeg.get_ffmpeg_exe()
 console = Console()
@@ -260,22 +252,6 @@ AUTO_OPENERS = [
     '¡Hey! ¿Qué opinas de los robots conversacionales?',
 ]
 
-# Prompt para soliloquios generados por LLM (Fase C). Pide UNA frase corta,
-# hablable, con su tag [EMO:X]. Barato (pocos tokens) y con temperatura alta
-# para variedad.
-SOLILOQUIO_LLM_PROMPT = (
-    "Eres Bob, un robot sociable en una feria de la Universidad Autónoma Tomás "
-    "Frías (UATF), en Potosí, Bolivia. Ahora estás SOLO, nadie te habla.\n"
-    "Di UNA sola frase corta (máximo 12 palabras) que dirías en voz alta para ti "
-    "mismo: un pensamiento, una queja liviana, una curiosidad o una broma con "
-    "actitud. Tono de compañero de la facu, boliviano, divertido.\n"
-    "La frase DEBE empezar con un tag de emoción entre corchetes: [EMO:FELIZ], "
-    "[EMO:CURIOSO], [EMO:TRAVIESO], [EMO:PENSANDO], [EMO:TRISTE], [EMO:MUY_FELIZ], "
-    "[EMO:CONFUNDIDO] o [EMO:AMOR].\n"
-    "Texto plano hablable: sin comillas, sin markdown, sin emojis, sin acotaciones. "
-    "Solo la frase con su tag."
-)
-
 # Filtro pasa-banda de voz (pre-calculado, reutilizable)
 _VOICE_BANDPASS = butter(4, [80, 3500], btype='band', fs=SAMPLE_RATE, output='sos')
 
@@ -311,14 +287,6 @@ def _uint8_to_wav(uint8_audio: bytes) -> bytes:
         wf.setframerate(SAMPLE_RATE)
         wf.writeframes(int16.tobytes())
     return buf.getvalue()
-
-def _is_happy(text: str) -> bool:
-    HAPPY_KEYWORDS = {
-        'bien', 'genial', 'excelente', 'perfecto', 'fantástico', 'claro', 'por supuesto',
-        'feliz', 'alegre', 'encantado', 'maravilloso', 'increíble', 'buenísimo',
-    }
-    words = set(text.lower().split())
-    return bool(words & HAPPY_KEYWORDS)
 
 # Frases que Whisper alucina con silencio/ruido — se ignoran en el wake monitor.
 _ALUCINACIONES = {
@@ -601,6 +569,7 @@ class VoicePipeline:
         # J3: decisión de JEV que el monitor en reposo ya pidió para el primer turno.
         # Se usa solo si el texto coincide; así no se llama a JEV dos veces.
         self._jev_previa = None
+        self._emocion_turno = EMOCION_RESPALDO   # J3: emoción de JEV para el turno en curso
 
         self._wake = WakeWordDetector(
             wake_word=WAKE_CANONICAL,
@@ -743,9 +712,8 @@ class VoicePipeline:
             "conoces. Saluda retomando con calidez UNO de sus temas o recuerdos de "
             "una charla anterior, como un amigo que retoma la conversación "
             "(ej: 'la última vez me hablabas de tu robot, ¿cómo va eso?'). "
-            "UNA sola frase corta y hablable, que empiece con un tag de emoción "
-            "[EMO:FELIZ], [EMO:CURIOSO], [EMO:TRAVIESO] o [EMO:AMOR]. "
-            "Sin comillas, sin markdown, sin emojis.")
+            "UNA sola frase corta y hablable. Sin etiquetas ni corchetes, sin comillas, "
+            "sin markdown, sin emojis.")
         try:
             resp = self._llm.chat.completions.create(
                 model=self._llm_model,
@@ -756,10 +724,10 @@ class VoicePipeline:
         except Exception as e:
             console.print(f'[dim][P7] opener memoria falló: {e}[/]')
             return None
-        emo, clean = _extract_emo_tag(txt)
+        _, clean = _extract_emo_tag(txt)
         if not clean or not any(c.isalnum() for c in clean):
             return None
-        return clean, (emo or 'FELIZ')
+        return clean, 'FELIZ'   # J3: el LLM no pone tags; saludo de persona conocida = FELIZ
 
     def _resumir_conversacion(self):
         """LLM resume la charla → (resumen, gustos, temas). None si falla."""
@@ -857,8 +825,7 @@ class VoicePipeline:
                 console.print(f'[bold magenta][P7 opener memoria][/] ({saludo_emo}) {saludo}')
                 self._serial.cmd_estado(saludo_emo)
                 # Registrar lo dicho para que el LLM continúe el hilo del tema.
-                self._convo.append({'role': 'assistant',
-                                    'content': f'[EMO:{saludo_emo}] {saludo}'})
+                self._convo.append({'role': 'assistant', 'content': saludo})
             elif self._persona_nombre:
                 # Persona conocida sin recuerdos útiles → saludo por su nombre.
                 n = self._persona_nombre
@@ -1320,18 +1287,20 @@ class VoicePipeline:
                        if m['role'] == 'assistant'), '')
         d = decidir(texto, ultimo)
         origen = 'respaldo' if d.respaldo else 'JEV'
-        console.print(f'[dim][jev] ruta={d.ruta} ({origen}, {d.latencia_s:.2f}s)[/]')
+        console.print(f'[dim][jev] ruta={d.ruta} emoción={d.emocion} ({origen}, {d.latencia_s:.2f}s)[/]')
         return d
 
     def _decidir_ruta(self, texto: str) -> Optional[str]:
         """J2: pide la ruta del turno a JEV. None = JEV no respondió (usar parsers).
+        J3: también guarda la emoción del turno (CURIOSO si JEV está apagado).
         Si el monitor en reposo ya la pidió para este mismo texto, la reutiliza."""
         if not JEV_ROUTING_ENABLED:
+            self._emocion_turno = EMOCION_RESPALDO
             return None
         previa, self._jev_previa = self._jev_previa, None
-        if previa and previa[0] == texto:
-            return previa[1].ruta
-        return self._pedir_jev(texto).ruta
+        d = previa[1] if previa and previa[0] == texto else self._pedir_jev(texto)
+        self._emocion_turno = d.emocion
+        return d.ruta
 
     def _stream_llm(self, texto: str) -> Iterator[str]:
         self._convo.append({'role': 'user', 'content': texto})
@@ -1364,10 +1333,9 @@ class VoicePipeline:
             yield f'[EMO:CONFUNDIDO] {FRASE_RESPALDO_LLM}'
             return
 
-        # Guard: corta el turno al llegar a MAX_FRASES_TURNO frases y garantiza
-        # que cada frase abra con un tag [EMO:X] válido. Los modelos locales
-        # chicos se pasan de frases y olvidan los tags; esto lo fuerza pase lo
-        # que pase. Guardamos en el historial SOLO lo dicho (refuerza brevedad).
+        # Guard: corta el turno al llegar a MAX_FRASES_TURNO frases y pone en cada
+        # frase la emoción de JEV (_marcar_emo). Guardamos en el historial SOLO lo
+        # dicho, sin tags (refuerza brevedad y evita que el LLM copie los tags).
         #
         # _split_sentence parte también en ¿/¡, dejando fragmentos sin contenido
         # hablable (solo un tag o un signo de apertura). Esos NO cuentan como
@@ -1376,6 +1344,7 @@ class VoicePipeline:
         def _hablable(s: str) -> bool:
             return any(c.isalnum() for c in _EMO_TAG_RE.sub('', s))
 
+        emo_turno = self._emocion_turno
         buf       = ''
         dicho     = []     # frases efectivamente habladas
         pendiente = ''     # prefijo (tag/signo de apertura) para la próxima frase
@@ -1393,7 +1362,7 @@ class VoicePipeline:
                 if not _hablable(sent):
                     pendiente = sent        # arrastrar tag/signo al siguiente
                     continue
-                sent = _ensure_emo_tag(sent)
+                sent = _marcar_emo(sent, emo_turno)
                 dicho.append(sent)
                 yield sent
                 n_frases += 1
@@ -1410,10 +1379,11 @@ class VoicePipeline:
         else:
             tail = (pendiente + buf).strip()
             if _hablable(tail):
-                sent = _ensure_emo_tag(tail)
+                sent = _marcar_emo(tail, emo_turno)
                 dicho.append(sent)
                 yield sent
-        self._convo.append({'role': 'assistant', 'content': ' '.join(dicho)})
+        self._convo.append({'role': 'assistant',
+                            'content': ' '.join(_EMO_TAG_RE.sub('', s).strip() for s in dicho)})
 
     # ── TTS + Reproducción ────────────────────────────────────────────────────
 
@@ -1536,7 +1506,7 @@ class VoicePipeline:
 
         # Fase C: si la conversación viene muy bien (mood alto o racha de 3+
         # turnos positivos), Bob arranca a hablar con cara eufórica. La emoción
-        # del primer tag del LLM la reemplaza cuando empiece la primera frase.
+        # de JEV la reemplaza cuando empiece la primera frase.
         if self._sm.mood >= 0.6 or self._sm.positive_streak >= 3:
             self._serial.cmd_estado('MUY_FELIZ')
 
@@ -1566,21 +1536,9 @@ class VoicePipeline:
                     self._serial.cmd_estado('MUY_FELIZ')
                     time.sleep(0.20)
 
-            # Fase D: risa explícita en la frase sin tag → MUY_FELIZ
-            low = sent_text.lower()
-            if emo is None and ('jaja' in low or 'jeje' in low):
-                emo = 'MUY_FELIZ'
-
-            if emo:
-                # El LLM decidió la emoción de esta frase — fuente principal
-                self._serial.cmd_estado(emo)
-                console.print(f'[bold green]Bob[/] [dim]({emo})[/]: {sent_text}')
-            else:
-                # Fallback si el LLM olvidó el tag: keywords como antes
-                oled = 'FELIZ' if _is_happy(sent_text) else 'HABLANDO'
-                self._serial.cmd_estado(oled)
-                console.print(f'[bold green]Bob:[/] {sent_text}')
-                react_to_bob_text(self._serial, self._sm, sent_text)
+            # JEV decidió la emoción del turno (ver _marcar_emo)
+            self._serial.cmd_estado(emo)
+            console.print(f'[bold green]Bob[/] [dim]({emo})[/]: {sent_text}')
 
             c = self._reproducir_mp3(mp3)
 
@@ -1765,7 +1723,7 @@ class VoicePipeline:
             if self._sm.en_conversacion:
                 continue
 
-            frase = self._elegir_frase_soliloquio(categoria, est)
+            frase = self._elegir_frase_soliloquio(categoria)
             if not frase:
                 continue
             self.decir_soliloquio(frase)
@@ -1775,13 +1733,8 @@ class VoicePipeline:
             # Cadencia con jitter: que no suene metronómico.
             cooldown = SOLILOQUIO_COOLDOWN_S * random.uniform(0.8, 1.4)
 
-    def _elegir_frase_soliloquio(self, categoria: str, estado) -> Optional[str]:
-        """Mezcla LLM/banco: con prob LLM_RATIO pide una frase nueva al LLM;
-        si falla o no toca, devuelve una del banco local."""
-        if SOLILOQUIO_USA_LLM and random.random() < SOLILOQUIO_LLM_RATIO:
-            frase = self._soliloquio_llm(categoria, estado)
-            if frase:
-                return frase
+    def _elegir_frase_soliloquio(self, categoria: str) -> Optional[str]:
+        """Devuelve una frase del banco local para la categoría, sin repetir las recientes."""
         frases = BANCO_SOLILOQUIO.get(categoria)
         if not frases:
             return None
@@ -1789,42 +1742,6 @@ class VoicePipeline:
         candidatas = [f for f in frases
                       if _extract_emo_tag(f)[1].lower() not in self._soliloquio_reciente]
         return random.choice(candidatas or frases)
-
-    def _soliloquio_llm(self, categoria: str, estado) -> Optional[str]:
-        """Genera UNA frase de soliloquio con Groq. Devuelve None si falla."""
-        from state_machine import RobotState
-        hora = datetime.now().strftime('%H:%M')
-        if estado == RobotState.PRESENCE:
-            situacion = ("Hay alguien cerca mirándote pero aún no te habla; "
-                         "tírale una frase para romper el hielo.")
-        else:
-            situacion = "No hay nadie a la vista; esperas que llegue gente."
-        contexto = (f"Categoría: {categoria}. Son las {hora}. {situacion} "
-                    f"Tu ánimo (de -1 a 1) está en {self._sm.mood:+.1f}.")
-        if self._soliloquio_reciente:
-            contexto += (" No repitas ni parafrasees estas frases que ya dijiste: "
-                         + " | ".join(self._soliloquio_reciente))
-        # Modelo chico solo si el chat corre en Groq (self._llm es el cliente
-        # Groq); con Ollama/Gemini el nombre no existiría en ese backend.
-        modelo = (SOLILOQUIO_LLM_MODEL
-                  if SOLILOQUIO_LLM_MODEL and self._llm is self._client
-                  else self._llm_model)
-        try:
-            resp = self._llm.chat.completions.create(
-                model=modelo,
-                messages=[{'role': 'system', 'content': SOLILOQUIO_LLM_PROMPT},
-                          {'role': 'user',   'content': contexto}],
-                temperature=1.0,
-                max_tokens=SOLILOQUIO_LLM_MAX_TOK,
-                **self._llm_extra,
-            )
-            txt = (resp.choices[0].message.content or '').strip()
-            if txt:
-                console.print(f'[dim][soliloquio-LLM] generada: {txt}[/]')
-            return txt or None
-        except Exception as e:
-            console.print(f'[dim][soliloquio] LLM falló, uso banco: {e}[/]')
-            return None
 
     def decir_soliloquio(self, frase: str) -> None:
         """Dice UNA frase espontánea: muta el mic (anti-eco), pone el OLED según
