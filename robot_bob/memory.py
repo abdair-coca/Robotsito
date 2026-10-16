@@ -1,13 +1,17 @@
 """
 memory.py — Memoria persistente de Bob (SQLite).
 
-Dos tablas:
+Tres tablas:
   personas  — id, nombre, edad, gustos, temas, relacion, primera_vez, ultima_vez,
               embedding (BLOB del vector facial L2-normalizado de face_id).
   episodios — recuerdos por persona (texto + fecha).
+  voces     — muestras de voz por persona (BLOB del vector de voice_id + fecha +
+              origen 'pasivo'|'explicito'), hasta MAX_VOCES por persona.
 
 Identidad por CARA: reconocer(embedding) compara el embedding contra los guardados
 por similitud coseno (= producto punto, porque están L2-normalizados).
+Identidad por VOZ: verificar_voz(pid, embedding) compara contra el promedio de las
+muestras de esa persona (verificación de UNA persona, no búsqueda entre todas).
 
 Thread-safe (lock + check_same_thread=False) porque lo usa el hilo de voz.
 """
@@ -27,6 +31,11 @@ try:
 except Exception:
     _SIM_THR = 0.40
 
+# Tope de muestras de voz por persona. Al pasarlo se borra la más vieja de origen
+# 'pasivo'; las 'explicito' (frases leídas a pedido) se conservan mientras haya
+# pasivas que borrar.
+MAX_VOCES = 40
+
 
 class Memoria:
     def __init__(self, ruta: str = _DB_DEFAULT):
@@ -39,6 +48,9 @@ class Memoria:
         self._con.execute('''CREATE TABLE IF NOT EXISTS episodios(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             persona_id INTEGER, texto TEXT, fecha TEXT)''')
+        self._con.execute('''CREATE TABLE IF NOT EXISTS voces(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            persona_id INTEGER, embedding BLOB, fecha TEXT, origen TEXT)''')
         self._con.commit()
         self._migrar()
 
@@ -146,6 +158,48 @@ class Memoria:
             self._con.execute('INSERT INTO episodios(persona_id, texto, fecha) VALUES(?,?,?)',
                               (pid, texto, self._ahora()))
             self._con.commit()
+
+    # ── Voz ─────────────────────────────────────────────────────────────────
+    def agregar_voz(self, pid: int, embedding, origen: str = 'pasivo') -> None:
+        """Guarda una muestra de voz; si pasa MAX_VOCES borra la pasiva más vieja
+        (o la más vieja de todas si no quedan pasivas)."""
+        if embedding is None:
+            return
+        with self._lock:
+            self._con.execute(
+                'INSERT INTO voces(persona_id, embedding, fecha, origen) VALUES(?,?,?,?)',
+                (pid, np.asarray(embedding, np.float32).tobytes(), self._ahora(), origen))
+            n = self._con.execute('SELECT COUNT(*) FROM voces WHERE persona_id=?',
+                                  (pid,)).fetchone()[0]
+            if n > MAX_VOCES:
+                self._con.execute(
+                    'DELETE FROM voces WHERE id IN (SELECT id FROM voces WHERE persona_id=? '
+                    "ORDER BY (origen='pasivo') DESC, id ASC LIMIT ?)",
+                    (pid, n - MAX_VOCES))
+            self._con.commit()
+
+    def total_voces(self, pid: int) -> int:
+        with self._lock:
+            return self._con.execute('SELECT COUNT(*) FROM voces WHERE persona_id=?',
+                                     (pid,)).fetchone()[0]
+
+    def centroide_voz(self, pid: int):
+        """Promedio L2-normalizado de las muestras de voz de la persona, o None."""
+        with self._lock:
+            filas = self._con.execute('SELECT embedding FROM voces WHERE persona_id=?',
+                                      (pid,)).fetchall()
+        if not filas:
+            return None
+        c = np.mean([np.frombuffer(b, dtype=np.float32) for (b,) in filas], axis=0)
+        return (c / (np.linalg.norm(c) + 1e-9)).astype(np.float32)
+
+    def verificar_voz(self, pid: int, embedding):
+        """Similitud coseno de la frase contra el promedio de voz de la persona, o
+        None si no hay muestras o no hay embedding. El umbral lo decide quien llama."""
+        if embedding is None:
+            return None
+        c = self.centroide_voz(pid)
+        return None if c is None else float(np.dot(embedding, c))
 
     # ── Lecturas ────────────────────────────────────────────────────────────
     def persona(self, pid: int):
