@@ -96,8 +96,8 @@ _KW_VOL_DOWN = ("baja el volumen", "bajá el volumen", "más bajo", "mas bajo",
 
 # Palabras de relleno a quitar del tema buscado ("pon la canción X" → "X").
 _FILLER_QUERY = re.compile(
-    r"^(?:la|el|una|un|esa|ese|esta|este|por favor|porfa|"
-    r"canción|cancion|tema|música|musica|de|a)\s+", re.IGNORECASE)
+    r"^(?:la|el|una|un|algo|esa|ese|esta|este|por favor|porfa|"
+    r"canción|cancion|tema|música|musica|de|a)(?:\s+|$)", re.IGNORECASE)
 
 
 # ── Volumen por porcentaje ("pon el volumen al 70 por ciento") ─────────────────
@@ -165,8 +165,6 @@ def parse_music_command(texto: str) -> Optional[MusicIntent]:
         return MusicIntent("vol_up")
     if any(k in t for k in _KW_VOL_DOWN):
         return MusicIntent("vol_down")
-    if any(k in t for k in _KW_RESUME):
-        return MusicIntent("resume")
 
     # Playlist ("pon mi playlist de rock", "reproduce mis playlists"). Va ANTES de
     # _RE_PLAY para que "playlist X" no se interprete como un tema suelto. Requiere
@@ -186,7 +184,45 @@ def parse_music_command(texto: str) -> Optional[MusicIntent]:
         if query:
             return MusicIntent("play", query=query)
         return MusicIntent("resume")     # "pon" sin tema → reanudar
+    # Frases fijas de reanudar. Van DESPUÉS de buscar tema: "pon música de X" debe
+    # buscar X, no reanudar.
+    if any(k in t for k in _KW_RESUME):
+        return MusicIntent("resume")
     return None
+
+
+# J4: acción de música que JEV elige. Las rutas simples no necesitan detalle.
+_ACCION_JEV = {
+    "musica_pausa": "pause",
+    "musica_siguiente": "next",
+    "musica_anterior": "prev",
+    "musica_subir": "vol_up",
+    "musica_bajar": "vol_down",
+    "musica_reanudar": "resume",
+}
+
+
+def intent_desde_jev(ruta: str, texto: str,
+                     por_palabras: Optional[MusicIntent]) -> Optional[MusicIntent]:
+    """J4: JEV decide la acción; el detalle (tema, playlist, volumen) sale del parser.
+    por_palabras: lo que devolvió parse_music_command(texto), o None.
+    Devuelve None si no hay forma de ejecutar la acción (el turno pasa a la charla)."""
+    accion = _ACCION_JEV.get(ruta)
+    if accion:
+        return MusicIntent(accion)
+    if ruta == "musica_volumen":
+        # "volumen" delante: _parse_vol_set exige la palabra o "por ciento".
+        vol = _parse_vol_set("volumen " + texto.lower())
+        return MusicIntent("vol_set", valor=vol) if vol is not None else None
+    if ruta == "musica_playlist":
+        if por_palabras and por_palabras.accion == "play_playlist":
+            return por_palabras
+        return MusicIntent("play_playlist")
+    if ruta == "musica_play":
+        if por_palabras and por_palabras.accion == "play":
+            return por_palabras
+        return None
+    return por_palabras   # "musica" genérico: lo de siempre
 
 
 # ── Cliente Spotify (perezoso) ──────────────────────────────────────────────────

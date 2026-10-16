@@ -2,7 +2,8 @@
 jev_decision.py — Decisiones de Bob con el modelo JEV (solo texto), vía typesafe_sdk.
 
 Dos peticiones en paralelo, cada una con una sola pregunta:
-  - ruta: musica | recordatorio | asistente | charla | ajeno (None si JEV no respondió)
+  - ruta: musica | recordatorio | asistente | charla | despedida | ajeno
+    (None si JEV no respondió)
   - emocion: una de EMOCIONES para la respuesta (CURIOSO si no respondió)
 
 Medido en J1: una petición con las dos preguntas tarda ~1.0 s (mediana); cada
@@ -26,10 +27,27 @@ from config import JEV_MODEL, JEV_TIMEOUT_S, TYPESAFE_API_KEY
 EMOCION_RESPALDO = "CURIOSO"
 
 RUTAS = {
-    "musica": "Pide reproducir, pausar, cambiar o controlar música",
+    "musica": "Pide algo de música que no encaja en las rutas de música específicas",
+    "musica_play": "Pide poner una canción, artista o género: pon X, toca X, pon música de X",
+    "musica_playlist": "Pide poner una playlist: mi playlist de rock, mis playlists",
+    "musica_reanudar": "Quiere seguir la música que ya estaba: reanuda, sigue, dale play",
+    "musica_pausa": "Quiere pausar o parar la música",
+    "musica_siguiente": "Quiere la canción siguiente u otra: pon otra, salta, siguiente",
+    "musica_anterior": "Quiere la canción anterior",
+    "musica_subir": "Quiere más volumen: sube el volumen, más fuerte",
+    "musica_bajar": "Quiere menos volumen: baja el volumen, más bajo",
+    "musica_volumen": "Quiere un volumen exacto: pon el volumen al 70 por ciento",
     "recordatorio": "Pide un recordatorio, temporizador o alarma",
     "asistente": "Pregunta por hora, fecha, clima o noticias",
     "charla": "Cualquier otra cosa: conversar, preguntar, pedir un chiste",
+    "giro_derecha": "Quiere que Bob gire o mire hacia su derecha: a tu derecha, por la derecha",
+    "giro_izquierda": "Quiere que Bob gire o mire hacia su izquierda: a tu izquierda, por la izquierda",
+    "giro_buscar": "Quiere que Bob se dé la vuelta o busque a quien le habla: date la vuelta, "
+                   "estoy detrás de ti, gira",
+    "presentacion": "Quiere que Bob haga su presentación o muestre lo que sabe hacer: "
+                    "preséntate, qué sabes hacer, muéstrame lo que sabes",
+    "despedida": "Quiere que Bob se vaya, se calle o termine: adiós, me voy, vete, "
+                 "no me hables, déjame en paz",
     "ajeno": "Claramente no es para Bob: ruido o gente hablando entre sí sin nombrarlo. "
              "Ante la duda, NO elijas ajeno",
 }
@@ -53,8 +71,9 @@ EMOCIONES = {
 }
 
 PREGUNTAS = {
-    "ruta": {"instructions": "¿Le habla el usuario a Bob y qué quiere? Elige ajeno solo "
-                             "si está claro que no le habla a Bob; ante la duda, elige charla.",
+    "ruta": {"instructions": "¿Le habla el usuario a Bob y qué quiere? Elige despedida si "
+                             "quiere que Bob se vaya o termine. Elige ajeno solo si está claro "
+                             "que no le habla a Bob. Ante la duda, elige charla.",
              "criteria": RUTAS},
     "emocion": {"instructions": "¿Qué emoción debe mostrar Bob al responder?",
                 "criteria": EMOCIONES},

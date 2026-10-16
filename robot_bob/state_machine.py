@@ -334,16 +334,17 @@ class StateMachine:
                 self._t_cara_vista = 0.0
                 self._transicionar(RobotState.IDLE)
 
-    def notificar_wake_word(self, payload: str | None = None) -> None:
+    def notificar_wake_word(self, payload: str | None = None, saludar: bool = True) -> None:
         """
         Wake word detectado — forzar inicio de conversación.
         payload: texto capturado después del wake (e.g. "como estas" tras "bob como estas").
                  Si está, se pasa al pipeline como primer turno sin re-grabar.
+        saludar: False cuando JEV activó la charla sin "Bob": no hay saludo previo.
         """
         with self._lock:
             estado = self._estado
         if estado in (RobotState.IDLE, RobotState.PRESENCE):
-            self.greeting_pending = True
+            self.greeting_pending = saludar
             self.conversation_trigger = 'wake'
             self.pending_text = (payload or '').strip() or None
             # Oyó "Bob" pero no ve a nadie → buscar al que habla girando.

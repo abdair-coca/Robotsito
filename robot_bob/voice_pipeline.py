@@ -146,7 +146,8 @@ try:
 except Exception:
     MUSICA_ENABLED = False
 from music import (parse_music_command, ejecutar as ejecutar_musica,  # P6: Spotify
-                   esta_sonando as sonando_musica)                    # baile
+                   esta_sonando as sonando_musica,                    # baile
+                   intent_desde_jev)                                  # J4: acción por JEV
 from show import es_comando_show, run_show     # modo presentación ("presentate")
 from reminders import parse_recordatorio, ReminderStore   # P9: recordatorios
 from jev_decision import decidir   # J2: ruta del turno con JEV (None = parsers)
@@ -218,6 +219,13 @@ def _mic_device():
     return None
 _SILENCE_FRAMES  = SILENCE_END_MS // FRAME_MS
 _MAX_FRAMES      = (MAX_RECORDING_S * 1000) // FRAME_MS
+
+# Respuestas cortas cuando JEV decide que Bob debe irse ("vete", "adiós Bob")
+DESPEDIDAS_JEV = [
+    'Ok, aquí ando si me necesitas.',
+    '¡Nos vemos!',
+    'Ya me callo, cuídate.',
+]
 
 # Saludos rápidos cuando el usuario gatilla wake word ("Bob ...")
 WAKE_GREETINGS = [
@@ -337,6 +345,18 @@ _GIRO_BUSCAR_KW = ('date la vuelta', 'date vuelta', 'da la vuelta', 'date media 
                    'detras de ti', 'detrás de ti', 'atras de ti', 'atrás de ti',
                    'aca atras', 'acá atrás', 'aqui atras', 'aquí atrás', 'mira atras',
                    'mira atrás', 'date la vue')
+
+# J5: ruta de JEV → valor de scan_request (lo que lee behavior.py)
+_GIRO_JEV = {'giro_derecha': 'derecha', 'giro_izquierda': 'izquierda', 'giro_buscar': 'buscar'}
+
+
+def _giro_turno(texto: str, ruta: Optional[str]):
+    """J5: el giro lo decide JEV. Si JEV no respondió (None), palabras clave de siempre.
+    Si JEV respondió otra ruta, no es un giro."""
+    if ruta is None:
+        return _intent_giro(texto)
+    return _GIRO_JEV.get(ruta)
+
 
 def _intent_giro(texto: str):
     """Devuelve 'derecha' | 'izquierda' | 'buscar' | None según el comando de voz."""
@@ -819,7 +839,12 @@ class VoicePipeline:
         n_turnos = 0  # contador de turnos para el bonus de mood (charla fluye)
 
         # ── Identidad (memoria P1): reconocer la cara y personalizar ──────────
-        self._identificar()
+        # Activación por JEV sin saludo (pending_text sin greeting): la identidad se
+        # resuelve recién antes de la primera respuesta del LLM. Así una orden
+        # (música, recordatorio) no espera a buscar la cara.
+        identificado = greeting or not pending_text
+        if identificado:
+            self._identificar()
 
         # ── Saludo / opener al arrancar conversación ──────────────────────────
         if greeting:
@@ -961,8 +986,23 @@ class VoicePipeline:
                 es_primer_turno = False
                 continue
 
-            # ── Comando de giro: "date la vuelta", "a tu derecha", etc. ─────────
-            intent = _intent_giro(texto)
+            # ── J2: ruta del turno con JEV (None = parsers de siempre) ─────────
+            ruta = self._decidir_ruta(texto)
+            self._ruta_turno = ruta
+
+            # ── J3: "vete", "adiós Bob": Bob se despide y termina la charla ─────
+            if ruta == 'despedida':
+                console.print('[dim][jev] despedida → fin de la charla[/]')
+                self._sm.iniciar_hablando()
+                self._hablar(random.choice(DESPEDIDAS_JEV), 'FELIZ')
+                break
+            # ── J3: en medio de la charla, lo que no le habla a Bob no se contesta ─
+            if ruta == 'ajeno' and not es_primer_turno:
+                console.print('[dim][jev] no le habla a Bob → silencio[/]')
+                continue
+
+            # ── J5: giro ("date la vuelta", "a tu derecha"): lo decide JEV ──────
+            intent = _giro_turno(texto, ruta)
             if intent:
                 self._sm.scan_request = intent
                 self._sm.iniciar_hablando()
@@ -972,10 +1012,6 @@ class VoicePipeline:
                 self._hablar(ack, 'TRAVIESO')
                 es_primer_turno = False
                 continue
-
-            # ── J2: ruta del turno con JEV (None = parsers de siempre) ─────────
-            ruta = self._decidir_ruta(texto)
-            self._ruta_turno = ruta
 
             # ── P9: crear recordatorio ("recuérdame en 5 min que...") ──────────
             if RECORDATORIOS_ENABLED and ruta in (None, 'recordatorio'):
@@ -994,7 +1030,8 @@ class VoicePipeline:
                     continue
 
             # ── SHOW de presentación: "presentate / qué sabés hacer" ───────────
-            if es_comando_show(texto):
+            # J5: la presentación la decide JEV; sin respuesta, palabras clave.
+            if ruta == 'presentacion' or (ruta is None and es_comando_show(texto)):
                 console.print('[bold magenta][show][/] ¡Modo presentación!')
                 self._sm.iniciar_hablando()
                 if run_show(self):
@@ -1004,8 +1041,11 @@ class VoicePipeline:
                 continue      # sin música: sigue la charla normal
 
             # ── P6: control de música (Spotify) ────────────────────────────────
-            if MUSICA_ENABLED and ruta in (None, 'musica'):
+            ruta_musica = ruta is None or ruta == 'musica' or (ruta or '').startswith('musica_')
+            if MUSICA_ENABLED and ruta_musica:
                 mintent = parse_music_command(texto)
+                if ruta and ruta.startswith('musica_'):
+                    mintent = intent_desde_jev(ruta, texto, mintent)   # J4: JEV manda la acción
                 if mintent:
                     self._sm.iniciar_hablando()
                     ack = ejecutar_musica(mintent)          # hace la llamada a Spotify
@@ -1036,6 +1076,9 @@ class VoicePipeline:
                 break
 
             # ── 5. LLM + TTS paralelo ──────────────────────────────────────────
+            if not identificado:
+                self._identificar()   # J3: diferido desde el arranque (ver arriba)
+                identificado = True
             console.print('[voice] Pensando...')
             captured = self._stream_and_speak(texto)
 
@@ -1853,8 +1896,8 @@ class VoicePipeline:
             decision = None
             if escucha_libre and payload:
                 decision = self._pedir_jev(payload)
-                if decision.ruta == 'ajeno' and not ww.detected:
-                    console.print(f'[dim][jev] "{texto}" no le habla a Bob → ignoro[/]')
+                if decision.ruta in ('ajeno', 'despedida') and not ww.detected:
+                    console.print(f'[dim][jev] "{texto}" no es para iniciar charla ({decision.ruta}) → ignoro[/]')
                     continue
             # Activa si dijo "Bob" (respaldo) o si JEV dijo a qué ruta va el turno.
             activar = ww.detected or (decision is not None and decision.ruta is not None)
@@ -1873,7 +1916,8 @@ class VoicePipeline:
             if decision is not None:
                 # El primer turno reutiliza esta decisión (ver _decidir_ruta).
                 self._jev_previa = (payload, decision)
-            self._sm.notificar_wake_word(payload=payload or None)
+            # Sin "Bob" (JEV) no hay saludo: el turno va directo a la acción.
+            self._sm.notificar_wake_word(payload=payload or None, saludar=ww.detected)
 
     def _tecla_loop(self) -> None:
         """Modo TRIGGER_MODE = "tecla": ENTER en la consola inicia un turno.

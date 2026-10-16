@@ -16,15 +16,27 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import jev_decision as jd   # noqa: E402
 
 CASOS = [
-    ("pon algo de Queen", "musica"),
+    ("pon algo de Queen", "musica_play"),
+    ("pon otra música", "musica_siguiente"),
+    ("pon el volumen al 70 por ciento", "musica_volumen"),
+    ("sube el volumen", "musica_subir"),
+    ("pon mi playlist de rock", "musica_playlist"),
     ("me siento muy solo hoy", "charla"),
     ("¿qué hora es?", "asistente"),
     ("recuérdame tomar agua en 5 minutos", "recordatorio"),
     ("cuéntame un chiste", "charla"),
     ("gracias, eres genial", "charla"),
-    ("pausa la música", "musica"),
+    ("pausa la música", "musica_pausa"),
     ("¿va a llover mañana?", "asistente"),
     ("nos vemos mañana en la cafetería", "ajeno"),
+    ("date la vuelta", "giro_buscar"),
+    ("a tu derecha", "giro_derecha"),
+    ("gira a tu izquierda", "giro_izquierda"),
+    ("preséntate", "presentacion"),
+    ("¿qué sabes hacer?", "presentacion"),
+    ("vete", "despedida"),
+    ("no me hables", "despedida"),
+    ("adiós Bob, me tengo que ir", "despedida"),
 ]
 
 
