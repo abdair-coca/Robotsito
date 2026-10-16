@@ -146,9 +146,19 @@ def main() -> None:
             print(f'[memoria] desactivada (no se pudo iniciar): {e}')
             face_id = memoria = None
 
+    # ── Voz del dueño (Fase V): solo si está activada y hay memoria ───────────
+    voice_id = None
+    from voice_pipeline import VOZ_ID_ENABLED
+    if VOZ_ID_ENABLED and memoria is not None:
+        try:
+            from voice_id import VoiceID
+            voice_id = VoiceID()                # carga el modelo en hilo de fondo
+        except Exception as e:
+            print(f'[voz] desactivada (no se pudo iniciar): {e}')
+
     voice = VoicePipeline(serial_mgr, sm, audio_io=audio_io,
                           face_id=face_id, memoria=memoria,
-                          get_frame=tracker.leer_frame)
+                          get_frame=tracker.leer_frame, voice_id=voice_id)
     voice.iniciar_wake_monitor()
     voice.iniciar_soliloquio_monitor()   # Bob habla solo cuando está libre
     voice.iniciar_recordatorio_monitor() # P9: anuncia recordatorios al vencer

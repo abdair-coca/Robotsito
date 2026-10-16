@@ -100,6 +100,25 @@ try:
     from config import MEMORIA_ENABLED
 except Exception:
     MEMORIA_ENABLED = False
+# Voz del dueño (Fase V). Apagado si un config viejo no lo define.
+#   VOZ_ID_ENABLED     aprender la voz del dueño (requiere memoria + voice_id)
+#   DUENO_ID           persona en memory.db cuya voz se aprende
+#   VOZ_CARA_MIN       score facial mínimo para tomar una muestra pasiva
+#   VOZ_MIN_S          segundos de voz mínimos por muestra (EXP-1-001: 2 s)
+#   VOZ_CONFLICTO_MAX  con ≥ 5 muestras, una frase que puntúa por debajo de esto
+#                      contra el promedio no se guarda (la cara manda, V-D6)
+try:
+    from config import VOZ_ID_ENABLED
+except Exception:
+    VOZ_ID_ENABLED = False
+try:
+    from config import DUENO_ID
+except Exception:
+    DUENO_ID = 1
+try:
+    from config import VOZ_CARA_MIN, VOZ_MIN_S, VOZ_CONFLICTO_MAX
+except Exception:
+    VOZ_CARA_MIN, VOZ_MIN_S, VOZ_CONFLICTO_MAX = 0.55, 2.0, 0.30
 # Backend del LLM (charla): "ollama" local o "groq" nube. Import guardado por si
 # un config viejo no lo define.
 try:
@@ -354,6 +373,24 @@ def _extraer_nombre(texto: str):
         return None
     return n.capitalize()
 
+# Enrolamiento explícito de la voz del dueño ("Bob, aprende mi voz").
+_RE_APRENDER_VOZ = re.compile(
+    r'\b(?:apr[eé]nde(?:te)?|memoriza|gu[aá]rdate|guarda)\s+(?:bien\s+)?mi\s+voz\b',
+    re.IGNORECASE)
+# Preguntas abiertas: invitan a hablar 2 s o más (EXP-1-001: con 1 s no alcanza).
+PREGUNTAS_VOZ = [
+    'Cuéntame qué hiciste hoy.',
+    '¿Qué es lo que más te gusta de programar?',
+    'Descríbeme el lugar donde estás ahora.',
+    '¿Qué música te gusta escuchar y por qué?',
+    'Cuéntame algo que quieras que haga en la feria.',
+]
+NEXT_TURN_TIMEOUT_VOZ = 8.0   # s de espera por cada respuesta al aprender la voz
+
+
+def _pide_aprender_voz(texto: str) -> bool:
+    return bool(_RE_APRENDER_VOZ.search(texto or ''))
+
 def _is_exit(text: str) -> bool:
     return text.lower().strip(' .,!?¿¡') in EXIT_PHRASES
 
@@ -471,12 +508,14 @@ class VoicePipeline:
     """
 
     def __init__(self, serial_mgr, state_machine, audio_io=None,
-                 face_id=None, memoria=None, get_frame=None):
+                 face_id=None, memoria=None, get_frame=None, voice_id=None):
         """
         audio_io: instancia opcional de AudioIO (voicechatLap.audio_io) ya conectada.
         face_id / memoria / get_frame: para la memoria persistente (P1). face_id da
                   el embedding de la cara, memoria lo busca/guarda, get_frame() devuelve
                   el frame actual de la cámara. Si faltan, la memoria queda desactivada.
+        voice_id: VoiceID opcional (Fase V) para aprender la voz del dueño. Si falta
+                  o VOZ_ID_ENABLED es False, todo sigue igual que sin voz.
         """
         self._serial = serial_mgr
         self._sm     = state_machine
@@ -484,9 +523,11 @@ class VoicePipeline:
         self._face_id  = face_id
         self._memoria  = memoria
         self._get_frame = get_frame
+        self._voice_id  = voice_id
 
         # Estado de identidad de la conversación actual (P1).
         self._convo_persona       = None     # id en la base, o None
+        self._convo_face_score    = None     # score facial del reconocimiento
         self._convo_emb           = None     # embedding facial de esta charla
         self._convo_edad          = None
         self._persona_nombre      = None
@@ -632,10 +673,73 @@ class VoicePipeline:
     def _memoria_activa(self) -> bool:
         return bool(MEMORIA_ENABLED and self._face_id and self._memoria and self._get_frame)
 
+    # ── Voz del dueño (Fase V) ─────────────────────────────────────────────────
+    def _voz_activa(self) -> bool:
+        return bool(VOZ_ID_ENABLED and self._memoria_activa()
+                    and self._voice_id is not None and self._voice_id.listo)
+
+    def _dueno_por_cara(self) -> bool:
+        """La cara de esta charla es la del dueño con score suficiente."""
+        return (self._convo_persona == DUENO_ID and self._convo_face_score is not None
+                and self._convo_face_score >= VOZ_CARA_MIN)
+
+    def _muestra_voz(self, audio: Optional[bytes], origen: str) -> bool:
+        """Guarda la frase como muestra de voz del dueño si es larga y no
+        contradice a las muestras previas. Devuelve True si la guardó."""
+        if not audio:
+            return False
+        try:
+            emb, seg = self._voice_id.analizar(audio)
+        except Exception as e:
+            console.print(f'[dim][voz] análisis falló: {e}[/]')
+            return False
+        if emb is None or seg < VOZ_MIN_S:
+            console.print(f'[dim][voz] muestra descartada: {seg:.1f} s de voz[/]')
+            return False
+        if self._memoria.total_voces(DUENO_ID) >= 5:
+            sim = self._memoria.verificar_voz(DUENO_ID, emb)
+            if sim is not None and sim < VOZ_CONFLICTO_MAX:
+                console.print(f'[dim][voz] la voz no coincide con la cara (sim {sim:.2f}): '
+                              'no se guarda[/]')
+                return False
+        self._memoria.agregar_voz(DUENO_ID, emb, origen)
+        console.print(f'[bold magenta][voz][/] muestra {origen} guardada ({seg:.1f} s, '
+                      f'total {self._memoria.total_voces(DUENO_ID)})')
+        return True
+
+    def _aprender_voz(self) -> None:
+        """'Bob, aprende mi voz': solo con la cara del dueño delante. Hace unas
+        preguntas abiertas y guarda cada respuesta larga como muestra explícita."""
+        if not self._dueno_por_cara():
+            console.print('[dim][voz] pedido de aprender voz sin la cara del dueño[/]')
+            self._sm.iniciar_hablando()
+            self._hablar('Solo aprendo la voz de mi creador, y primero tengo que verle la cara.',
+                         'SOSPECHANDO')
+            return
+        self._sm.iniciar_hablando()
+        self._hablar('¡Dale! Te hago unas preguntas y me contestas con calma.', 'FELIZ')
+        guardadas = 0
+        for pregunta in PREGUNTAS_VOZ:
+            if self._detener.is_set():
+                return
+            self._sm.iniciar_hablando()
+            self._hablar(pregunta, 'CURIOSO')
+            self._sm.iniciar_escuchando()
+            audio = self._grabar(initial_timeout=NEXT_TURN_TIMEOUT_VOZ, invitar=False)
+            if audio is None:
+                break
+            guardadas += self._muestra_voz(audio, 'explicito')
+        self._sm.iniciar_hablando()
+        if guardadas:
+            self._hablar(f'¡Listo! Ya aprendí {guardadas} frases de tu voz.', 'ORGULLOSO')
+        else:
+            self._hablar('No pude escucharte bien. Probemos otro rato.', 'CONFUNDIDO')
+
     def _identificar(self) -> None:
         """Al arrancar la charla: reconoce la cara y personaliza el prompt/saludo."""
         self._convo = []                     # historial fresco por conversación
         self._convo_persona = None
+        self._convo_face_score = None
         self._convo_emb     = None
         self._convo_edad    = None
         self._persona_nombre = None
@@ -669,6 +773,7 @@ class VoicePipeline:
         if m:
             pid, nombre, score = m
             self._convo_persona  = pid
+            self._convo_face_score = score
             self._persona_nombre = nombre
             self._memoria.marcar_visto(pid)
             console.print(f'[bold magenta][memoria][/] reconocido: {nombre} (score {score:.2f})')
@@ -853,6 +958,7 @@ class VoicePipeline:
         while not self._detener.is_set():
             # ── 1. Obtener input del turno ─────────────────────────────────────
             texto: str = ''
+            audio_turno: Optional[bytes] = None   # audio de la frase (Fase V)
             if pending_text:
                 # El wake monitor ya transcribió la frase entera junto al wake.
                 # Saltamos grabar + STT para este primer turno.
@@ -861,7 +967,7 @@ class VoicePipeline:
                 console.print(f'[dim][voice] Usando payload del wake: "{texto}"[/]')
                 self._sm.iniciar_pensando()
             elif pending_audio:
-                audio = pending_audio
+                audio = audio_turno = pending_audio
                 pending_audio = None
                 console.print('[dim][voice] Usando audio de barge-in[/]')
                 self._sm.iniciar_pensando()
@@ -876,6 +982,7 @@ class VoicePipeline:
                 if audio is None or not audio:
                     console.print('[dim][voice] Silencio prolongado, fin de conversación[/]')
                     break
+                audio_turno = audio
                 self._sm.iniciar_pensando()
                 console.print('[voice] Transcribiendo...')
                 texto = self._transcribir(audio)
@@ -952,6 +1059,18 @@ class VoicePipeline:
             if not texto.strip():
                 es_primer_turno = False
                 continue
+
+            # ── Fase V: "Bob, aprende mi voz" / muestra pasiva del dueño ───────
+            if self._voz_activa():
+                if _pide_aprender_voz(texto):
+                    if not identificado:       # vino como payload del wake: ver la cara ya
+                        self._identificar()
+                        identificado = True
+                    self._aprender_voz()
+                    es_primer_turno = False
+                    continue
+                if self._dueno_por_cara():
+                    self._muestra_voz(audio_turno, 'pasivo')
 
             # ── J2: ruta del turno con JEV (None = parsers de siempre) ─────────
             ruta = self._decidir_ruta(texto)
