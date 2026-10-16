@@ -18,3 +18,8 @@ graphify-out/
 
 # Modelos de voz Piper (pesados, se descargan aparte)
 robot_bob/piper_voices/
+
+# Modelo de reconocimiento de voz (WeSpeaker ONNX) y grabaciones del experimento
+# de voz (son la voz de personas reales: no versionar)
+robot_bob/models/
+robot_bob/exp_voz/
