@@ -47,8 +47,7 @@ from behavior       import BehaviorEngine
 # ── Configuración (idéntica a main.py) ────────────────────────────────────────
 PUERTO        = 'COM3'
 BAUD          = 115200
-IP_ESPCAM     = '192.168.0.22'
-URL_STREAM    = f'http://{IP_ESPCAM}:81/stream'
+from config import URL_STREAM   # IP de la cámara desde discovery (no fija)
 MODELO        = os.path.join(os.path.dirname(__file__), '..', '..',
                              'firmware', 'Esp32ThinkerAICam', 'blaze_face_short_range.tflite')
 

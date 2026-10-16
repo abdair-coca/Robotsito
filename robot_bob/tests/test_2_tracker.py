@@ -34,9 +34,8 @@ from facial_tracker import FacialTracker, PAN_HOME, TILT_HOME, ZONA_MUERTA_X, ZO
 
 PUERTO     = 'COM3'
 BAUD       = 115200
-IP_ESPCAM  = '192.168.0.22'
-URL_STREAM = f'http://{IP_ESPCAM}:81/stream'
-MODELO     = os.path.join(os.path.dirname(__file__), '..', '..', 'firmware', 'Esp32ThinkerAICam', 'blaze_face_short_range.tflite')
+from config import URL_STREAM   # IP de la cámara desde discovery (no fija)
+MODELO    = os.path.join(os.path.dirname(__file__), '..', '..', 'firmware', 'Esp32ThinkerAICam', 'blaze_face_short_range.tflite')
 
 
 def main() -> None:
