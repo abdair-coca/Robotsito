@@ -119,6 +119,14 @@ try:
     from config import VOZ_CARA_MIN, VOZ_MIN_S, VOZ_CONFLICTO_MAX
 except Exception:
     VOZ_CARA_MIN, VOZ_MIN_S, VOZ_CONFLICTO_MAX = 0.55, 2.0, 0.30
+#   VOZ_UMBRAL         similitud contra el promedio para decir "habla el dueño"
+#                      (EXP-1-001: dueño mín 0.476, otra voz máx 0.275; provisional
+#                      hasta medir una voz masculina)
+#   VOZ_MIN_MUESTRAS   muestras necesarias antes de identificar por voz
+try:
+    from config import VOZ_UMBRAL, VOZ_MIN_MUESTRAS
+except Exception:
+    VOZ_UMBRAL, VOZ_MIN_MUESTRAS = 0.45, 5
 # Backend del LLM (charla): "ollama" local o "groq" nube. Import guardado por si
 # un config viejo no lo define.
 try:
@@ -683,16 +691,62 @@ class VoicePipeline:
         return (self._convo_persona == DUENO_ID and self._convo_face_score is not None
                 and self._convo_face_score >= VOZ_CARA_MIN)
 
-    def _muestra_voz(self, audio: Optional[bytes], origen: str) -> bool:
-        """Guarda la frase como muestra de voz del dueño si es larga y no
-        contradice a las muestras previas. Devuelve True si la guardó."""
+    def _analizar_voz(self, audio: Optional[bytes]):
+        """(embedding, segundos de voz) de la frase, o (None, 0.0)."""
         if not audio:
-            return False
+            return None, 0.0
         try:
-            emb, seg = self._voice_id.analizar(audio)
+            return self._voice_id.analizar(audio)
         except Exception as e:
             console.print(f'[dim][voz] análisis falló: {e}[/]')
-            return False
+            return None, 0.0
+
+    def _verificar_voz_turno(self, analisis) -> Optional[float]:
+        """Similitud de la frase contra la voz del dueño, o None si no se puede
+        decir (pocas muestras o frase corta)."""
+        emb, seg = analisis
+        if emb is None or seg < VOZ_MIN_S:
+            return None
+        if self._memoria.total_voces(DUENO_ID) < VOZ_MIN_MUESTRAS:
+            return None
+        return self._memoria.verificar_voz(DUENO_ID, emb)
+
+    def _aplicar_voz_turno(self) -> None:
+        """Antes de responder: con la similitud de voz del turno decide quién
+        habla. Sin cara reconocida y con la voz del dueño, Bob lo reconoce por la
+        voz. Deja en _marca_voz la nota para el LLM ('' si no hay nada que decir)."""
+        self._marca_voz = ''
+        sim = self._voz_turno
+        if sim is None:
+            return
+        es_dueno = sim >= VOZ_UMBRAL
+        if es_dueno and self._convo_persona is None:
+            p = self._memoria.persona(DUENO_ID)
+            if p is None:
+                return
+            self._convo_persona = DUENO_ID
+            self._persona_nombre = p[1]
+            self._memoria.marcar_visto(DUENO_ID)
+            self._system_prompt_actual = self._prompt_conocido(DUENO_ID)
+            console.print(f'[bold magenta][voz][/] reconocido por la voz: {p[1]} (sim {sim:.2f})')
+        nombre = (self._memoria.persona(DUENO_ID) or (None, 'tu creador'))[1]
+        if es_dueno:
+            if self._convo_persona == DUENO_ID:
+                console.print(f'[dim][voz] habla {nombre} (sim {sim:.2f})[/]')
+            else:
+                console.print(f'[bold magenta][voz][/] habla {nombre} aunque la cara es de '
+                              f'otra persona (sim {sim:.2f})')
+            self._marca_voz = (f'\n\n[Por su voz, quien te habla en este turno es {nombre}, '
+                               'tu creador.]')
+        elif self._convo_persona == DUENO_ID:
+            console.print(f'[dim][voz] la voz no es la de {nombre} (sim {sim:.2f})[/]')
+            self._marca_voz = (f'\n\n[Por su voz, en este turno NO te habla {nombre}: es otra '
+                               f'persona que está con él. No la llames {nombre}.]')
+
+    def _muestra_voz(self, audio: Optional[bytes], origen: str, analisis=None) -> bool:
+        """Guarda la frase como muestra de voz del dueño si es larga y no
+        contradice a las muestras previas. Devuelve True si la guardó."""
+        emb, seg = analisis if analisis is not None else self._analizar_voz(audio)
         if emb is None or seg < VOZ_MIN_S:
             console.print(f'[dim][voz] muestra descartada: {seg:.1f} s de voz[/]')
             return False
@@ -740,6 +794,7 @@ class VoicePipeline:
         self._convo = []                     # historial fresco por conversación
         self._convo_persona = None
         self._convo_face_score = None
+        self._marca_voz     = ''
         self._convo_emb     = None
         self._convo_edad    = None
         self._persona_nombre = None
@@ -777,18 +832,21 @@ class VoicePipeline:
             self._persona_nombre = nombre
             self._memoria.marcar_visto(pid)
             console.print(f'[bold magenta][memoria][/] reconocido: {nombre} (score {score:.2f})')
-            self._system_prompt_actual = (
-                self._system_prompt_base + '\n\n═══ MEMORIA (ya conocés a esta persona) ═══\n'
-                + self._memoria.contexto(pid)
-                + '\nSaludala con calidez por su nombre y, si viene al caso, mencioná algo '
-                  'que recuerdes de ella. No repitas que sos un robot de feria.'
-                  '\nAdaptá tu cercanía a esa relación: con un amigo cercano sé confianzudo, '
-                  'cariñoso y bromista; con un conocido reciente, cordial y un poco más medido.')
+            self._system_prompt_actual = self._prompt_conocido(pid)
         else:
             console.print('[bold magenta][memoria][/] persona desconocida')
             self._system_prompt_actual = (
                 self._system_prompt_base + '\n\n═══ MEMORIA ═══\nNo conocés a esta persona todavía. '
                 'En algún momento de la charla preguntale su nombre con naturalidad.')
+
+    def _prompt_conocido(self, pid: int) -> str:
+        """System prompt para una persona que Bob ya conoce (por cara o por voz)."""
+        return (self._system_prompt_base + '\n\n═══ MEMORIA (ya conocés a esta persona) ═══\n'
+                + self._memoria.contexto(pid)
+                + '\nSaludala con calidez por su nombre y, si viene al caso, mencioná algo '
+                  'que recuerdes de ella. No repitas que sos un robot de feria.'
+                  '\nAdaptá tu cercanía a esa relación: con un amigo cercano sé confianzudo, '
+                  'cariñoso y bromista; con un conocido reciente, cordial y un poco más medido.')
 
     def _opener_memoria(self):
         """
@@ -867,7 +925,8 @@ class VoicePipeline:
 
     def _cerrar_memoria(self) -> None:
         """Al terminar la charla: registra (si nuevo) y guarda recuerdo + gustos/temas."""
-        if not self._memoria_activa() or self._convo_emb is None:
+        # Sin cara, solo se guarda si la voz identificó a la persona (Fase V).
+        if not self._memoria_activa() or (self._convo_emb is None and self._convo_persona is None):
             return
         pid = self._convo_persona
         if pid is None:
@@ -1060,7 +1119,8 @@ class VoicePipeline:
                 es_primer_turno = False
                 continue
 
-            # ── Fase V: "Bob, aprende mi voz" / muestra pasiva del dueño ───────
+            # ── Fase V: "Bob, aprende mi voz" / quién habla / muestra pasiva ───
+            self._voz_turno = None
             if self._voz_activa():
                 if _pide_aprender_voz(texto):
                     if not identificado:       # vino como payload del wake: ver la cara ya
@@ -1069,8 +1129,10 @@ class VoicePipeline:
                     self._aprender_voz()
                     es_primer_turno = False
                     continue
+                analisis = self._analizar_voz(audio_turno)
+                self._voz_turno = self._verificar_voz_turno(analisis)   # antes de sumar la muestra
                 if self._dueno_por_cara():
-                    self._muestra_voz(audio_turno, 'pasivo')
+                    self._muestra_voz(audio_turno, 'pasivo', analisis)
 
             # ── J2: ruta del turno con JEV (None = parsers de siempre) ─────────
             ruta = self._decidir_ruta(texto)
@@ -1165,6 +1227,8 @@ class VoicePipeline:
             if not identificado:
                 self._identificar()   # J3: diferido desde el arranque (ver arriba)
                 identificado = True
+            if self._voz_activa():
+                self._aplicar_voz_turno()     # Fase V: quién habla, después de la cara
             console.print('[voice] Pensando...')
             captured = self._stream_and_speak(texto)
 
@@ -1434,7 +1498,8 @@ class VoicePipeline:
         sys_content = (self._system_prompt_actual
                        + self._sm.estado_interno_prompt()
                        + _contexto_asistente_turno(texto, getattr(self, '_ruta_turno', None))
-                       + self._contexto_recordatorios())
+                       + self._contexto_recordatorios()
+                       + getattr(self, '_marca_voz', ''))   # Fase V: quién habla
         messages = [{'role': 'system', 'content': sys_content}] + hist
 
         try:
