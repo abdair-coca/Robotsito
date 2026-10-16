@@ -37,6 +37,10 @@ def check(nombre: str, ok: bool, detalle: str = "") -> None:
 
 class FakeSM:
     mood = 0.0
+    stt_fail_streak = 0
+    positive_streak = 0
+    en_conversacion = False
+    scan_request = None
 
     def __init__(self):
         self.ev_hablando = threading.Event()
@@ -160,13 +164,30 @@ def main() -> None:
               len(mem.episodios(dueno, 100)) == antes + 1)
         check('sin cara: no se crea una persona nueva', mem.total_personas() == 2)
 
-        # 10) Sin voz activa no cambia nada (y el monitor no llama a la voz)
+        # 10) Charla que arranca con el texto del monitor (JEV_SIN_WAKE / "Bob, …"):
+        #     el audio de esa frase también debe pasar por la voz, sin cara
+        v = construir(mem)
+        tabla = {b'frase-monitor': (cerca(base, 60), 2.6)}
+        v._voice_id = types.SimpleNamespace(listo=True, analizar=lambda a: tabla.get(a, (None, 0.0)))
+        v._identificar = lambda: None                 # sin cámara: nadie reconocido por cara
+        v._decidir_ruta = lambda texto: 'charla'
+        respuestas = []
+        v._stream_and_speak = lambda texto: respuestas.append(texto) or None
+        v._grabar = lambda **k: None                  # después del primer turno, silencio
+        v._resumir_conversacion = lambda: (None, None, None)
+        v._audio_wake = b'frase-monitor'              # lo que deja el monitor al activar
+        v._run_conversation(pending_text='hoy estuve programando toda la tarde')
+        check('primer turno del monitor: la voz identifica al dueño',
+              v._convo_persona == dueno, f'-> persona={v._convo_persona} respuestas={respuestas}')
+        check('primer turno del monitor: el audio se consume', v._audio_wake is None)
+
+        # 11) Sin voz activa no cambia nada (y el monitor no llama a la voz)
         vp.VOZ_ID_ENABLED = False
         check('VOZ_ID_ENABLED=False: inactiva', not construir(mem)._voz_activa())
         vp.VOZ_ID_ENABLED = True
         mem.cerrar()
 
-        # 11) Voces reales: tu promedio de 5 frases reconoce tus otras frases y no a Gisel
+        # 12) Voces reales: tu promedio de 5 frases reconoce tus otras frases y no a Gisel
         rutas = sorted(glob.glob(os.path.join(DIR_WAV, '*.wav')))
         abd = [r for r in rutas if os.path.basename(r).startswith('abdair_')]
         ajenas = [r for r in rutas if r not in abd]

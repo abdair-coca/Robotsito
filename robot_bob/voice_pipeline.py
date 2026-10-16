@@ -706,8 +706,11 @@ class VoicePipeline:
         decir (pocas muestras o frase corta)."""
         emb, seg = analisis
         if emb is None or seg < VOZ_MIN_S:
+            console.print(f'[dim][voz] frase de {seg:.1f} s: muy corta para reconocer la voz[/]')
             return None
-        if self._memoria.total_voces(DUENO_ID) < VOZ_MIN_MUESTRAS:
+        n = self._memoria.total_voces(DUENO_ID)
+        if n < VOZ_MIN_MUESTRAS:
+            console.print(f'[dim][voz] {n} muestras: faltan para reconocer la voz[/]')
             return None
         return self._memoria.verificar_voz(DUENO_ID, emb)
 
@@ -1023,6 +1026,8 @@ class VoicePipeline:
                 # Saltamos grabar + STT para este primer turno.
                 texto = pending_text
                 pending_text = None
+                audio_turno = getattr(self, '_audio_wake', None)   # Fase V
+                self._audio_wake = None
                 console.print(f'[dim][voice] Usando payload del wake: "{texto}"[/]')
                 self._sm.iniciar_pensando()
             elif pending_audio:
@@ -2017,6 +2022,8 @@ class VoicePipeline:
             if decision is not None:
                 # El primer turno reutiliza esta decisión (ver _decidir_ruta).
                 self._jev_previa = (payload, decision)
+            # Fase V: el primer turno llega como texto; su audio va aparte para la voz.
+            self._audio_wake = audio
             # Sin "Bob" (JEV) no hay saludo: el turno va directo a la acción.
             self._sm.notificar_wake_word(payload=payload or None, saludar=ww.detected)
 
