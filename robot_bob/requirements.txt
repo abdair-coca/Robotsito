@@ -48,3 +48,7 @@ typesafe_sdk==0.7.5
 #     ANTHROPIC_API_KEY: modo ingeniero y agente web con Claude Haiku 5.5.
 #   · Node.js (npx) para Playwright MCP @playwright/mcp@0.0.83 (agente web).
 # Sin ellos, el modo ingeniero usa Groq y el agente web queda desactivado.
+
+# Fase R2 — micrófono continuo (audio_engine.py): Silero VAD v6.2 (ONNX, MIT) con el
+# onnxruntime de arriba, sin paquete pip. Modelo en models/silero_vad_v6.2.onnx
+# (gitignoreado; URL y sha256 en audio_engine.py). Sin él, Bob graba como antes.

@@ -90,7 +90,7 @@ def construir(textos, rutas, llm=None):
     v._transcribir = lambda audio, **k: cola_t.pop(0) if cola_t else ''
     v._grabar = lambda **k: b'\x00' * 3200 if cola_t else None
     v._hablar = lambda texto, emo=None: v.hablado.append(texto)
-    v._reproducir_mp3 = lambda mp3: v.dichas.append(mp3.decode()) and None
+    v._reproducir = lambda mp3: v.dichas.append(mp3.decode()) and None
 
     def decidir(frase, ultimo):
         time.sleep(JEV_S)
@@ -102,8 +102,8 @@ def construir(textos, rutas, llm=None):
 
 
 def main() -> None:
-    synth_original, decidir_original = vp._synthesize_mp3, vp.decidir
-    vp._synthesize_mp3 = lambda t, e=None: t.encode()
+    synth_original, decidir_original = vp._sintetizar, vp.decidir
+    vp._sintetizar = lambda t, e=None: t.encode()
     vp.JEV_ROUTING_ENABLED = True
     vp.JEV_EN_PARALELO = True
     try:
@@ -172,7 +172,7 @@ def main() -> None:
         check('LLM caído: dice la frase de respaldo', any(vp.FRASE_RESPALDO_LLM in d for d in v.dichas),
               f'-> {v.dichas}')
     finally:
-        vp._synthesize_mp3, vp.decidir = synth_original, decidir_original
+        vp._sintetizar, vp.decidir = synth_original, decidir_original
 
     print(f"\n{'TODO OK' if fallos == 0 else f'{fallos} FALLA(S)'}")
     sys.exit(1 if fallos else 0)

@@ -32,7 +32,7 @@ cv2.setNumThreads(1)
 # Toda la configuración modificable vive en config.py (en esta misma carpeta).
 from config import (
     PUERTO_SERIAL, BAUD_RATE,
-    IP_ESPCAM, URL_STREAM, MODELO_TFLITE,
+    URL_STREAM, MODELO_TFLITE,
     USE_ROBOT_MIC, USE_ROBOT_SPEAKER,
     T_PERMANENCIA_MIN, P_CONVERSACION, COOLDOWN_CONV,
     CONVERSATION_TIMEOUT, TIMEOUT_ROSTRO,

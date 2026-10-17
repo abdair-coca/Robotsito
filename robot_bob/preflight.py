@@ -27,18 +27,6 @@ def registrar(nombre: str, ok: bool, detalle: str) -> None:
     print(f"[{'VERDE' if ok else 'ROJO '}] {nombre:<12} {detalle}", flush=True)
 
 
-def tcp_ok(ip: str, port: int, timeout: float = TIMEOUT) -> bool:
-    s = socket.socket()
-    s.settimeout(timeout)
-    try:
-        s.connect((ip, port))
-        return True
-    except OSError:
-        return False
-    finally:
-        s.close()
-
-
 def ip_local_hacia(ip: str) -> str:
     """IP de esta laptop en la interfaz que llega a `ip` (UDP connect no envía paquetes)."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

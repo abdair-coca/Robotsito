@@ -47,14 +47,12 @@ EMO_GREETING_PLAYED = 'TRAVIESO'     # cuando dice un saludo divertido
 EMO_AUTO_OPENER     = 'CURIOSO'      # cuando arranca él solo
 EMO_STT_FAIL        = 'CONFUNDIDO'   # cuando no entiende lo que dijiste
 EMO_GOODBYE         = 'TRISTE'       # cuando alguien se despide
-EMO_DOBLE_TOMA      = 'SORPRENDIDO'  # cara nueva tras larga ausencia
 EMO_LLM_ERROR       = 'CONFUNDIDO'   # cuando Groq falla
 EMO_LOVE_DETECTED   = 'AMOR'         # cuando alguien dice algo cariñoso
 
 # Duraciones por defecto (ms) — ajustadas para feria
 PULSE_FAST = 500
 PULSE_NORM = 900
-PULSE_SLOW = 1500
 
 
 # ═══════════════════════════════════════════════════════════════════════════

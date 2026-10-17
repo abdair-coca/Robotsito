@@ -49,12 +49,10 @@ if _VOICECHAT_DIR not in sys.path:
 from config import (
     GROQ_API_KEY,
     USE_ROBOT_SPEAKER, USE_ROBOT_MIC,
-    SAMPLE_RATE, FRAME_MS, FRAME_SIZE, MIC_CHUNK_BYTES,
+    SAMPLE_RATE, FRAME_MS,
     VAD_AGGRESSIVENESS, SILENCE_END_MS, MAX_RECORDING_S, MIN_SPEECH_S,
-    PREROLL_FRAMES, NOISE_FLOOR_INIT, NOISE_FLOOR_MARGIN, NOISE_FLOOR_MIN,
-    SPEECH_START_FRAMES,
-    BARGE_IN_ENABLED, BARGE_IN_SUSTAINED_MS, BARGE_IN_SETTLE_MS, BARGE_IN_RMS_U8,
-    WAKE_WORD_ENABLED, TRIGGER_MODE, CLIMA_ENABLED, NOTICIAS_ENABLED,
+    PREROLL_FRAMES, NOISE_FLOOR_MIN,
+    TRIGGER_MODE, CLIMA_ENABLED, NOTICIAS_ENABLED,
     FRASE_RESPALDO_STT, FRASE_RESPALDO_LLM, JEV_ROUTING_ENABLED, JEV_SIN_WAKE,
     WAKE_CANONICAL, WAKE_PREFIXES, WAKE_MIN_CONF, WAKE_FUZZY_THR,
     WAKE_COOLDOWN_S, WAKE_MAX_UTTR_CHARS,
@@ -62,7 +60,6 @@ from config import (
     VOICE, TTS_FFMPEG_FILTERS, SENTENCE_MIN_CHARS, TTS_TAIL_S,
     TTS_BACKEND, PIPER_VOICE, PIPER_LENGTH_SCALE, PIPER_PITCH_FACTOR, PIPER_FFMPEG_FILTERS,
     SYSTEM_PROMPT, EXIT_PHRASES, GOODBYE_PHRASES,
-    TTS_SEND_CHUNK_BYTES,
     SOLILOQUIO_ENABLED, SOLO_IDLE_MIN_S, PRESENCE_NUDGE_S,
     P_SOLILOQUIO, SOLILOQUIO_COOLDOWN_S, SOLILOQUIO_SETTLE_MS, BANCO_SOLILOQUIO,
     SOLILOQUIO_MAX_CARNADAS,
@@ -273,7 +270,7 @@ from expression_engine import (
     mood_delta_for_user_text, is_love,
     EMO_WAKE_DETECTED, EMO_GREETING_PLAYED, EMO_AUTO_OPENER,
     EMO_STT_FAIL, EMO_LLM_ERROR,
-    PULSE_FAST, PULSE_NORM, PULSE_SLOW,
+    PULSE_FAST,
 )
 
 # ── Tags de emoción del LLM (InteractiveGoal Fase A) ───────────────────────────
@@ -333,7 +330,6 @@ def _mic_device():
         pass
     return None
 _SILENCE_FRAMES  = SILENCE_END_MS // FRAME_MS
-_MAX_FRAMES      = (MAX_RECORDING_S * 1000) // FRAME_MS
 
 # Respuestas cortas cuando JEV decide que Bob debe irse ("vete", "adiós Bob")
 DESPEDIDAS_JEV = [
@@ -411,19 +407,14 @@ def _uint8_to_wav(uint8_audio: bytes) -> bytes:
         wf.writeframes(int16.tobytes())
     return buf.getvalue()
 
-# Frases que Whisper alucina con silencio/ruido — se ignoran en el wake monitor.
-_ALUCINACIONES = {
-    'gracias', 'muchas gracias', 'gracias por ver el video', 'gracias por ver',
-    'no', 'si', 'ya', 'eh', 'ah', 'mmm', 'chau', 'ok', 'okay', 'a', 'y', 'the',
-}
-
 def _es_alucinacion(texto: str) -> bool:
-    t = texto.lower().strip(' .,!?¿¡')
+    """En reposo: frases que Whisper inventa con silencio o ruido (stt.ALUCINACIONES)."""
+    t = ' '.join(stt.palabras(texto))
     if not t:
         return True
     if 'amara' in t or 'subtitul' in t or 'suscrib' in t:
         return True
-    return t in _ALUCINACIONES
+    return t in stt.ALUCINACIONES
 
 # Comandos de voz para que Bob gire buscando al que habla.
 _GIRO_DER_KW = ('a la derecha', 'tu derecha', 'a tu derecha', 'por la derecha',
@@ -524,7 +515,7 @@ async def _edge_tts_bytes(text: str, rate: str, pitch: str) -> bytes:
 _PIPER = None
 _PIPER_LOCK = threading.Lock()
 
-def _piper_mp3(text: str) -> bytes:
+def _piper_audio(text: str) -> bytes:
     global _PIPER
     with _PIPER_LOCK:
         if _PIPER is None:
@@ -571,25 +562,14 @@ def _pcm_a_wav(pcm: bytes, sr: int) -> bytes:
         wf.writeframes(pcm)
     return buf.getvalue()
 
-def _synthesize_mp3(text: str, emo: Optional[str] = None) -> bytes:
+def _sintetizar(text: str, emo: Optional[str] = None) -> bytes:
+    """Audio de `text`: WAV en memoria (Piper, R4) o mp3 (edge-tts)."""
     if not text.strip():
         return b''
     if TTS_BACKEND == 'piper':
-        return _piper_mp3(text)
+        return _piper_audio(text)
     rate, pitch = _prosody_for_emo(emo)
     return asyncio.run(_edge_tts_bytes(text, rate, pitch))
-
-def _mp3_to_wav(mp3: bytes) -> bytes:
-    proc = subprocess.run(
-        [FFMPEG, '-hide_banner', '-loglevel', 'error',
-         '-i', 'pipe:0',
-         '-af', TTS_FFMPEG_FILTERS,
-         '-ar', str(SAMPLE_RATE), '-ac', '1',
-         '-acodec', 'pcm_u8', '-f', 'u8', 'pipe:1'],
-        input=mp3, capture_output=True, check=False,
-    )
-    return proc.stdout
-
 
 def _hay_comando(texto: str) -> bool:
     """R1: ¿las reglas de siempre ven un comando (giro, recordatorio, show, música,
@@ -805,7 +785,6 @@ class VoicePipeline:
         self._system_prompt_base = SYSTEM_PROMPT_LOCAL if self._usando_ollama else SYSTEM_PROMPT
         self._system_prompt_actual = self._system_prompt_base
 
-        self._vad    = webrtcvad.Vad(VAD_AGGRESSIVENESS)
         self._mic = None                       # R2: micrófono continuo (perezoso)
         self._mic_lock = threading.Lock()
         self._cupo_stt = stt.CupoSTT()         # R2: transcripciones del último minuto
@@ -2004,7 +1983,7 @@ class VoicePipeline:
                     console.print('[dim][llm] respuesta adelantada (JEV en paralelo)[/]')
                 else:
                     console.print(f'[red][voice] LLM error: {pre.error} → frase de respaldo[/]')
-                    yield f'[EMO:CONFUNDIDO] {FRASE_RESPALDO_LLM}'
+                    yield f'[EMO:{EMO_LLM_ERROR}] {FRASE_RESPALDO_LLM}'
                     return
             else:
                 pre.close()     # cambió el contexto (ruta, recordatorio…): pedir de nuevo
@@ -2014,7 +1993,7 @@ class VoicePipeline:
             except Exception as e:
                 console.print(f'[red][voice] LLM error: {e} → frase de respaldo[/]')
                 # Sin LLM: Bob lo dice en voz en vez de quedarse callado.
-                yield f'[EMO:CONFUNDIDO] {FRASE_RESPALDO_LLM}'
+                yield f'[EMO:{EMO_LLM_ERROR}] {FRASE_RESPALDO_LLM}'
                 return
 
         # Guard: corta el turno al llegar a MAX_FRASES_TURNO frases y pone en cada
@@ -2072,13 +2051,14 @@ class VoicePipeline:
     # ── TTS + Reproducción ────────────────────────────────────────────────────
 
     def _hablar(self, texto: str, emo: Optional[str] = None) -> None:
-        mp3 = _synthesize_mp3(texto, emo)
+        mp3 = _sintetizar(texto, emo)
         if not mp3:
             return
-        self._reproducir_mp3(mp3)
+        self._reproducir(mp3)
 
-    def _reproducir_mp3(self, mp3: bytes) -> Optional[bytes]:
-        """Reproduce MP3 — vía speaker del ESP32 (TCP) o pygame local según flag.
+    def _reproducir(self, mp3: bytes) -> Optional[bytes]:
+        """Reproduce el audio de Bob (WAV de Piper o mp3 de edge-tts) por el speaker
+        del ESP32 (TCP) o pygame local según flag.
         R2: avisa al micrófono continuo para que la voz de Bob no cuente como del usuario."""
         self._hablo_desde_escucha = True     # R4: el próximo turno arranca con el tono
         mic = getattr(self, '_mic', None)
@@ -2086,15 +2066,15 @@ class VoicePipeline:
             mic.bob_habla(True)
         try:
             if USE_ROBOT_SPEAKER and self._audio_io is not None and self._audio_io.connected:
-                return self._reproducir_mp3_robot(mp3)
-            return self._reproducir_mp3_laptop(mp3)
+                return self._reproducir_robot(mp3)
+            return self._reproducir_laptop(mp3)
         finally:
             if mic is not None:
                 mic.bob_habla(False)
 
-    def _reproducir_mp3_robot(self, mp3: bytes) -> Optional[bytes]:
+    def _reproducir_robot(self, mp3: bytes) -> Optional[bytes]:
         """Convierte mp3 → uint8 @ 8 kHz y lo manda al ESP32 de una vez."""
-        u8 = self._mp3_a_u8(mp3)
+        u8 = self._audio_a_u8(mp3)
         if not u8:
             return None
         total = len(u8)
@@ -2116,7 +2096,7 @@ class VoicePipeline:
         return None
 
     @staticmethod
-    def _mp3_a_u8(mp3: bytes) -> bytes:
+    def _audio_a_u8(mp3: bytes) -> bytes:
         """Convierte mp3 → PCM uint8 mono @ SAMPLE_RATE Hz vía ffmpeg + filtros TTS."""
         proc = subprocess.run(
             [FFMPEG, '-hide_banner', '-loglevel', 'error',
@@ -2132,7 +2112,7 @@ class VoicePipeline:
         )
         return proc.stdout
 
-    def _reproducir_mp3_laptop(self, mp3: bytes) -> Optional[bytes]:
+    def _reproducir_laptop(self, mp3: bytes) -> Optional[bytes]:
         """Reproduce con pygame en parlantes de la laptop: WAV (Piper, R4) desde
         memoria; MP3 (edge-tts) por archivo temporal."""
         if mp3[:4] == b'RIFF' and self._reproducir_wav_laptop(mp3):
@@ -2191,11 +2171,11 @@ class VoicePipeline:
             cache = self._rellenos_audio = {}
         audio = cache.get(frase)
         if audio is None:
-            audio = cache[frase] = _synthesize_mp3(frase, 'PENSANDO')
+            audio = cache[frase] = _sintetizar(frase, 'PENSANDO')
         console.print(f'[dim][voice] (relleno) {frase}[/]')
         self._serial.cmd_estado('PENSANDO')
         if audio:
-            self._reproducir_mp3(audio)
+            self._reproducir(audio)
 
     def _reproducir_wav_laptop(self, wav: bytes) -> bool:
         """R4: reproduce un WAV 16-bit desde memoria. False si no se puede (formato
@@ -2258,7 +2238,7 @@ class VoicePipeline:
                 if not any(ch.isalnum() for ch in clean):
                     continue
                 try:
-                    mp3 = _synthesize_mp3(clean, emo)
+                    mp3 = _sintetizar(clean, emo)
                 except Exception as e:
                     # Una frase mala no debe matar el hilo TTS entero
                     console.print(f'[red][voice] TTS error ("{clean[:40]}"): {e}[/]')
@@ -2310,7 +2290,7 @@ class VoicePipeline:
             self._serial.cmd_estado(emo)
             console.print(f'[bold green]Bob[/] [dim]({emo})[/]: {sent_text}')
 
-            c = self._reproducir_mp3(mp3)
+            c = self._reproducir(mp3)
 
             # Fase D: si la frase fue una pregunta, cara CURIOSA al terminarla
             # (la siguiente frase o la transición a LISTENING la reemplaza)

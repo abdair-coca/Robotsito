@@ -115,14 +115,6 @@ class Memoria:
                               (*campos.values(), pid))
             self._con.commit()
 
-    def actualizar_embedding(self, pid: int, embedding) -> None:
-        if embedding is None:
-            return
-        with self._lock:
-            self._con.execute('UPDATE personas SET embedding=? WHERE id=?',
-                              (embedding.tobytes(), pid))
-            self._con.commit()
-
     def registrar_interaccion(self, pid: int, d_amistad: int, d_confianza: int) -> None:
         """Suma una interacción y ajusta amistad/confianza (clamp 0..100)."""
         with self._lock:

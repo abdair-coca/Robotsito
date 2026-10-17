@@ -31,7 +31,7 @@ from facial_tracker import (
     PAN_MIN as _PAN_MIN, PAN_MAX as _PAN_MAX,
     TILT_MIN as _TILT_MIN, TILT_MAX as _TILT_MAX,
     GANANCIA_PAN, GANANCIA_TILT, SIGNO_PAN, SIGNO_TILT,
-    ZONA_MUERTA_X, ZONA_MUERTA_Y, ADELANTO_MAX,
+    ZONA_MUERTA_X, ZONA_MUERTA_Y,
 )
 
 # Config de muecas (en config.py, gitignoreado). Fallback por si falta.

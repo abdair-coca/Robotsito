@@ -92,7 +92,6 @@ ESPRESSIF_OUI: Set[str] = {
 }
 
 CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "devices.json")
-CACHE_MAX_AGE_S = 24 * 3600   # cache más viejo que esto se considera dudoso
 
 # Roles que esperamos resolver y a qué clave de config mapean.
 ROLE_CONFIG_KEY = {
@@ -348,21 +347,6 @@ def resolve(auto_scan: bool = True, timeout: float = 0.3) -> Dict[str, str]:
         return {ROLE_CONFIG_KEY[r]: info["ip"]
                 for r, info in roles.items() if r in ROLE_CONFIG_KEY}
     return cache_ips()
-
-
-def resolve_mdns_only(timeout: float = 1.5) -> Dict[str, str]:
-    """
-    Solo mDNS, sin escaneo: resuelve los roles con hostname (.local).
-    Útil como vía ultrarrápida si todas las placas anuncian mDNS. Devuelve
-    {config_key: ip} de lo que pudo resolver.
-    """
-    out: Dict[str, str] = {}
-    for role, host in HOSTNAMES.items():
-        ip = mdns_ip(host, timeout)
-        key = ROLE_CONFIG_KEY.get(role)
-        if ip and key and _probe(ip, ROLE_PORT[role], 0.5):
-            out[key] = ip
-    return out
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────

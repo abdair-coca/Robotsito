@@ -112,8 +112,6 @@ _NUM_PALABRA = {
     "mitad": 50, "medio": 50, "máximo": 100, "maximo": 100, "tope": 100,
     "mínimo": 0, "minimo": 0,
 }
-# Dispara si el texto habla de volumen y trae un número, o si trae "X por ciento".
-_RE_PORCENTAJE = re.compile(r"(\d{1,3})\s*(?:%|por\s*ciento|por\s*cien)?", re.IGNORECASE)
 
 
 def _parse_vol_set(t: str) -> Optional[int]:

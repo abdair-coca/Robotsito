@@ -109,13 +109,13 @@ class FakePygame:
 def construir():
     v = vp.VoicePipeline(FakeMgr(), FakeSM())
     v.reproducido = []
-    v._reproducir_mp3 = lambda audio: v.reproducido.append(audio) and None
+    v._reproducir = lambda audio: v.reproducido.append(audio) and None
     return v
 
 
 def main() -> None:
-    synth_original = vp._synthesize_mp3
-    vp._synthesize_mp3 = lambda t, e=None: t.encode()
+    synth_original = vp._sintetizar
+    vp._sintetizar = lambda t, e=None: t.encode()
     try:
         # 1) Relleno: respuesta lenta → "Mmm, a ver…" antes; rápida → nada
         v = construir()
@@ -135,7 +135,7 @@ def main() -> None:
         check('apagado: sin relleno aunque tarde', len(v.reproducido) == 1)
         vp.RELLENO_ENABLED = True
     finally:
-        vp._synthesize_mp3 = synth_original
+        vp._sintetizar = synth_original
 
     # 2) Tono de escucha: con micrófono continuo, marcado como voz de Bob (margen corto)
     v = construir()
@@ -180,7 +180,7 @@ def main() -> None:
           eventos[:5] == ['tono', 'grabar', 'grabar', 'responde', 'tono'], f'-> {eventos}')
 
     # 4) Piper → WAV 24 kHz en memoria; reproducción sin archivo temporal
-    wav = vp._piper_mp3('Hola, soy Bob.')
+    wav = vp._piper_audio('Hola, soy Bob.')
     check('piper: WAV (no mp3)', wav[:4] == b'RIFF', f'-> {wav[:4]!r}')
     import wave
     import io
@@ -189,16 +189,16 @@ def main() -> None:
     check('piper: 24 kHz mono, duración razonable', sr == 24000 and 0.5 < dur < 3.0, f'-> {sr} Hz, {dur:.2f} s')
     v = vp.VoicePipeline(FakeMgr(), FakeSM())
     v._pygame = pg = FakePygame()
-    v._reproducir_mp3_laptop(wav)
+    v._reproducir_laptop(wav)
     check('WAV: sin mixer.music ni archivo', 'make_sound' in pg.llamadas
           and not any(isinstance(c, tuple) for c in pg.llamadas))
     v._pygame = pg = FakePygame(canales=1)
-    v._reproducir_mp3_laptop(wav)
+    v._reproducir_laptop(wav)
     check('WAV: mixer mono → sin duplicar canales', pg.forma is not None and len(pg.forma) == 1)
 
     # 5) Camino mp3 (edge-tts): descarga antes de borrar → no quedan temporales
     v._pygame = pg = FakePygame()
-    v._reproducir_mp3_laptop(b'ID3falso-mp3')
+    v._reproducir_laptop(b'ID3falso-mp3')
     ruta = next(c[1] for c in pg.llamadas if isinstance(c, tuple))
     check('mp3: unload antes de borrar', 'unload' in pg.llamadas and not os.path.exists(ruta))
 
