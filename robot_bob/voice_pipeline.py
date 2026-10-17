@@ -543,6 +543,9 @@ class VoicePipeline:
         self._get_frame = get_frame
         self._voice_id  = voice_id
         self._modo_ingeniero = False         # V5c: lo prende el dueño, dura la charla
+        self._sesion_ing = None              # V5c: Claude Code del modo ingeniero
+        self._sesion_web = None              # V5d: Claude Code + Playwright MCP
+        self._contexto_web = None            # V5d: resultado web para el turno siguiente
 
         # Estado de identidad de la conversación actual (P1).
         self._convo_persona       = None     # id en la base, o None
@@ -660,6 +663,7 @@ class VoicePipeline:
         self._detener.set()
         self._sm.ev_escuchando.set()  # desbloquea el wait
         self._hilo.join(timeout=3.0)
+        modo_dueno.fin_charla(self)   # V5: cierra Claude Code y el navegador si quedaron
 
     # ── Loop principal ────────────────────────────────────────────────────────
 
@@ -1528,6 +1532,14 @@ class VoicePipeline:
         # contexto_asistente devuelve '' cuando no hay intención de asistente.
         # V5c: en modo ingeniero cambian prompt, modelo (nube) y largo; fuera, nada.
         ing = modo_dueno.ajustes_ingeniero(self)
+        if ing and ing.get('sesion') is not None:      # Claude Code (Pro del dueño)
+            frases = modo_dueno.responder_claude(self, texto, ing['sesion'])
+            if frases:
+                for frase in frases:
+                    yield _marcar_emo(frase, self._emocion_turno)
+                self._convo.append({'role': 'assistant', 'content': ' '.join(frases)})
+                return
+            ing = modo_dueno.ajustes_ingeniero(self, motor='groq')   # respaldo este turno
         llm, modelo, extra = ((ing['llm'], ing['modelo'], ing['extra']) if ing
                               else (self._llm, self._llm_model, self._llm_extra))
         max_tokens = ing['max_tokens'] if ing else MAX_TOKENS

@@ -107,8 +107,86 @@ def construir(sim=0.8):
     return v
 
 
+class FakeSesion:
+    """Imita claude_code.SesionClaude: devuelve las respuestas en orden."""
+    def __init__(self, respuestas=()):
+        self.respuestas = list(respuestas)
+        self.mensajes = []
+        self.cerrada = False
+        self.arrancada = False
+
+    def preguntar(self, texto, timeout=None, **k):
+        self.mensajes.append(texto)
+        return self.respuestas.pop(0) if self.respuestas else None
+
+    def iniciar_en_fondo(self):
+        self.arrancada = True
+
+    def cerrar(self):
+        self.cerrada = True
+
+
+def probar_claude() -> None:
+    """Modo ingeniero con Claude Code (Pro): sesión, limpieza, contexto y respaldo."""
+    import claude_code
+    original_sesion, original_disp = claude_code.SesionClaude, claude_code.disponible
+    creadas = []
+
+    def nueva(prompt, **k):
+        s = FakeSesion(nueva.respuestas)
+        s.prompt, s.kwargs = prompt, k
+        creadas.append(s)
+        return s
+    claude_code.SesionClaude, claude_code.disponible = nueva, lambda: True
+    md.MOTOR_INGENIERO = 'claude'
+    try:
+        nueva.respuestas = ['¡Buena idea! 🤖 Usa un **IMU** barato. Escríbeme a bob@ejemplo.com. '
+                            'Tercera frase aquí. Cuarta frase aquí. Quinta sobra.']
+        v = construir()
+        md.atender(v, 'Bob, modo ingeniero', VOZ)
+        s = creadas[-1] if creadas else None
+        check('claude: crea la sesión y la arranca en fondo', s is not None and s.arrancada)
+        check('claude: Haiku 5.5', s is not None and s.kwargs.get('modelo') == 'claude-haiku-5-5')
+        check('claude: prompt con reglas fijas (sin correos ni emojis)',
+              s is not None and md._REGLAS_FIJAS in s.prompt)
+        v._marca_voz = '\n\n[Por su voz, quien te habla en este turno es Abdair, tu creador.]'
+        salida = [vp._EMO_TAG_RE.sub('', f).strip() for f in v._stream_llm('¿cómo camina Bob?')]
+        check('claude: no llama a Groq', not v._client.pedidos and not v._llm.pedidos)
+        check('claude: hasta 4 frases', len(salida) == md.ING_MAX_FRASES, f'-> {salida}')
+        texto = ' '.join(salida)
+        check('claude: sin emojis, markdown ni correos',
+              '🤖' not in texto and '**' not in texto and '@' not in texto, f'-> {texto}')
+        check('claude: la nota de voz va en el mensaje',
+              s is not None and 'quien te habla en este turno es Abdair' in s.mensajes[-1])
+        check('claude: queda en el historial', 'IMU' in v._convo[-1]['content'])
+
+        # Claude Code no responde → ese turno va con Groq
+        nueva.respuestas = []
+        v2 = construir()
+        md.atender(v2, 'Bob, modo ingeniero', VOZ)
+        salida = list(v2._stream_llm('hola'))
+        check('claude caído: el turno sigue con Groq',
+              v2._client.pedidos and v2._client.pedidos[-1]['model'] == vp.GROQ_LLM_MODEL
+              and len(salida) == md.ING_MAX_FRASES)
+
+        # Salir cierra la sesión
+        md.atender(v, 'sal del modo ingeniero', (None, 0.0))
+        check('claude: salir cierra la sesión', s is not None and s.cerrada and v._sesion_ing is None)
+
+        # Sin Claude Code instalado → Groq desde el principio
+        claude_code.disponible = lambda: False
+        v3 = construir()
+        md.atender(v3, 'Bob, modo ingeniero', VOZ)
+        check('sin Claude Code: usa Groq', v3._sesion_ing is None
+              and md.ajustes_ingeniero(v3).get('modelo') == vp.GROQ_LLM_MODEL)
+    finally:
+        claude_code.SesionClaude, claude_code.disponible = original_sesion, original_disp
+        md.MOTOR_INGENIERO = 'groq'
+
+
 def main() -> None:
     md.MODO_DUENO_ENABLED = True
+    md.MOTOR_INGENIERO = 'groq'      # los casos 1–9 prueban el camino de Groq
 
     # 1) Detección
     for t in ('Bob, modo ingeniero', 'modo ingeniero.', 'activa el modo ingeniero',
@@ -179,6 +257,9 @@ def main() -> None:
     md.MODO_DUENO_ENABLED = False
     check('MODO_DUENO_ENABLED=False: no es comando', not md.atender(construir(), 'Bob, modo ingeniero', VOZ))
     md.MODO_DUENO_ENABLED = True
+
+    # 10) Con Claude Code (la suscripción Pro del dueño)
+    probar_claude()
 
     print(f"\n{'TODO OK' if fallos == 0 else f'{fallos} FALLA(S)'}")
     sys.exit(1 if fallos else 0)

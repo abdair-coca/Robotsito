@@ -42,3 +42,9 @@ rich>=13.7
 
 # JEV — modelo de decisión de TypeSafe (jev_decision.py). Versión fijada.
 typesafe_sdk==0.7.5
+
+# Modo dueño (modo_dueno.py, claude_code.py) — fuera de pip, opcionales:
+#   · Claude Code CLI (`claude`) con login de la suscripción Pro del dueño, sin
+#     ANTHROPIC_API_KEY: modo ingeniero y agente web con Claude Haiku 5.5.
+#   · Node.js (npx) para Playwright MCP @playwright/mcp@0.0.83 (agente web).
+# Sin ellos, el modo ingeniero usa Groq y el agente web queda desactivado.

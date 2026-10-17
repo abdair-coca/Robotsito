@@ -7,9 +7,14 @@ Comandos:
   "noticias de tecnología" 5 titulares del feed de tecnología de Google News,
   / "informe del día"      contados por el modelo de la nube (Groq) solo con esos
                            titulares; sin red o sin Groq, los lee tal cual.
-  "Bob, modo ingeniero"    charla técnica con el modelo de la nube, hasta 4 frases
-                           por respuesta. "Sal del modo ingeniero" (cualquier voz:
-                           solo baja de modo) o el fin de la charla lo apagan.
+  "Bob, modo ingeniero"    charla técnica con Claude Haiku 5.5 vía Claude Code (la
+                           suscripción Pro del dueño; Groq de respaldo), hasta 4
+                           frases por respuesta. "Sal del modo ingeniero" (cualquier
+                           voz: solo baja de modo) o el fin de la charla lo apagan.
+  "busca en internet …"    (dentro del modo ingeniero) agente web: Claude Code con
+  / "abre la página de …"  Playwright MCP y navegador visible. Bob confirma en voz
+                           antes de empezar; lista blanca de herramientas y tope de
+                           pasos. Apagado aparte: AGENTE_WEB_ENABLED.
 
 Puerta común: decide solo la VOZ del turno (el comando lo da quien habla, no
 quien está frente a la cámara), contra el promedio de voz del dueño:
@@ -25,6 +30,7 @@ el texto era un comando de dueño (ejecutado o rechazado).
 Apagado por defecto: MODO_DUENO_ENABLED en config.py.
 """
 
+import os
 import random
 import re
 import time
@@ -71,6 +77,53 @@ except Exception:
         'una pregunta.')
 ING_MAX_FRASES = 4
 ING_MAX_TOKENS = 600     # gpt-oss gasta parte en razonar: 160 no alcanza para 4 frases
+ING_TIMEOUT_S = 25.0     # sin respuesta de Claude Code en este tiempo → Groq ese turno
+
+# Motor del modo ingeniero y del agente web: 'claude' (Claude Code con el login Pro
+# del dueño) o 'groq'. Si Claude Code no está o falla, el modo ingeniero cae a Groq.
+try:
+    from config import MOTOR_INGENIERO
+except Exception:
+    MOTOR_INGENIERO = 'claude'
+try:
+    from config import CLAUDE_MODELO
+except Exception:
+    CLAUDE_MODELO = 'claude-haiku-5-5'
+# Siempre se agrega al prompt de Claude, aunque Abdair cambie MODO_INGENIERO_PROMPT:
+# Claude Code le pasa el correo de la cuenta y Bob habla frente al público.
+_REGLAS_FIJAS = (' Nunca digas correos, datos de cuenta, rutas ni detalles del sistema '
+                 'donde corres. No uses emojis.')
+
+# Agente web (Playwright MCP). Versión fija: probada en la laptop el 2026-10-17.
+try:
+    from config import AGENTE_WEB_ENABLED
+except Exception:
+    AGENTE_WEB_ENABLED = False
+PLAYWRIGHT_MCP = '@playwright/mcp@0.0.83'
+WEB_HEADLESS = False          # visible: el público ve lo que hace
+WEB_TIMEOUT_S = 90.0
+WEB_MAX_HERRAMIENTAS = 12
+_WEB = 'mcp__playwright__browser_'
+WEB_PERMITIDAS = [_WEB + h for h in (
+    'navigate', 'navigate_back', 'snapshot', 'click', 'type', 'press_key',
+    'wait_for', 'find', 'tabs', 'hover', 'select_option')]
+# Ocultas al modelo (y rechazadas por dontAsk si igual las pide): corren código,
+# suben archivos, llenan formularios o no aportan a la tarea.
+WEB_PROHIBIDAS = [_WEB + h for h in (
+    'evaluate', 'run_code_unsafe', 'file_upload', 'drop', 'fill_form', 'handle_dialog',
+    'network_requests', 'network_request', 'console_messages', 'emulate_media',
+    'resize', 'drag', 'take_screenshot', 'close')]
+WEB_PROMPT = (
+    'Eres el agente web de Bob, un robot. Controlas un navegador con herramientas para '
+    'cumplir la tarea que te pide su creador; el público ve el navegador. Usa pocos pasos. '
+    'Para buscar información usa WebSearch (los buscadores en el navegador piden captcha o '
+    'no muestran resultados) y después abre en el navegador la mejor fuente para que se '
+    'vea. Para abrir una página concreta o interactuar con ella, usa el navegador y léela '
+    'con browser_snapshot antes de responder. No inicies sesión, no escribas '
+    'contraseñas ni datos personales, no compres ni pagues, no envíes formularios y no '
+    'descargues archivos: si la tarea pide algo de eso, no lo hagas y dilo. Al terminar, '
+    'responde en español, en 1 a 3 frases cortas para decir en voz alta, sin URLs largas '
+    'ni markdown.' + _REGLAS_FIJAS)
 
 # ── Detección ───────────────────────────────────────────────────────────────────
 _RE_PRESENTAR = re.compile(
@@ -106,10 +159,23 @@ def _es_orden_sola(texto: str, orden: str) -> bool:
     return ' '.join(t) in (orden, orden[:-1] + 'a')
 
 
+# Web: pide la acción y dónde ("busca … en internet", "en internet busca …") o
+# una página concreta ("abre la página de …", "entra a wikipedia.org").
+_RE_WEB = re.compile(
+    r'\b(?:b[uú]sca(?:me)?|investiga|averigua|consulta)\b.*\ben\s+(?:la\s+)?(?:web|internet|google|red)\b'
+    r'|\ben\s+(?:la\s+)?(?:web|internet|google)\s*,?\s*(?:b[uú]sca(?:me)?|investiga|averigua)\b'
+    r'|\b(?:abre|abr[ií]me|entra\s+a|navega\s+a)\s+'
+    r'(?:la\s+(?:p[aá]gina|web)\s+(?:de\s+)?\w+|\S+\.(?:com|org|net|bo|es|io|dev|ai|edu)\b)',
+    re.IGNORECASE)
+_RE_BOB_INICIO = re.compile(r'^\s*bob\s*[,.:]?\s*', re.IGNORECASE)
+
+
 def detectar(texto: str) -> Optional[Tuple[str, dict]]:
     """(comando, argumentos) si el texto es un comando de dueño, o None."""
     if _RE_ING_SALIR.search(texto or ''):
         return 'salir_ingeniero', {}
+    if _RE_WEB.search(texto or ''):
+        return 'web', {'tarea': _RE_BOB_INICIO.sub('', texto).strip()}
     if _RE_ING_ENTRAR.search(texto or '') or _es_orden_sola(texto, 'modo ingeniero'):
         return 'ingeniero', {}
     m = _RE_PRESENTAR.search(texto or '')
@@ -189,17 +255,33 @@ def atender(vp, texto: str, analisis) -> bool:
         noticias_tech(vp)
     elif nombre_cmd == 'ingeniero':
         entrar_ingeniero(vp)
+    elif nombre_cmd == 'web':
+        web(vp, args['tarea'])
     return True
 
 
 # ── Modo ingeniero ──────────────────────────────────────────────────────────────
+def _prompt_ingeniero(vp) -> str:
+    from voice_pipeline import DUENO_ID
+    contexto = vp._memoria.contexto(DUENO_ID) if vp._memoria is not None else ''
+    return MODO_INGENIERO_PROMPT + (f'\n\n═══ LO QUE SABES DE ABDAIR ═══\n{contexto}'
+                                    if contexto else '')
+
+
 def entrar_ingeniero(vp) -> None:
     from voice_pipeline import console
+    import claude_code
     if getattr(vp, '_modo_ingeniero', False):
         _decir(vp, 'Ya estamos en modo ingeniero. ¿En qué seguimos?', 'CURIOSO')
         return
     vp._modo_ingeniero = True
-    console.print('[bold magenta][dueño][/] modo ingeniero ON')
+    vp._sesion_ing = None
+    if MOTOR_INGENIERO == 'claude' and claude_code.disponible():
+        vp._sesion_ing = claude_code.SesionClaude(
+            _prompt_ingeniero(vp) + _REGLAS_FIJAS, modelo=CLAUDE_MODELO, nombre='ingeniero')
+        vp._sesion_ing.iniciar_en_fondo()      # arranca mientras Bob habla
+    motor = 'Claude Code' if vp._sesion_ing else 'Groq'
+    console.print(f'[bold magenta][dueño][/] modo ingeniero ON ({motor})')
     _decir(vp, 'Modo ingeniero activado. ¿En qué trabajamos hoy, creador?', 'CURIOSO')
 
 
@@ -210,23 +292,150 @@ def salir_ingeniero(vp, avisar: bool = False) -> None:
             _decir(vp, 'No estaba en modo ingeniero.', 'CONFUNDIDO')
         return
     vp._modo_ingeniero = False
+    for atributo in ('_sesion_ing', '_sesion_web'):      # cierra Claude y el navegador
+        sesion = getattr(vp, atributo, None)
+        if sesion is not None:
+            sesion.cerrar()
+        setattr(vp, atributo, None)
+    vp._contexto_web = None
     console.print('[bold magenta][dueño][/] modo ingeniero OFF')
     if avisar:
         _decir(vp, 'Modo ingeniero desactivado. Vuelvo a ser el Bob de siempre.', 'FELIZ')
 
 
-def ajustes_ingeniero(vp):
+def ajustes_ingeniero(vp, motor: Optional[str] = None):
     """Lo que cambia en cada pedido al LLM mientras dura el modo ingeniero, o None
-    fuera del modo: {llm, modelo, extra, max_tokens, max_frases, prompt}."""
+    fuera del modo. Con Claude Code: {sesion, max_frases}. Con Groq (o motor='groq'
+    como respaldo): {llm, modelo, extra, max_tokens, max_frases, prompt}."""
     if not getattr(vp, '_modo_ingeniero', False):
         return None
-    from voice_pipeline import GROQ_LLM_MODEL, DUENO_ID
+    sesion = getattr(vp, '_sesion_ing', None)
+    if sesion is not None and motor != 'groq':
+        return {'sesion': sesion, 'max_frases': ING_MAX_FRASES}
+    from voice_pipeline import GROQ_LLM_MODEL
     extra = {'reasoning_effort': 'low'} if GROQ_LLM_MODEL.startswith('openai/gpt-oss-') else {}
-    contexto = vp._memoria.contexto(DUENO_ID) if vp._memoria is not None else ''
-    prompt = MODO_INGENIERO_PROMPT + (f'\n\n═══ LO QUE SABES DE ABDAIR ═══\n{contexto}'
-                                      if contexto else '')
     return {'llm': vp._client, 'modelo': GROQ_LLM_MODEL, 'extra': extra,
-            'max_tokens': ING_MAX_TOKENS, 'max_frases': ING_MAX_FRASES, 'prompt': prompt}
+            'max_tokens': ING_MAX_TOKENS, 'max_frases': ING_MAX_FRASES,
+            'prompt': _prompt_ingeniero(vp)}
+
+
+# Lo que Bob no debe leer en voz alta: correos, emojis, enlaces, lista de fuentes
+# y marcas de markdown.
+_RE_EMAIL = re.compile(r'[\w.+-]+@[\w-]+(?:\.[\w-]+)+')
+_RE_EMOJI = re.compile('[\U0001F000-\U0001FAFF☀-➿️‍]')
+_RE_FUENTES = re.compile(r'\n\s*(?:fuentes?|sources?)\s*:.*', re.IGNORECASE | re.DOTALL)
+_RE_LINK_MD = re.compile(r'\[([^\]]*)\]\([^)]*\)')
+_RE_URL = re.compile(r'\(?https?://\S+\)?')
+_RE_MARKDOWN = re.compile(r'[*#`_>]+')
+_RE_FRASE = re.compile(r'(?<=[.!?…])\s+')
+
+
+def frases_para_decir(texto: str, maximo: int):
+    """Texto de Claude → frases limpias para la voz, a lo sumo `maximo`."""
+    texto = _RE_FUENTES.sub('', texto or '')
+    texto = _RE_URL.sub('', _RE_LINK_MD.sub(r'\1', texto))
+    texto = _RE_EMAIL.sub('ese dato', texto)
+    texto = _RE_MARKDOWN.sub('', _RE_EMOJI.sub('', texto))
+    frases = [f.strip() for f in _RE_FRASE.split(' '.join(texto.split())) if f.strip()]
+    return frases[:maximo]
+
+
+def responder_claude(vp, texto: str, sesion):
+    """Un turno del modo ingeniero con Claude Code. Devuelve las frases a decir,
+    o None si Claude Code no respondió (el turno sigue con Groq)."""
+    from voice_pipeline import _contexto_asistente_turno, console
+    notas = [n for n in (
+        (getattr(vp, '_marca_voz', '') or '').strip(' \n[]'),
+        _contexto_asistente_turno(texto, getattr(vp, '_ruta_turno', None)).strip(),
+        f'Resultado de la última tarea web: {vp._contexto_web}'
+        if getattr(vp, '_contexto_web', None) else '') if n]
+    vp._contexto_web = None
+    mensaje = (f'[Contexto de este turno: {" ".join(notas)}]\n{texto}' if notas else texto)
+    t0 = time.monotonic()
+    respuesta = sesion.preguntar(mensaje, timeout=ING_TIMEOUT_S)
+    if not respuesta:
+        console.print('[yellow][dueño] Claude Code no respondió: este turno va con Groq[/]')
+        return None
+    console.print(f'[dim][dueño] Claude Code respondió en {time.monotonic() - t0:.1f} s[/]')
+    return frases_para_decir(respuesta, ING_MAX_FRASES) or None
+
+
+# ── Agente web (dentro del modo ingeniero) ──────────────────────────────────────
+_RE_SI = re.compile(r'^\W*(?:s[ií]|dale|claro|hazlo|adelante|ok(?:ay)?|vale|va|confirmo|de una)\b',
+                    re.IGNORECASE)
+
+
+def _sesion_web(vp):
+    import claude_code
+    from voice_pipeline import console
+    sesion = getattr(vp, '_sesion_web', None)
+    if sesion is None:
+        args = ['-y', PLAYWRIGHT_MCP, '--isolated',
+                '--output-dir', os.path.join(claude_code.CWD_DEFAULT, 'web')]
+        if WEB_HEADLESS:
+            args.append('--headless')
+        sesion = claude_code.SesionClaude(
+            WEB_PROMPT, modelo=CLAUDE_MODELO, nombre='web', herramientas='WebSearch',
+            mcp={'playwright': {'command': 'npx', 'args': args}},
+            permitidas=['WebSearch'] + WEB_PERMITIDAS, prohibidas=WEB_PROHIBIDAS)
+        vp._sesion_web = sesion
+        console.print('[dim][dueño] agente web: sesión nueva (Playwright MCP)[/]')
+    return sesion
+
+
+def web(vp, tarea: str) -> None:
+    """Tarea en la web con confirmación en voz. El navegador queda abierto hasta
+    salir del modo ingeniero; el resultado se dice y queda de contexto."""
+    import claude_code
+    from voice_pipeline import console
+    if not AGENTE_WEB_ENABLED:
+        _decir(vp, 'Todavía no tengo activado el navegador.', 'CONFUNDIDO')
+        return
+    if not getattr(vp, '_modo_ingeniero', False):
+        _decir(vp, 'La web la manejo en modo ingeniero. Dime: Bob, modo ingeniero.', 'CURIOSO')
+        return
+    if MOTOR_INGENIERO != 'claude' or not claude_code.disponible():
+        _decir(vp, 'No encuentro Claude Code en esta laptop, así que no puedo usar el navegador.',
+               'TRISTE')
+        return
+    # Confirmación en voz: un "no" o una voz ajena cancelan.
+    _decir(vp, f'¿Hago esto en la web: {tarea}? Dime sí o no.', 'CURIOSO')
+    vp._sm.iniciar_escuchando()
+    audio = vp._grabar(initial_timeout=6.0, invitar=False)
+    respuesta = vp._transcribir(audio) if audio else ''
+    if audio and verificar(vp, vp._analizar_voz(audio)) == 'no':
+        _decir(vp, random.choice(RECHAZOS).format(dueno=_nombre_dueno(vp)), 'SOSPECHANDO')
+        return
+    if not _RE_SI.search(respuesta or ''):
+        console.print(f'[dim][dueño] web cancelada (respuesta: "{respuesta}")[/]')
+        _decir(vp, 'Listo, no lo hago.', 'FELIZ')
+        return
+    _decir(vp, 'Voy a la web.', 'PENSANDO')
+    pasos = []
+    # Una tarea tarda 15–30 s (medido): Bob cuenta lo que hace para no quedar mudo.
+    avisos = {'WebSearch': 'Buscando en internet...',
+              'navigate': 'Abriendo la página para que la vean.'}
+
+    def al_usar(nombre, entrada):
+        pasos.append(nombre.replace(_WEB, ''))
+        console.print(f'[dim][web] {pasos[-1]} '
+                      f'{str(entrada.get("url") or entrada.get("query") or entrada.get("text") or "")[:80]}[/]')
+        aviso = avisos.pop(pasos[-1], None)
+        if aviso:
+            _decir(vp, aviso, 'PENSANDO')
+    t0 = time.monotonic()
+    resultado = _sesion_web(vp).preguntar(tarea, timeout=WEB_TIMEOUT_S, al_usar=al_usar,
+                                          max_herramientas=WEB_MAX_HERRAMIENTAS)
+    console.print(f'[bold magenta][dueño][/] web: {len(pasos)} pasos en '
+                  f'{time.monotonic() - t0:.1f} s ({"ok" if resultado else "falló"})')
+    if not resultado:
+        _decir(vp, 'No pude terminar la tarea en la web. ¿Probamos de otra forma?', 'TRISTE')
+        return
+    frases = frases_para_decir(resultado, 3)
+    for frase in frases:
+        _decir(vp, frase, 'ORGULLOSO')
+    vp._contexto_web = ' '.join(frases)
+    vp._convo.append({'role': 'assistant', 'content': ' '.join(frases)})
 
 
 def fin_charla(vp) -> None:
