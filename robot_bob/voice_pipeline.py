@@ -124,9 +124,10 @@ except Exception:
 #                      hasta medir una voz masculina)
 #   VOZ_MIN_MUESTRAS   muestras necesarias antes de identificar por voz
 #   VOZ_ID_MIN_S       segundos de voz mínimos para identificar (las muestras que se
-#                      guardan siguen pidiendo VOZ_MIN_S). EXP-1-001: contra el
-#                      promedio, 1.2 s separa sin errores; las frases de charla
-#                      duran 1.2–1.7 s
+#                      guardan siguen pidiendo VOZ_MIN_S). EXP-1-001, contra el
+#                      promedio: 1.2 s sin errores; 1.0 s sin falsas aceptaciones
+#                      pero 3/15 frases del dueño rechazadas. 1.0 s por decisión del
+#                      usuario, provisional (los comandos suelen ser cortos)
 try:
     from config import VOZ_UMBRAL, VOZ_MIN_MUESTRAS
 except Exception:
@@ -134,7 +135,7 @@ except Exception:
 try:
     from config import VOZ_ID_MIN_S
 except Exception:
-    VOZ_ID_MIN_S = 1.2
+    VOZ_ID_MIN_S = 1.0
 # Backend del LLM (charla): "ollama" local o "groq" nube. Import guardado por si
 # un config viejo no lo define.
 try:

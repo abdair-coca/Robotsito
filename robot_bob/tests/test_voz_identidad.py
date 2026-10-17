@@ -128,7 +128,7 @@ def main() -> None:
         check('sin cara: otra voz no identifica', v._convo_persona is None and v._marca_voz == '')
 
         # 4) Frase corta → no decide
-        v = turno(construir(mem), cerca(base, 52), seg=1.0)
+        v = turno(construir(mem), cerca(base, 52), seg=vp.VOZ_ID_MIN_S - 0.2)
         check('frase corta: no decide', v._convo_persona is None and v._voz_turno is None)
         v = turno(construir(mem), cerca(base, 56), seg=vp.VOZ_ID_MIN_S + 0.1)
         check('frase de charla (1.3 s): identifica', v._convo_persona == dueno)
