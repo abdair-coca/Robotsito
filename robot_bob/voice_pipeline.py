@@ -177,6 +177,24 @@ try:
     from config import JEV_EN_PARALELO
 except Exception:
     JEV_EN_PARALELO = True
+# Fase R2. Guardado por si un config viejo no lo define.
+#   AUDIO_CONTINUO_ENABLED  micrófono siempre abierto + Silero VAD (audio_engine.py)
+#   STT_ADELANTADO_ENABLED  en charla, transcribir en la pausa corta y cortar ya si
+#                           la frase parece completa (si no, esperar la pausa larga)
+#   NIVEL_MIN_CHARLA        nivel (RMS %) mínimo para que empiece una frase en charla;
+#                           en reposo manda WAKE_MIN_LEVEL (filtra voces lejanas)
+try:
+    from config import AUDIO_CONTINUO_ENABLED
+except Exception:
+    AUDIO_CONTINUO_ENABLED = True
+try:
+    from config import STT_ADELANTADO_ENABLED
+except Exception:
+    STT_ADELANTADO_ENABLED = True
+try:
+    from config import NIVEL_MIN_CHARLA
+except Exception:
+    NIVEL_MIN_CHARLA = 0.2
 try:
     from config import STT_VOCAB_DUENO
 except Exception:
@@ -207,6 +225,7 @@ from show import es_comando_show, run_show     # modo presentación ("presentate
 import modo_dueno                               # V5: comandos solo para la voz del dueño
 import stt                                      # R1: filtros de alucinación de Whisper
 from llm_router import RouterLLM, Backend       # R1: rotación de LLM por cupo
+import audio_engine                             # R2: micrófono continuo + Silero VAD
 from reminders import parse_recordatorio, ReminderStore   # P9: recordatorios
 from jev_decision import decidir, EMOCION_RESPALDO   # J2: ruta del turno; J3: emoción
 from expression_engine import (
@@ -729,6 +748,10 @@ class VoicePipeline:
         self._system_prompt_actual = self._system_prompt_base
 
         self._vad    = webrtcvad.Vad(VAD_AGGRESSIVENESS)
+        self._mic = None                       # R2: micrófono continuo (perezoso)
+        self._mic_lock = threading.Lock()
+        self._cupo_stt = stt.CupoSTT()         # R2: transcripciones del último minuto
+        self._stt_listo = None                 # R2: (wav, Future) de la transcripción adelantada
         self._convo: List[Dict[str, str]] = []
         self._detener = threading.Event()
         # Anti-eco: cuando Bob habla solo (soliloquio), el wake monitor NO debe
@@ -780,6 +803,31 @@ class VoicePipeline:
         self._sm.ev_escuchando.set()  # desbloquea el wait
         self._hilo.join(timeout=3.0)
         modo_dueno.fin_charla(self)   # V5: cierra Claude Code y el navegador si quedaron
+        mic = getattr(self, '_mic', None)
+        if mic:
+            mic.cerrar()              # R2
+
+    def _mic_continuo(self):
+        """R2: el micrófono continuo, creado la primera vez que se graba (los tests que
+        no graban no tocan el hardware). None si está apagado o no se pudo abrir: se
+        graba como antes."""
+        if not AUDIO_CONTINUO_ENABLED:
+            return None
+        if getattr(self, '_mic', None) is None and not getattr(self, '_mic_fallo', False):
+            with self._mic_lock:
+                if getattr(self, '_mic', None) is None and not getattr(self, '_mic_fallo', False):
+                    try:
+                        mic = audio_engine.Microfono(audio_engine.SileroVAD(), _mic_device(),
+                                                     log=console.print)
+                        if not mic.abierto:
+                            raise RuntimeError('stream cerrado')
+                        self._mic = mic
+                        console.print('[dim][mic] micrófono continuo + Silero VAD[/]')
+                    except Exception as e:
+                        self._mic_fallo = True
+                        console.print(f'[yellow][mic] sin micrófono continuo ({e}); '
+                                      f'se graba como antes[/]')
+        return getattr(self, '_mic', None)
 
     # ── Loop principal ────────────────────────────────────────────────────────
 
@@ -1184,7 +1232,7 @@ class VoicePipeline:
                     self._sm.iniciar_escuchando()
                 timeout = FIRST_TURN_TIMEOUT if es_primer_turno else NEXT_TURN_TIMEOUT
                 console.print(f'[voice] Escuchando ({timeout:.0f}s timeout)...')
-                audio = self._grabar(initial_timeout=timeout)
+                audio = self._grabar(initial_timeout=timeout, adelantar_stt=True)
                 if audio is None or not audio:
                     console.print('[dim][voice] Silencio prolongado, fin de conversación[/]')
                     break
@@ -1490,15 +1538,43 @@ class VoicePipeline:
 
     # ── Grabación ────────────────────────────────────────────────────────────
 
-    def _grabar(self, initial_timeout: float = 8.0, invitar: bool = True) -> Optional[bytes]:
+    def _grabar(self, initial_timeout: float = 8.0, invitar: bool = True,
+                adelantar_stt: bool = False, reposo: bool = False) -> Optional[bytes]:
         """
         Graba con VAD. Despacha a robot (ESP32 TCP) o laptop (sounddevice)
         según el flag USE_ROBOT_MIC y la disponibilidad del AudioIO.
         invitar: si False, no dispara el pulso CURIOSO de invitación (laptop).
+        R2 (micrófono continuo): adelantar_stt transcribe en la pausa corta (charla);
+        reposo exige el nivel de WAKE_MIN_LEVEL para empezar (voces cercanas).
         """
         if USE_ROBOT_MIC and self._audio_io is not None and self._audio_io.connected:
             return self._grabar_robot(initial_timeout)
+        mic = self._mic_continuo()
+        if mic is not None:
+            return self._grabar_continuo(mic, initial_timeout, invitar, adelantar_stt, reposo)
         return self._grabar_laptop(initial_timeout, invitar)
+
+    def _grabar_continuo(self, mic, initial_timeout: float, invitar: bool,
+                         adelantar_stt: bool, reposo: bool) -> Optional[bytes]:
+        """R2: frase desde el micrófono continuo. Si la transcripción salió en la pausa,
+        queda en _stt_listo para que _transcribir la use sin pedirla otra vez."""
+        al_pausa = None
+        if (adelantar_stt and STT_ADELANTADO_ENABLED and STT_FILTROS_ENABLED
+                and self._cupo_stt.libre(reserva=8)):
+            al_pausa = lambda wav: self._stt_bruto(wav, True)   # noqa: E731
+        frase = mic.escuchar(
+            timeout_inicial=initial_timeout, max_s=MAX_RECORDING_S,
+            silencio_fin_ms=SILENCE_END_MS,
+            nivel_min=WAKE_MIN_LEVEL if reposo else NIVEL_MIN_CHARLA,
+            al_pausa=al_pausa,
+            invitar=(lambda: pulse_emotion(self._serial, self._sm, 'CURIOSO', 700)) if invitar else None,
+            cancelar=self._detener)
+        if frase is None:
+            return None
+        wav = frase.wav()
+        if frase.adelantado is not None:
+            self._stt_listo = (wav, frase.adelantado)
+        return wav
 
     def _grabar_robot(self, initial_timeout: float) -> Optional[bytes]:
         """
@@ -1672,16 +1748,30 @@ class VoicePipeline:
 
     def _transcribir(self, wav_bytes: bytes, contexto: bool = True) -> str:
         """Texto de la frase, o '' si no hubo voz o Groq falló (ver _stt_fallo).
-        R1: descarta alucinaciones (_stt_descartado) y marca lo dudoso (_stt_dudosa)."""
-        self._stt_fallo = False      # True solo si Groq falló (no si el audio era silencio)
-        self._stt_dudosa = False
-        self._stt_descartado = ''
+        R1: descarta alucinaciones (_stt_descartado) y marca lo dudoso (_stt_dudosa).
+        R2: si esa misma grabación ya se transcribió en la pausa, usa ese resultado."""
+        listo, self._stt_listo = getattr(self, '_stt_listo', None), None
+        r = None
+        if listo is not None and listo[0] is wav_bytes:
+            try:
+                r = listo[1].result(timeout=20.0)
+            except Exception:
+                r = None
+        if r is None:
+            r = self._stt_bruto(wav_bytes, contexto)
+        texto, self._stt_fallo, self._stt_dudosa, self._stt_descartado = r
+        return texto
+
+    def _stt_bruto(self, wav_bytes: bytes, contexto: bool = True) -> tuple:
+        """(texto, fallo, dudosa, descartado). fallo=True solo si Groq falló (no si el
+        audio era silencio). No toca el estado: lo puede correr otro hilo (R2)."""
         prompt = self._prompt_stt(contexto)
         formato = 'verbose_json' if STT_FILTROS_ENABLED else 'json'
         trans = self._client.audio.transcriptions
         crear = getattr(getattr(trans, 'with_raw_response', None), 'create', None)
         for attempt in range(MAX_RETRIES + 1):
             try:
+                self._cupo_stt.registrar()
                 args = dict(file=('audio.wav', wav_bytes, 'audio/wav'),
                             model=GROQ_STT_MODEL,
                             language='es',
@@ -1698,24 +1788,21 @@ class VoicePipeline:
                     resp = trans.create(**args)
                 self._avisar_cupo_stt(headers)
                 if not STT_FILTROS_ENABLED:
-                    return (getattr(resp, 'text', '') or '').strip()
+                    return (getattr(resp, 'text', '') or '').strip(), False, False, ''
                 r = stt.filtrar(resp.model_dump() if hasattr(resp, 'model_dump') else resp, prompt)
                 if r.descartado:
-                    self._stt_descartado = r.descartado
                     console.print(f'[dim][stt] descartado ({r.descartado}, '
                                   f'conf {r.confianza if r.confianza is not None else "?"}): "{r.crudo}"[/]')
-                    return ''
-                self._stt_dudosa = r.dudosa
+                    return '', False, False, r.descartado
                 if r.dudosa:
                     console.print(f'[dim][stt] dudosa (conf {r.confianza:.2f}): "{r.texto}"[/]')
-                return r.texto
+                return r.texto, False, r.dudosa, ''
             except Exception as e:
                 if attempt == MAX_RETRIES:
-                    self._stt_fallo = True
                     console.print(f'[red][voice] STT error: {e}[/]')
-                    return ''
+                    return '', True, False, ''
                 time.sleep(0.5)
-        return ''
+        return '', True, False, ''
 
     def _avisar_cupo_stt(self, headers) -> None:
         """Avisa en el log cuando quedan pocas transcripciones de Groq (2000/día)."""
@@ -1893,10 +1980,18 @@ class VoicePipeline:
         self._reproducir_mp3(mp3)
 
     def _reproducir_mp3(self, mp3: bytes) -> Optional[bytes]:
-        """Reproduce MP3 — vía speaker del ESP32 (TCP) o pygame local según flag."""
-        if USE_ROBOT_SPEAKER and self._audio_io is not None and self._audio_io.connected:
-            return self._reproducir_mp3_robot(mp3)
-        return self._reproducir_mp3_laptop(mp3)
+        """Reproduce MP3 — vía speaker del ESP32 (TCP) o pygame local según flag.
+        R2: avisa al micrófono continuo para que la voz de Bob no cuente como del usuario."""
+        mic = getattr(self, '_mic', None)
+        if mic is not None:
+            mic.bob_habla(True)
+        try:
+            if USE_ROBOT_SPEAKER and self._audio_io is not None and self._audio_io.connected:
+                return self._reproducir_mp3_robot(mp3)
+            return self._reproducir_mp3_laptop(mp3)
+        finally:
+            if mic is not None:
+                mic.bob_habla(False)
 
     def _reproducir_mp3_robot(self, mp3: bytes) -> Optional[bytes]:
         """Convierte mp3 → uint8 @ 8 kHz y lo manda al ESP32 de una vez."""
@@ -2080,6 +2175,8 @@ class VoicePipeline:
         Se mantiene activo mientras el robot no esté en conversación.
         Con TRIGGER_MODE = "tecla" no escucha: ENTER en la consola dispara el turno.
         """
+        # R2: abrir el micrófono continuo ya (Silero + stream ≈ 2 s), no en el 1er turno.
+        threading.Thread(target=self._mic_continuo, daemon=True, name='mic-abrir').start()
         if TRIGGER_MODE == "tecla":
             threading.Thread(target=self._tecla_loop, daemon=True, name='tecla-trigger').start()
             return
@@ -2295,13 +2392,17 @@ class VoicePipeline:
 
             if escucha_libre:
                 # Frase completa con VAD (no corta a 3 s). Sin pulso de invitación.
-                audio = self._grabar(initial_timeout=WAKE_WINDOW_S, invitar=False)
+                audio = self._grabar(initial_timeout=WAKE_WINDOW_S, invitar=False, reposo=True)
             else:
                 audio = self._grabar_wake()
             if audio is None:
                 continue
             if self._muted.is_set() or self._sm.en_conversacion:
                 continue   # Bob habló o arrancó una charla mientras grababa
+            if not self._cupo_stt.libre(reserva=4):
+                # R2: cupo de Whisper (20/min) casi lleno: la charla tiene prioridad.
+                console.print('[yellow][stt] cupo del minuto casi lleno: no transcribo en reposo[/]')
+                continue
 
             texto = self._transcribir(audio, contexto=False)
             if not texto:
@@ -2362,6 +2463,12 @@ class VoicePipeline:
         """Versión corta para wake monitor: ~3 s, despacha a robot o laptop."""
         if USE_ROBOT_MIC and self._audio_io is not None and self._audio_io.connected:
             return self._grabar_wake_robot()
+        mic = self._mic_continuo()
+        if mic is not None:     # R2: misma ventana corta, desde el micrófono continuo
+            frase = mic.escuchar(timeout_inicial=WAKE_WINDOW_S, max_s=WAKE_WINDOW_S,
+                                 silencio_fin_ms=WAKE_SILENCE_CUT_S * 1000,
+                                 nivel_min=WAKE_MIN_LEVEL, cancelar=self._detener)
+            return frase.wav() if frase is not None else None
         return self._grabar_wake_laptop()
 
     def _grabar_wake_robot(self) -> Optional[bytes]:

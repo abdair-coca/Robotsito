@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections import deque
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -132,6 +133,30 @@ def filtrar(resp, prompt: str = '') -> Transcripcion:
         if confianza < LOGPROB_DUDOSA:
             return Transcripcion(texto, crudo, confianza, dudosa=True)
     return Transcripcion(texto, crudo, confianza)
+
+
+class CupoSTT:
+    """Cuenta las transcripciones del último minuto (Groq: 20 por minuto). La charla
+    siempre transcribe; lo opcional (escucha en reposo, transcripción adelantada)
+    deja `reserva` pedidos libres para que la charla no se quede sin cupo."""
+
+    def __init__(self, por_minuto: int = 20, reloj=None):
+        import time
+        self._reloj = reloj or time.monotonic
+        self._por_minuto = por_minuto
+        self._usos: deque = deque()
+
+    def registrar(self) -> None:
+        self._usos.append(self._reloj())
+
+    def usados(self) -> int:
+        limite = self._reloj() - 60.0
+        while self._usos and self._usos[0] < limite:
+            self._usos.popleft()
+        return len(self._usos)
+
+    def libre(self, reserva: int = 0) -> bool:
+        return self.usados() < self._por_minuto - reserva
 
 
 def armar_prompt(base: str, vocabulario: str = '', contexto: str = '') -> str:
