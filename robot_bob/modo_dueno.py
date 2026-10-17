@@ -4,6 +4,9 @@ modo_dueno.py — Comandos que solo obedecen a la voz del dueño (Fase V5).
 Comandos:
   "Bob, te presento a X"   guarda la cara que Bob tiene delante con ese nombre,
                            como amigo del dueño, y la saluda.
+  "noticias de tecnología" 5 titulares del feed de tecnología de Google News,
+  / "informe del día"      contados por el modelo de la nube (Groq) solo con esos
+                           titulares; sin red o sin Groq, los lee tal cual.
 
 Puerta común: decide solo la VOZ del turno (el comando lo da quien habla, no
 quien está frente a la cámara), contra el promedio de voz del dueño:
@@ -36,6 +39,17 @@ except Exception:
 
 CARA_ESPERA_S = 1.5     # reintentos para ver la cara de la persona presentada
 
+# Noticias de tecnología (feed de Google News, sin API key).
+try:
+    from config import NOTICIAS_TECH_RSS_URL
+except Exception:
+    NOTICIAS_TECH_RSS_URL = ('https://news.google.com/rss/headlines/section/topic/'
+                             'TECHNOLOGY?hl=es-419&gl=BO&ceid=BO:es-419')
+try:
+    from config import NOTICIAS_TECH_MAX
+except Exception:
+    NOTICIAS_TECH_MAX = 5
+
 # ── Detección ───────────────────────────────────────────────────────────────────
 _RE_PRESENTAR = re.compile(
     r'\b(?:te\s+presento\s+a|te\s+quiero\s+presentar\s+a|conoce\s+a)\s+'
@@ -46,14 +60,24 @@ _NO_NOMBRE_PRESENTAR = {'mi', 'mis', 'este', 'esta', 'ese', 'esa', 'todos', 'tod
                         'alguien', 'ellos', 'ellas', 'nadie'}
 
 
+# Las noticias generales ("noticias de hoy") siguen abiertas a todos (assistant.py).
+_RE_NOTICIAS_TECH = re.compile(
+    r'\b(?:noticias|novedades|titulares)\s+(?:de\s+)?(?:la\s+)?'
+    r'(?:tecnolog[ií]a|tech|tecnol[oó]gic[ao]s)\b'
+    r'|\bqu[eé]\s+hay\s+de\s+nuevo\s+en\s+(?:la\s+)?tecnolog[ií]a\b'
+    r'|\binforme\s+del\s+d[ií]a\b', re.IGNORECASE)
+
+
 def detectar(texto: str) -> Optional[Tuple[str, dict]]:
-    """('presentar', {'nombre': X}) si el texto es un comando de dueño, o None."""
+    """(comando, argumentos) si el texto es un comando de dueño, o None."""
     m = _RE_PRESENTAR.search(texto or '')
     if m:
         from voice_pipeline import _NO_NOMBRE
         nombre = m.group(1)
         if nombre.lower() not in _NO_NOMBRE | _NO_NOMBRE_PRESENTAR:
             return 'presentar', {'nombre': nombre.capitalize()}
+    if _RE_NOTICIAS_TECH.search(texto or ''):
+        return 'noticias_tech', {}
     return None
 
 
@@ -116,7 +140,70 @@ def atender(vp, texto: str, analisis) -> bool:
     _decir(vp, 'Voz verificada, creador.', 'ORGULLOSO')
     if nombre_cmd == 'presentar':
         presentar(vp, args['nombre'])
+    elif nombre_cmd == 'noticias_tech':
+        noticias_tech(vp)
     return True
+
+
+# ── Noticias de tecnología del día ──────────────────────────────────────────────
+_PROMPT_NOTICIAS = (
+    'Eres Bob, un robot simpático que le cuenta las noticias a su creador. Te pasan '
+    'titulares REALES de noticias de tecnología de hoy. Cuéntaselos en español, para '
+    'decir en voz alta: una línea por noticia, con una o dos frases cortas y '
+    'entusiasmo. Usa SOLO lo que dicen los titulares: no inventes datos, cifras, '
+    'nombres ni detalles que no estén. Empieza con una línea corta de introducción y '
+    'termina con una línea corta de cierre. Sin listas, viñetas, números ni markdown.')
+_ORDINALES = ['Primera', 'Segunda', 'Tercera', 'Cuarta', 'Quinta', 'Sexta', 'Séptima']
+_RE_VINETA = re.compile(r'^\s*(?:[-*•·]+|\d+[.)-])\s*')
+
+
+def _resumir_noticias(vp, titulares):
+    """Líneas para decir, redactadas por el modelo de la nube, o None si falla."""
+    from voice_pipeline import GROQ_LLM_MODEL, console
+    lista = '\n'.join(f'{i}. {t}' for i, t in enumerate(titulares, 1))
+    extra = {'reasoning_effort': 'low'} if GROQ_LLM_MODEL.startswith('openai/gpt-oss-') else {}
+    try:
+        r = vp._client.chat.completions.create(
+            model=GROQ_LLM_MODEL, temperature=0.3, max_tokens=900,
+            messages=[{'role': 'system', 'content': _PROMPT_NOTICIAS},
+                      {'role': 'user', 'content': f'Titulares de hoy:\n{lista}'}],
+            **extra)
+        texto = (r.choices[0].message.content or '').replace('**', '')
+    except Exception as e:
+        console.print(f'[yellow][dueño] resumen de noticias falló: {e}[/]')
+        return None
+    lineas = [_RE_VINETA.sub('', l).strip() for l in texto.splitlines()]
+    lineas = [l for l in lineas if l]
+    return lineas[:len(titulares) + 2] or None
+
+
+def _leer_titulares(titulares):
+    """Respaldo sin modelo: los titulares tal cual, con intro y cierre fijos."""
+    lineas = ['Estas son las noticias de tecnología de hoy.']
+    for i, t in enumerate(titulares):
+        lineas.append(f'{_ORDINALES[i] if i < len(_ORDINALES) else "Otra"}: {t.rstrip(".")}.')
+    lineas.append('¡Eso es todo por hoy!')
+    return lineas
+
+
+def noticias_tech(vp) -> None:
+    from assistant import obtener_noticias
+    from voice_pipeline import console
+    _decir(vp, 'Déjame revisar qué pasó hoy en el mundo de la tecnología...', 'PENSANDO')
+    titulares = obtener_noticias(NOTICIAS_TECH_MAX, url=NOTICIAS_TECH_RSS_URL)
+    if not titulares:
+        _decir(vp, 'No pude traer las noticias de tecnología, parece que no hay internet. '
+                   '¿Probamos en un rato?', 'TRISTE')
+        return
+    lineas = _resumir_noticias(vp, titulares)
+    origen = 'nube'
+    if lineas is None:
+        lineas, origen = _leer_titulares(titulares), 'titulares'
+    console.print(f'[bold magenta][dueño][/] noticias de tecnología: {len(titulares)} '
+                  f'titulares ({origen})')
+    for linea in lineas:
+        _decir(vp, linea, 'EMOCIONADO')
+    vp._convo.append({'role': 'assistant', 'content': ' '.join(lineas)})
 
 
 # ── "Bob, te presento a X" ──────────────────────────────────────────────────────

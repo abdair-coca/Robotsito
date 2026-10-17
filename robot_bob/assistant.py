@@ -21,6 +21,7 @@ para la feria).
 
 from __future__ import annotations
 
+import re
 import time
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -116,21 +117,27 @@ def obtener_clima(ciudad: Optional[str] = None) -> Optional[str]:
 # ── Noticias (Google News RSS, sin API key, con caché) ──────────────────────────
 _noticias_cache: dict = {}     # url -> (timestamp_monotonic, [titulares])
 _NOTICIAS_TTL_S = 600          # 10 min: evita re-fetch en cada turno
+# Etiquetas que algunos medios anteponen ("Video | …"): no se leen en voz alta.
+_RE_PREFIJO_TITULAR = re.compile(r"^\s*(?:video|en vivo|live|fotos?|galer[ií]a)\s*[|:]\s*",
+                                 re.IGNORECASE)
 
-def obtener_noticias(n: Optional[int] = None) -> Optional[List[str]]:
+def obtener_noticias(n: Optional[int] = None, url: Optional[str] = None) -> Optional[List[str]]:
     """
     Devuelve una lista de titulares (str) del RSS de Google News, o None si falla
-    la red / parseo. Cachea ~10 min. Timeout corto para no colgar el turno.
+    la red / parseo. Cachea ~10 min por URL. Timeout corto para no colgar el turno.
+    url: otro feed (p. ej. el de tecnología del modo dueño). NOTICIAS_ENABLED solo
+    apaga el feed general; un feed pedido explícitamente lo controla quien llama.
     """
-    if not NOTICIAS_ENABLED:
+    if url is None and not NOTICIAS_ENABLED:
         return None
+    url = url or NOTICIAS_RSS_URL
     n = n or NOTICIAS_MAX
     ahora = time.monotonic()
-    hit = _noticias_cache.get(NOTICIAS_RSS_URL)
+    hit = _noticias_cache.get(url)
     if hit and ahora - hit[0] < _NOTICIAS_TTL_S:
         return hit[1][:n]
     try:
-        req = urllib.request.Request(NOTICIAS_RSS_URL, headers={"User-Agent": "curl/8.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "curl/8.0"})
         with urllib.request.urlopen(req, timeout=4.0) as r:
             raw = r.read()
         root = ET.fromstring(raw)
@@ -141,10 +148,12 @@ def obtener_noticias(n: Optional[int] = None) -> Optional[List[str]]:
             t = (item.text or "").strip()
             if not t:
                 continue
-            titulares.append(t.rsplit(" - ", 1)[0].strip())
+            t = _RE_PREFIJO_TITULAR.sub("", t.rsplit(" - ", 1)[0]).strip()
+            if t:
+                titulares.append(t)
         if not titulares:
             return None
-        _noticias_cache[NOTICIAS_RSS_URL] = (ahora, titulares)
+        _noticias_cache[url] = (ahora, titulares)
         return titulares[:n]
     except Exception:
         return None
