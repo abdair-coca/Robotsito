@@ -261,11 +261,19 @@ def atender(vp, texto: str, analisis) -> bool:
 
 
 # ── Modo ingeniero ──────────────────────────────────────────────────────────────
+# R3: los pedidos llegan por voz (a veces dictados largos): que el modelo interprete
+# los términos técnicos mal transcritos en vez de tomarlos al pie de la letra.
+NOTA_VOZ = ('\n\nLo que te dice Abdair llega por reconocimiento de voz y puede traer '
+            'términos técnicos mal transcritos (p. ej. "ese pe treinta y dos" es ESP32, '
+            '"eme pe u" es MPU). Interpreta la intención; si algo clave no se entiende, '
+            'pregúntalo en una frase.')
+
+
 def _prompt_ingeniero(vp) -> str:
     from voice_pipeline import DUENO_ID
     contexto = vp._memoria.contexto(DUENO_ID) if vp._memoria is not None else ''
-    return MODO_INGENIERO_PROMPT + (f'\n\n═══ LO QUE SABES DE ABDAIR ═══\n{contexto}'
-                                    if contexto else '')
+    return MODO_INGENIERO_PROMPT + NOTA_VOZ + (f'\n\n═══ LO QUE SABES DE ABDAIR ═══\n{contexto}'
+                                               if contexto else '')
 
 
 def entrar_ingeniero(vp) -> None:

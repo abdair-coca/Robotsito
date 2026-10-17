@@ -135,6 +135,33 @@ def filtrar(resp, prompt: str = '') -> Transcripcion:
     return Transcripcion(texto, crudo, confianza)
 
 
+# R3: dictado largo (modo ingeniero). Dichas solas tras una pausa, terminan el
+# dictado al instante; al final del dictado, lo descartan entero.
+FIN_DICTADO = {'listo', 'listo bob', 'ya listo', 'listo envialo', 'envialo', 'envialo bob',
+               'enviar', 'envia', 'mandalo', 'eso es todo', 'eso es todo bob', 'fin',
+               'fin del mensaje', 'ya esta', 'ya esta bob'}
+CANCELAR_DICTADO = ('borra eso', 'borra todo', 'empieza de nuevo', 'olvidalo', 'cancela',
+                    'cancelalo', 'cancelar')
+
+
+def es_fin_dictado(texto: str) -> bool:
+    return ' '.join(palabras(texto)) in FIN_DICTADO
+
+
+def es_cancelar_dictado(texto: str) -> bool:
+    """True si el dictado termina pidiendo borrarlo ("…no, borra eso")."""
+    cola = ' '.join(palabras(texto)[-4:])
+    return any(cola.endswith(c) for c in CANCELAR_DICTADO)
+
+
+def unir_dictado(textos: List[str]) -> str:
+    """Tramos del dictado en orden, sin vacíos ni la palabra de fin del último."""
+    partes = [t.strip() for t in textos if t and t.strip()]
+    if partes and es_fin_dictado(partes[-1]):
+        partes.pop()
+    return ' '.join(partes)
+
+
 class CupoSTT:
     """Cuenta las transcripciones del último minuto (Groq: 20 por minuto). La charla
     siempre transcribe; lo opcional (escucha en reposo, transcripción adelantada)

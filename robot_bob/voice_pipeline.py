@@ -173,6 +173,7 @@ try:
     from config import STT_FILTROS_ENABLED
 except Exception:
     STT_FILTROS_ENABLED = True
+STT_TIMEOUT_S = 10.0     # por intento de transcripción (MAX_RETRIES reintentos)
 try:
     from config import JEV_EN_PARALELO
 except Exception:
@@ -195,6 +196,27 @@ try:
     from config import NIVEL_MIN_CHARLA
 except Exception:
     NIVEL_MIN_CHARLA = 0.2
+# Fase R3: dictado largo en modo ingeniero (audio_engine.Microfono.dictar).
+#   DICTADO_ENABLED       en modo ingeniero, pausas largas, hasta DICTADO_MAX_S y
+#                         transcripción por tramos mientras se habla
+#   DICTADO_PAUSA_FIN_MS  silencio que termina el dictado ("listo" lo termina ya)
+#   STT_VOCAB_INGENIERO   vocabulario técnico para Whisper en modo ingeniero
+try:
+    from config import DICTADO_ENABLED
+except Exception:
+    DICTADO_ENABLED = True
+try:
+    from config import DICTADO_MAX_S, DICTADO_PAUSA_FIN_MS
+except Exception:
+    DICTADO_MAX_S, DICTADO_PAUSA_FIN_MS = 120.0, 1600.0
+try:
+    from config import STT_VOCAB_INGENIERO
+except Exception:
+    STT_VOCAB_INGENIERO = ('ESP32, ESP32-CAM, MicroPython, Arduino, Raspberry Pi, servo MG996R, '
+                           'PWM, I2C, UART, SPI, GPIO, MPU6050, giroscopio, acelerómetro, PID, '
+                           'OLED, firmware, batería LiPo, regulador, protoboard, Python, ONNX, '
+                           'Groq, Claude, Whisper, Silero, Playwright, GitHub, API, LLM, '
+                           'Proyecto Génesis. Listo.')
 try:
     from config import STT_VOCAB_DUENO
 except Exception:
@@ -1231,8 +1253,12 @@ class VoicePipeline:
                 if not es_primer_turno:
                     self._sm.iniciar_escuchando()
                 timeout = FIRST_TURN_TIMEOUT if es_primer_turno else NEXT_TURN_TIMEOUT
-                console.print(f'[voice] Escuchando ({timeout:.0f}s timeout)...')
-                audio = self._grabar(initial_timeout=timeout, adelantar_stt=True)
+                dictado = DICTADO_ENABLED and self._modo_ingeniero   # R3: prompts largos
+                if dictado:
+                    timeout = max(timeout, 12.0)   # se piensa antes de hablar
+                console.print(f'[voice] Escuchando ({timeout:.0f}s timeout'
+                              f'{", dictado" if dictado else ""})...')
+                audio = self._grabar(initial_timeout=timeout, adelantar_stt=True, dictado=dictado)
                 if audio is None or not audio:
                     console.print('[dim][voice] Silencio prolongado, fin de conversación[/]')
                     break
@@ -1296,6 +1322,13 @@ class VoicePipeline:
                 break
 
             console.print(f'[bold cyan]Usuario:[/] {texto}')
+
+            if self._modo_ingeniero and stt.es_cancelar_dictado(texto):
+                # R3: "…no, borra eso" al final de un dictado → no se envía nada.
+                self._sm.iniciar_hablando()
+                self._hablar('Listo, lo borré. Te escucho.', 'CURIOSO')
+                es_primer_turno = False
+                continue
 
             # ── Memoria: ¿se presentó? ("me llamo X") → guardar nombre ─────────
             if self._memoria_activa():
@@ -1539,25 +1572,41 @@ class VoicePipeline:
     # ── Grabación ────────────────────────────────────────────────────────────
 
     def _grabar(self, initial_timeout: float = 8.0, invitar: bool = True,
-                adelantar_stt: bool = False, reposo: bool = False) -> Optional[bytes]:
+                adelantar_stt: bool = False, reposo: bool = False,
+                dictado: bool = False) -> Optional[bytes]:
         """
         Graba con VAD. Despacha a robot (ESP32 TCP) o laptop (sounddevice)
         según el flag USE_ROBOT_MIC y la disponibilidad del AudioIO.
         invitar: si False, no dispara el pulso CURIOSO de invitación (laptop).
         R2 (micrófono continuo): adelantar_stt transcribe en la pausa corta (charla);
         reposo exige el nivel de WAKE_MIN_LEVEL para empezar (voces cercanas).
+        R3: dictado (modo ingeniero) tolera pausas largas y transcribe por tramos.
         """
         if USE_ROBOT_MIC and self._audio_io is not None and self._audio_io.connected:
             return self._grabar_robot(initial_timeout)
         mic = self._mic_continuo()
         if mic is not None:
-            return self._grabar_continuo(mic, initial_timeout, invitar, adelantar_stt, reposo)
+            return self._grabar_continuo(mic, initial_timeout, invitar, adelantar_stt, reposo,
+                                         dictado)
         return self._grabar_laptop(initial_timeout, invitar)
 
     def _grabar_continuo(self, mic, initial_timeout: float, invitar: bool,
-                         adelantar_stt: bool, reposo: bool) -> Optional[bytes]:
-        """R2: frase desde el micrófono continuo. Si la transcripción salió en la pausa,
-        queda en _stt_listo para que _transcribir la use sin pedirla otra vez."""
+                         adelantar_stt: bool, reposo: bool, dictado: bool = False) -> Optional[bytes]:
+        """R2: frase desde el micrófono continuo. Si la transcripción salió en la pausa
+        (o por tramos, en un dictado), queda en _stt_listo para que _transcribir la use
+        sin pedirla otra vez."""
+        if dictado and STT_FILTROS_ENABLED:
+            frase = mic.dictar(
+                transcribir=lambda wav, previo: self._stt_bruto(wav, True, previo or None)[0],
+                timeout_inicial=initial_timeout, max_s=DICTADO_MAX_S,
+                pausa_fin_ms=DICTADO_PAUSA_FIN_MS, nivel_min=NIVEL_MIN_CHARLA,
+                puede_tramo=lambda: self._cupo_stt.libre(reserva=4), cancelar=self._detener)
+            if frase is None:
+                return None
+            wav = frase.wav()
+            self._stt_listo = (wav, frase.adelantado) if frase.adelantado is not None else None
+            console.print(f'[dim][dictado] {frase.segundos_voz:.1f} s de voz[/]')
+            return wav
         al_pausa = None
         if (adelantar_stt and STT_ADELANTADO_ENABLED and STT_FILTROS_ENABLED
                 and self._cupo_stt.libre(reserva=8)):
@@ -1734,14 +1783,18 @@ class VoicePipeline:
 
     # ── STT ──────────────────────────────────────────────────────────────────
 
-    def _prompt_stt(self, contexto: bool = True) -> str:
+    def _prompt_stt(self, contexto: bool = True, previo: Optional[str] = None) -> str:
         """R1: prompt de sesgo de Whisper. Vocabulario de los comandos y, en charla, lo
-        último que dijo Bob (la respuesta del usuario se transcribe con ese contexto)."""
+        último que dijo Bob (la respuesta del usuario se transcribe con ese contexto).
+        R3: en un dictado, `previo` es el texto del tramo anterior; en modo ingeniero
+        se suma el vocabulario técnico."""
         if not STT_FILTROS_ENABLED:
             return STT_PROMPT
         vocab = STT_VOCAB_DUENO if modo_dueno.MODO_DUENO_ENABLED else ''
-        ultimo = ''
-        if contexto and self._convo:
+        if getattr(self, '_modo_ingeniero', False):
+            vocab = (vocab + ' ' + STT_VOCAB_INGENIERO).strip()
+        ultimo = previo or ''
+        if not ultimo and contexto and self._convo:
             ultimo = next((m['content'] for m in reversed(self._convo)
                            if m['role'] == 'assistant'), '')
         return stt.armar_prompt(STT_PROMPT, vocab, ultimo)
@@ -1757,15 +1810,18 @@ class VoicePipeline:
                 r = listo[1].result(timeout=20.0)
             except Exception:
                 r = None
+        if isinstance(r, str):     # R3: dictado (texto unido de sus tramos)
+            r = (r, False, False, '' if r else 'ruido')
         if r is None:
             r = self._stt_bruto(wav_bytes, contexto)
         texto, self._stt_fallo, self._stt_dudosa, self._stt_descartado = r
         return texto
 
-    def _stt_bruto(self, wav_bytes: bytes, contexto: bool = True) -> tuple:
+    def _stt_bruto(self, wav_bytes: bytes, contexto: bool = True,
+                   previo: Optional[str] = None) -> tuple:
         """(texto, fallo, dudosa, descartado). fallo=True solo si Groq falló (no si el
         audio era silencio). No toca el estado: lo puede correr otro hilo (R2)."""
-        prompt = self._prompt_stt(contexto)
+        prompt = self._prompt_stt(contexto, previo)
         formato = 'verbose_json' if STT_FILTROS_ENABLED else 'json'
         trans = self._client.audio.transcriptions
         crear = getattr(getattr(trans, 'with_raw_response', None), 'create', None)
@@ -1779,7 +1835,10 @@ class VoicePipeline:
                             prompt=prompt or None,
                             # temperature=0 → transcripción determinista, menos alucinación.
                             temperature=0.0,
-                            response_format=formato)
+                            response_format=formato,
+                            # Un pedido colgado no frena el turno: 2 min de audio
+                            # tardan ~1–2 s; el SDK esperaría 60 s por intento.
+                            timeout=STT_TIMEOUT_S)
                 headers = {}
                 if crear is not None:
                     raw = crear(**args)

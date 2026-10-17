@@ -54,6 +54,12 @@ PAUSA_LARGA_MS = 1200     # pausa máxima si la frase quedó incompleta
 ECO_MARGEN_MS = 250       # tras hablar Bob, el eco de la sala sigue unos ms
 MIN_VOZ_MS = 150          # menos que esto (clicks, golpes) no es una frase
 SIN_DATOS_S = 2.0         # sin bloques nuevos este tiempo → el stream se cayó
+# R3: dictado largo (modo ingeniero)
+DICTADO_MAX_S = 120.0
+DICTADO_PAUSA_FIN_MS = 1600   # silencio que termina el dictado (se piensa entre frases)
+DICTADO_PAUSA_TRAMO_MS = 600  # pausa natural donde se puede cortar un tramo
+DICTADO_TRAMO_S = 8.0         # tramo mínimo a transcribir aparte (≤ ~8 pedidos/min)
+DICTADO_COLA_MAX_MS = 1500    # voz corta tras una pausa: ¿es la palabra de fin?
 
 # Palabras con las que una frase casi nunca termina: si el texto adelantado acaba
 # así, el usuario probablemente sigue hablando ("pon música de… Queen").
@@ -269,6 +275,30 @@ class Microfono:
             frase termina ahí, si no se espera hasta `pausa_larga_ms`.
             Sin al_pausa, la frase termina con `silencio_fin_ms` de silencio.
         """
+        def seguir(inicio, n):
+            return self._seguir_frase(inicio, n, max_s, silencio_fin_ms, al_pausa,
+                                      pausa_corta_ms, pausa_larga_ms, cancelar)
+        return self._escuchar(seguir, timeout_inicial, nivel_min, invitar, invitar_s, cancelar)
+
+    def dictar(self, transcribir: Callable[[bytes, str], str], timeout_inicial: float = 8.0,
+               max_s: float = DICTADO_MAX_S, pausa_fin_ms: float = DICTADO_PAUSA_FIN_MS,
+               nivel_min: float = 0.0, puede_tramo: Optional[Callable[[], bool]] = None,
+               contexto: str = '', cancelar: Optional[threading.Event] = None) -> Optional[Frase]:
+        """
+        R3: dictado largo (modo ingeniero). Tolera pausas de hasta `pausa_fin_ms` y dura
+        hasta `max_s`. Mientras se habla, cada tramo de ≥ DICTADO_TRAMO_S que termina
+        en una pausa se transcribe en segundo plano con el texto anterior de contexto,
+        así al terminar solo falta el último. Una palabra de fin dicha sola tras una
+        pausa ("listo", "envíalo") termina al instante.
+        transcribir(wav, texto_previo) → texto. puede_tramo() → False posterga el tramo
+        (cupo de STT). Devuelve una Frase cuyo `adelantado` da el texto completo.
+        """
+        def seguir(inicio, n):
+            return self._seguir_dictado(inicio, n, transcribir, max_s, pausa_fin_ms,
+                                        puede_tramo, contexto, cancelar)
+        return self._escuchar(seguir, timeout_inicial, nivel_min, None, 3.0, cancelar)
+
+    def _escuchar(self, seguir, timeout_inicial, nivel_min, invitar, invitar_s, cancelar):
         with self._cond:
             inicio_escucha = self._n
             desde = max(self._n - _ms(PREROLL_MS), self._ultimo_bob + 1,
@@ -288,8 +318,7 @@ class Microfono:
             seguidos = seguidos + 1 if voz else 0
             if seguidos >= INICIO_BLOQUES:
                 inicio = max(n - seguidos + 1 - _ms(PREROLL_MS), desde, self._ultimo_bob + 1)
-                frase = self._seguir_frase(inicio, n + 1, max_s, silencio_fin_ms, al_pausa,
-                                           pausa_corta_ms, pausa_larga_ms, cancelar)
+                frase = seguir(inicio, n + 1)
                 if frase is None:
                     return None
                 if frase.segundos_voz * 1000 >= MIN_VOZ_MS:
@@ -356,3 +385,86 @@ class Microfono:
             audio = np.concatenate(partes[:corte])
             return Frase(audio, voz_b * MS_BLOQUE / 1000.0, adelantado, wav_adelantado)
         return Frase(np.concatenate(partes), voz_b * MS_BLOQUE / 1000.0)
+
+    def _seguir_dictado(self, inicio: int, n: int, transcribir, max_s, pausa_fin_ms,
+                        puede_tramo, contexto, cancelar) -> Optional[Frase]:
+        from stt import es_fin_dictado, unir_dictado
+        partes = []
+        for k in range(inicio, n):
+            b = self._bloque(k, cancelar)
+            if b is None:
+                return None
+            partes.append(b.audio)
+        voz_b = voz_tramo = voz_ult = INICIO_BLOQUES
+        silencio = 0
+        max_b, fin_b = _ms(max_s * 1000), _ms(pausa_fin_ms)
+        tramo_b = _ms(DICTADO_PAUSA_TRAMO_MS)
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='dictado')  # en orden
+        tramos: list = []          # Futures de los tramos cerrados, en orden
+        tramo_ini = 0              # dónde empieza (en `partes`) el tramo abierto
+        ult_ini = 0                # dónde empieza lo dicho desde la última pausa
+        cola = None                # transcripción de esa voz corta: ¿palabra de fin?
+        hay_cupo = puede_tramo or (lambda: True)
+
+        def enviar(desde: int, hasta: int, idx: int) -> Future:
+            wav = a_wav(np.concatenate(partes[desde:hasta]))
+
+            def tarea():
+                previo = ' '.join(t.result() for t in tramos[:idx] if t.result())
+                try:
+                    return transcribir(wav, previo[-300:] or contexto) or ''
+                except Exception:
+                    return ''
+            return pool.submit(tarea)
+
+        def es_fin(f: Optional[Future]) -> bool:
+            return f is not None and f.done() and es_fin_dictado(f.result())
+
+        while True:
+            b = self._bloque(n, cancelar)
+            if b is None:
+                pool.shutdown(wait=False, cancel_futures=True)
+                return None
+            n += 1
+            partes.append(b.audio)
+            if (not b.bob) and b.prob >= UMBRAL_SILENCIO:
+                if silencio >= tramo_b:        # vuelve a hablar tras una pausa
+                    ult_ini, voz_ult = len(partes) - 1, 0
+                voz_b += 1
+                voz_tramo += 1
+                voz_ult += 1
+                silencio = 0
+                cola = None                    # siguió hablando: no era la palabra de fin
+            else:
+                silencio += 1
+            if len(partes) >= max_b or silencio >= fin_b:
+                break
+            if silencio == tramo_b and voz_tramo:
+                if (len(partes) - tramo_ini) * MS_BLOQUE >= DICTADO_TRAMO_S * 1000 and hay_cupo():
+                    tramos.append(enviar(tramo_ini, len(partes), len(tramos)))
+                    tramo_ini, voz_tramo = len(partes), 0
+                elif MIN_VOZ_MS <= voz_ult * MS_BLOQUE <= DICTADO_COLA_MAX_MS and hay_cupo():
+                    cola = enviar(ult_ini, len(partes), len(tramos))
+            if es_fin(cola):
+                break
+
+        if voz_b * MS_BLOQUE < MIN_VOZ_MS:
+            pool.shutdown(wait=False, cancel_futures=True)
+            return Frase(np.concatenate(partes), voz_b * MS_BLOQUE / 1000.0)
+        if cola is not None and not cola.done():
+            try:
+                cola.result(timeout=3.0)       # salió en la pausa: ya casi está
+            except Exception:
+                pass
+        fin = len(partes)
+        if es_fin(cola):                       # "listo": fuera del texto y del audio
+            fin = ult_ini
+            if ult_ini > tramo_ini:
+                tramos.append(enviar(tramo_ini, ult_ini, len(tramos)))
+        elif voz_tramo:                        # el último tramo (la cola, si es todo él)
+            tramos.append(cola if (cola is not None and ult_ini == tramo_ini)
+                          else enviar(tramo_ini, fin, len(tramos)))
+        final = pool.submit(lambda: unir_dictado([t.result() for t in tramos]))
+        pool.shutdown(wait=False)
+        audio = np.concatenate(partes[:fin]) if fin else np.concatenate(partes)
+        return Frase(audio, voz_b * MS_BLOQUE / 1000.0, final)
