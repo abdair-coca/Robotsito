@@ -179,6 +179,7 @@ from music import (parse_music_command, ejecutar as ejecutar_musica,  # P6: Spot
                    esta_sonando as sonando_musica,                    # baile
                    intent_desde_jev)                                  # J4: acción por JEV
 from show import es_comando_show, run_show     # modo presentación ("presentate")
+import modo_dueno                               # V5: comandos solo para la voz del dueño
 from reminders import parse_recordatorio, ReminderStore   # P9: recordatorios
 from jev_decision import decidir, EMOCION_RESPALDO   # J2: ruta del turno; J3: emoción
 from expression_engine import (
@@ -801,8 +802,8 @@ class VoicePipeline:
         else:
             self._hablar('No pude escucharte bien. Probemos otro rato.', 'CONFUNDIDO')
 
-    def _identificar(self) -> None:
-        """Al arrancar la charla: reconoce la cara y personaliza el prompt/saludo."""
+    def _reset_identidad(self) -> None:
+        """Estado de identidad limpio: nada de la charla anterior."""
         self._convo = []                     # historial fresco por conversación
         self._convo_persona = None
         self._convo_face_score = None
@@ -812,6 +813,10 @@ class VoicePipeline:
         self._persona_nombre = None
         self._nombre_pendiente = None
         self._system_prompt_actual = self._system_prompt_base
+
+    def _identificar(self) -> None:
+        """Al arrancar la charla: reconoce la cara y personaliza el prompt/saludo."""
+        self._reset_identidad()
         if not self._memoria_activa() or not self._face_id.listo:
             return
         # Al venir de un wake word, Bob puede estar todavía girando hacia la
@@ -989,6 +994,10 @@ class VoicePipeline:
         identificado = greeting or not pending_text
         if identificado:
             self._identificar()
+        else:
+            # Diferida: mientras tanto, nada de la charla anterior (si no, la
+            # cara/nombre de la persona previa se usarían en este primer turno).
+            self._reset_identidad()
 
         # ── Saludo / opener al arrancar conversación ──────────────────────────
         if greeting:
@@ -1147,6 +1156,12 @@ class VoicePipeline:
                 self._voz_turno = self._verificar_voz_turno(analisis)   # antes de sumar la muestra
                 if self._dueno_por_cara():
                     self._muestra_voz(audio_turno, 'pasivo', analisis)
+                # V5: comandos que solo obedecen a la voz del dueño
+                if modo_dueno.atender(self, texto, analisis):
+                    # Si el comando fijó con quién se habla, no reidentificar después.
+                    identificado = identificado or self._convo_persona is not None
+                    es_primer_turno = False
+                    continue
 
             # ── J2: ruta del turno con JEV (None = parsers de siempre) ─────────
             ruta = self._decidir_ruta(texto)
