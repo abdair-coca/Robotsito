@@ -7,6 +7,9 @@ Comandos:
   "noticias de tecnología" 5 titulares del feed de tecnología de Google News,
   / "informe del día"      contados por el modelo de la nube (Groq) solo con esos
                            titulares; sin red o sin Groq, los lee tal cual.
+  "Bob, modo ingeniero"    charla técnica con el modelo de la nube, hasta 4 frases
+                           por respuesta. "Sal del modo ingeniero" (cualquier voz:
+                           solo baja de modo) o el fin de la charla lo apagan.
 
 Puerta común: decide solo la VOZ del turno (el comando lo da quien habla, no
 quien está frente a la cámara), contra el promedio de voz del dueño:
@@ -50,6 +53,25 @@ try:
 except Exception:
     NOTICIAS_TECH_MAX = 5
 
+# Modo ingeniero. El prompt lo afina Abdair en config.py (MODO_INGENIERO_PROMPT);
+# este es el de arranque.
+try:
+    from config import MODO_INGENIERO_PROMPT
+except Exception:
+    MODO_INGENIERO_PROMPT = (
+        'Eres Bob en MODO INGENIERO: el compañero técnico de tu creador, Abdair, estudiante '
+        'de Ingeniería Informática en la UATF (Potosí, Bolivia). Juntos construyen el '
+        'Proyecto Génesis, un humanoide de bajo costo con IA, y tú eres su prototipo: '
+        'ESP32, cámara ESP32-CAM, servos pan/tilt, ojos OLED, voz (STT, LLM y TTS) y '
+        'memoria de personas por cara y por voz. En este modo hablas de ingeniería con '
+        'precisión, propones ideas innovadoras y baratas explicando por qué funcionarían, '
+        'y haces preguntas técnicas para profundizar. Si algo no lo sabes, lo dices. '
+        'Respondes en español, para decir en voz alta: máximo 4 frases cortas, de unas '
+        '20 palabras cada una, sin markdown, listas ni código. Casi siempre terminas con '
+        'una pregunta.')
+ING_MAX_FRASES = 4
+ING_MAX_TOKENS = 600     # gpt-oss gasta parte en razonar: 160 no alcanza para 4 frases
+
 # ── Detección ───────────────────────────────────────────────────────────────────
 _RE_PRESENTAR = re.compile(
     r'\b(?:te\s+presento\s+a|te\s+quiero\s+presentar\s+a|conoce\s+a)\s+'
@@ -66,10 +88,30 @@ _RE_NOTICIAS_TECH = re.compile(
     r'(?:tecnolog[ií]a|tech|tecnol[oó]gic[ao]s)\b'
     r'|\bqu[eé]\s+hay\s+de\s+nuevo\s+en\s+(?:la\s+)?tecnolog[ií]a\b'
     r'|\binforme\s+del\s+d[ií]a\b', re.IGNORECASE)
+_RE_ING_SALIR = re.compile(
+    r'\b(?:sal[ií]?(?:r)?|desactiva(?:r)?|apaga(?:r)?|termina(?:r)?|quita(?:r)?)\s+'
+    r'(?:del?\s+|el\s+)?modo\s+ingenier[oa]\b|\bmodo\s+normal\b', re.IGNORECASE)
+# Entrar pide un verbo ("activa el modo ingeniero") o la orden sola ("Bob, modo
+# ingeniero"): así "¿qué es el modo ingeniero?" no lo activa.
+_RE_ING_ENTRAR = re.compile(
+    r'\b(?:activa(?:r)?|entra(?:r)?|pon(?:te|er)?|pasa(?:r)?|cambia(?:r)?)\s+'
+    r'(?:en\s+|a\s+|al\s+)?(?:el\s+)?modo\s+ingenier[oa]\b', re.IGNORECASE)
+_RE_LIMPIA = re.compile(r'[^\wáéíóúñ ]+')
+
+
+def _es_orden_sola(texto: str, orden: str) -> bool:
+    t = _RE_LIMPIA.sub(' ', (texto or '').lower()).split()
+    if t[:1] == ['bob']:
+        t = t[1:]
+    return ' '.join(t) in (orden, orden[:-1] + 'a')
 
 
 def detectar(texto: str) -> Optional[Tuple[str, dict]]:
     """(comando, argumentos) si el texto es un comando de dueño, o None."""
+    if _RE_ING_SALIR.search(texto or ''):
+        return 'salir_ingeniero', {}
+    if _RE_ING_ENTRAR.search(texto or '') or _es_orden_sola(texto, 'modo ingeniero'):
+        return 'ingeniero', {}
     m = _RE_PRESENTAR.search(texto or '')
     if m:
         from voice_pipeline import _NO_NOMBRE
@@ -124,6 +166,9 @@ def atender(vp, texto: str, analisis) -> bool:
         return False
     nombre_cmd, args = cmd
     from voice_pipeline import console
+    if nombre_cmd == 'salir_ingeniero':      # bajar de modo no necesita la voz del dueño
+        salir_ingeniero(vp, avisar=True)
+        return True
     veredicto = verificar(vp, analisis)
     console.print(f'[bold magenta][dueño][/] {nombre_cmd}: {veredicto} '
                   f'{getattr(vp, "_log_dueno", "")}')
@@ -142,7 +187,51 @@ def atender(vp, texto: str, analisis) -> bool:
         presentar(vp, args['nombre'])
     elif nombre_cmd == 'noticias_tech':
         noticias_tech(vp)
+    elif nombre_cmd == 'ingeniero':
+        entrar_ingeniero(vp)
     return True
+
+
+# ── Modo ingeniero ──────────────────────────────────────────────────────────────
+def entrar_ingeniero(vp) -> None:
+    from voice_pipeline import console
+    if getattr(vp, '_modo_ingeniero', False):
+        _decir(vp, 'Ya estamos en modo ingeniero. ¿En qué seguimos?', 'CURIOSO')
+        return
+    vp._modo_ingeniero = True
+    console.print('[bold magenta][dueño][/] modo ingeniero ON')
+    _decir(vp, 'Modo ingeniero activado. ¿En qué trabajamos hoy, creador?', 'CURIOSO')
+
+
+def salir_ingeniero(vp, avisar: bool = False) -> None:
+    from voice_pipeline import console
+    if not getattr(vp, '_modo_ingeniero', False):
+        if avisar:
+            _decir(vp, 'No estaba en modo ingeniero.', 'CONFUNDIDO')
+        return
+    vp._modo_ingeniero = False
+    console.print('[bold magenta][dueño][/] modo ingeniero OFF')
+    if avisar:
+        _decir(vp, 'Modo ingeniero desactivado. Vuelvo a ser el Bob de siempre.', 'FELIZ')
+
+
+def ajustes_ingeniero(vp):
+    """Lo que cambia en cada pedido al LLM mientras dura el modo ingeniero, o None
+    fuera del modo: {llm, modelo, extra, max_tokens, max_frases, prompt}."""
+    if not getattr(vp, '_modo_ingeniero', False):
+        return None
+    from voice_pipeline import GROQ_LLM_MODEL, DUENO_ID
+    extra = {'reasoning_effort': 'low'} if GROQ_LLM_MODEL.startswith('openai/gpt-oss-') else {}
+    contexto = vp._memoria.contexto(DUENO_ID) if vp._memoria is not None else ''
+    prompt = MODO_INGENIERO_PROMPT + (f'\n\n═══ LO QUE SABES DE ABDAIR ═══\n{contexto}'
+                                      if contexto else '')
+    return {'llm': vp._client, 'modelo': GROQ_LLM_MODEL, 'extra': extra,
+            'max_tokens': ING_MAX_TOKENS, 'max_frases': ING_MAX_FRASES, 'prompt': prompt}
+
+
+def fin_charla(vp) -> None:
+    """Al terminar la charla se apaga todo modo de dueño que dure la charla."""
+    salir_ingeniero(vp)
 
 
 # ── Noticias de tecnología del día ──────────────────────────────────────────────

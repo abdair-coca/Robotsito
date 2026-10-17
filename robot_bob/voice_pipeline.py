@@ -542,6 +542,7 @@ class VoicePipeline:
         self._memoria  = memoria
         self._get_frame = get_frame
         self._voice_id  = voice_id
+        self._modo_ingeniero = False         # V5c: lo prende el dueño, dura la charla
 
         # Estado de identidad de la conversación actual (P1).
         self._convo_persona       = None     # id en la base, o None
@@ -1276,6 +1277,7 @@ class VoicePipeline:
             self._cerrar_memoria()   # guarda recuerdo + perfil de la persona
         except Exception as e:
             console.print(f'[dim][memoria] cierre falló: {e}[/]')
+        modo_dueno.fin_charla(self)  # V5c: el modo ingeniero dura la charla
         self._sm.fin_turno()
 
     # ── Grabación ────────────────────────────────────────────────────────────
@@ -1524,7 +1526,13 @@ class VoicePipeline:
         # acumulado dentro de una charla larga.
         # P9: si el turno pide hora/fecha/clima, inyecta datos en vivo al prompt.
         # contexto_asistente devuelve '' cuando no hay intención de asistente.
-        sys_content = (self._system_prompt_actual
+        # V5c: en modo ingeniero cambian prompt, modelo (nube) y largo; fuera, nada.
+        ing = modo_dueno.ajustes_ingeniero(self)
+        llm, modelo, extra = ((ing['llm'], ing['modelo'], ing['extra']) if ing
+                              else (self._llm, self._llm_model, self._llm_extra))
+        max_tokens = ing['max_tokens'] if ing else MAX_TOKENS
+        max_frases = ing['max_frases'] if ing else MAX_FRASES_TURNO
+        sys_content = ((ing['prompt'] if ing else self._system_prompt_actual)
                        + self._sm.estado_interno_prompt()
                        + _contexto_asistente_turno(texto, getattr(self, '_ruta_turno', None))
                        + self._contexto_recordatorios()
@@ -1532,13 +1540,13 @@ class VoicePipeline:
         messages = [{'role': 'system', 'content': sys_content}] + hist
 
         try:
-            stream = self._llm.chat.completions.create(
-                model=self._llm_model,
+            stream = llm.chat.completions.create(
+                model=modelo,
                 messages=messages,
                 temperature=TEMPERATURE,
-                max_tokens=MAX_TOKENS,
+                max_tokens=max_tokens,
                 stream=True,
-                **self._llm_extra,
+                **extra,
             )
         except Exception as e:
             console.print(f'[red][voice] LLM error: {e} → frase de respaldo[/]')
@@ -1579,7 +1587,7 @@ class VoicePipeline:
                 dicho.append(sent)
                 yield sent
                 n_frases += 1
-                if n_frases >= MAX_FRASES_TURNO:
+                if n_frases >= max_frases:
                     corte = True
                     break
             if corte:
