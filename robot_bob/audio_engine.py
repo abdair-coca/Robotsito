@@ -219,12 +219,13 @@ class Microfono:
                 self._n += 1
             self._cond.notify_all()
 
-    def bob_habla(self, activo: bool) -> None:
-        """Llamar al empezar y al terminar cada audio de Bob (anti-eco)."""
+    def bob_habla(self, activo: bool, margen_ms: float = ECO_MARGEN_MS) -> None:
+        """Llamar al empezar y al terminar cada audio de Bob (anti-eco). margen_ms: cuánto
+        dura el eco después (corto para el tono de escucha, que es suave)."""
         with self._cond:
             self._bob_hablando = activo
             if not activo:
-                self._eco_hasta = self._n + _ms(ECO_MARGEN_MS)
+                self._eco_hasta = self._n + _ms(margen_ms)
 
     def _cerrar_stream(self) -> None:
         s, self._stream = self._stream, None

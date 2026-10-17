@@ -196,6 +196,24 @@ try:
     from config import NIVEL_MIN_CHARLA
 except Exception:
     NIVEL_MIN_CHARLA = 0.2
+# Fase R4: interacción. Guardado por si un config viejo no lo define.
+#   TTS_PCM_ENABLED       Piper → WAV en memoria (sin mp3 ni archivo temporal)
+#   TONO_ESCUCHA_ENABLED  "tic" corto y suave cuando Bob empieza a escuchar tu respuesta
+#   RELLENO_ENABLED       si la respuesta tarda más de RELLENO_S, Bob dice "Mmm, a ver…"
+try:
+    from config import TTS_PCM_ENABLED
+except Exception:
+    TTS_PCM_ENABLED = True
+try:
+    from config import TONO_ESCUCHA_ENABLED
+except Exception:
+    TONO_ESCUCHA_ENABLED = True
+try:
+    from config import RELLENO_ENABLED, RELLENO_S
+except Exception:
+    RELLENO_ENABLED, RELLENO_S = True, 1.4
+RELLENOS = ['Mmm, a ver...', 'Déjame pensar...', 'Mmm...', 'A ver, a ver...', 'Buena pregunta...']
+
 # Fase R3: dictado largo en modo ingeniero (audio_engine.Microfono.dictar).
 #   DICTADO_ENABLED       en modo ingeniero, pausas largas, hasta DICTADO_MAX_S y
 #                         transcripción por tramos mientras se habla
@@ -531,9 +549,27 @@ def _piper_mp3(text: str) -> bytes:
            '-f', 's16le', '-ar', str(sr), '-ac', '1', '-i', 'pipe:0']
     if partes:
         cmd += ['-af', ','.join(partes)]
-    cmd += ['-f', 'mp3', 'pipe:1']
-    proc = subprocess.run(cmd, input=pcm, capture_output=True, check=False)
-    return proc.stdout
+    if not TTS_PCM_ENABLED:
+        cmd += ['-f', 'mp3', 'pipe:1']
+        return subprocess.run(cmd, input=pcm, capture_output=True, check=False).stdout
+    # R4: PCM a la frecuencia del mixer, en un WAV en memoria (sin codificar a mp3,
+    # sin archivo temporal): ~80 ms menos por frase, medido.
+    cmd += ['-ar', str(_SALIDA_SR), '-f', 's16le', 'pipe:1']
+    salida = subprocess.run(cmd, input=pcm, capture_output=True, check=False).stdout
+    return _pcm_a_wav(salida, _SALIDA_SR) if salida else b''
+
+
+_SALIDA_SR = 24000   # frecuencia del mixer de pygame (VoicePipeline.__init__)
+
+
+def _pcm_a_wav(pcm: bytes, sr: int) -> bytes:
+    buf = _io.BytesIO()
+    with wave.open(buf, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(pcm)
+    return buf.getvalue()
 
 def _synthesize_mp3(text: str, emo: Optional[str] = None) -> bytes:
     if not text.strip():
@@ -1258,6 +1294,9 @@ class VoicePipeline:
                     timeout = max(timeout, 12.0)   # se piensa antes de hablar
                 console.print(f'[voice] Escuchando ({timeout:.0f}s timeout'
                               f'{", dictado" if dictado else ""})...')
+                if es_primer_turno or getattr(self, '_hablo_desde_escucha', False):
+                    self._tono_escucha()      # R4: "ya te escucho" (no tras un ruido)
+                self._hablo_desde_escucha = False
                 audio = self._grabar(initial_timeout=timeout, adelantar_stt=True, dictado=dictado)
                 if audio is None or not audio:
                     console.print('[dim][voice] Silencio prolongado, fin de conversación[/]')
@@ -2041,6 +2080,7 @@ class VoicePipeline:
     def _reproducir_mp3(self, mp3: bytes) -> Optional[bytes]:
         """Reproduce MP3 — vía speaker del ESP32 (TCP) o pygame local según flag.
         R2: avisa al micrófono continuo para que la voz de Bob no cuente como del usuario."""
+        self._hablo_desde_escucha = True     # R4: el próximo turno arranca con el tono
         mic = getattr(self, '_mic', None)
         if mic is not None:
             mic.bob_habla(True)
@@ -2093,7 +2133,10 @@ class VoicePipeline:
         return proc.stdout
 
     def _reproducir_mp3_laptop(self, mp3: bytes) -> Optional[bytes]:
-        """Reproduce MP3 con pygame en parlantes de la laptop."""
+        """Reproduce con pygame en parlantes de la laptop: WAV (Piper, R4) desde
+        memoria; MP3 (edge-tts) por archivo temporal."""
+        if mp3[:4] == b'RIFF' and self._reproducir_wav_laptop(mp3):
+            return None
         with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tf:
             tf.write(mp3)
             path = tf.name
@@ -2107,10 +2150,75 @@ class VoicePipeline:
                     break
         finally:
             try:
+                # pygame deja el archivo abierto hasta descargarlo: sin esto el
+                # borrado fallaba en silencio y quedaban mp3 en %TEMP% (433 hallados).
+                self._pygame.mixer.music.unload()
                 os.unlink(path)
             except Exception:
                 pass
         return None
+
+    def _tono_escucha(self) -> None:
+        """R4: dos notas cortas y suaves (≈120 ms, −18 dBFS) al empezar a escuchar, como
+        los asistentes comerciales. Se marca como voz de Bob con un margen corto para
+        que el micrófono continuo no la tome como del usuario."""
+        mic = getattr(self, '_mic', None)
+        # Solo con el micrófono continuo: ya escucha cuando suena el tono (sin él, el
+        # stream tardaría 330–780 ms en abrirse y el tono mentiría).
+        if not TONO_ESCUCHA_ENABLED or mic is None or (
+                USE_ROBOT_SPEAKER and self._audio_io is not None and self._audio_io.connected):
+            return
+        if getattr(self, '_tono_wav', None) is None:
+            t1, t2 = np.arange(int(0.05 * _SALIDA_SR)), np.arange(int(0.07 * _SALIDA_SR))
+
+            def nota(t, hz):
+                env = np.minimum(t / (0.005 * _SALIDA_SR), 1.0) * np.exp(-t / (0.025 * _SALIDA_SR))
+                return np.sin(2 * np.pi * hz * t / _SALIDA_SR) * env
+            x = 0.12 * np.concatenate([nota(t1, 1046.5), nota(t2, 1318.5)])   # do6 → mi6
+            self._tono_wav = _pcm_a_wav((x * 32767).astype(np.int16).tobytes(), _SALIDA_SR)
+        mic.bob_habla(True)
+        try:
+            self._reproducir_wav_laptop(self._tono_wav)
+        finally:
+            mic.bob_habla(False, margen_ms=60)
+
+    def _decir_relleno(self) -> None:
+        """R4: la respuesta tarda (Claude, red lenta, respaldo local): Bob muestra que
+        está pensando en vez de quedarse mudo."""
+        frase = random.choice(RELLENOS)
+        cache = getattr(self, '_rellenos_audio', None)
+        if cache is None:
+            cache = self._rellenos_audio = {}
+        audio = cache.get(frase)
+        if audio is None:
+            audio = cache[frase] = _synthesize_mp3(frase, 'PENSANDO')
+        console.print(f'[dim][voice] (relleno) {frase}[/]')
+        self._serial.cmd_estado('PENSANDO')
+        if audio:
+            self._reproducir_mp3(audio)
+
+    def _reproducir_wav_laptop(self, wav: bytes) -> bool:
+        """R4: reproduce un WAV 16-bit desde memoria. False si no se puede (formato
+        distinto al del mixer): se reproduce por el camino de archivo."""
+        try:
+            with wave.open(_io.BytesIO(wav)) as wf:
+                sr, canales_in, ancho = wf.getframerate(), wf.getnchannels(), wf.getsampwidth()
+                frames = wf.readframes(wf.getnframes())
+            freq, _, canales = self._pygame.mixer.get_init()
+            if sr != freq or canales_in != 1 or ancho != 2:
+                return False
+            x = np.frombuffer(frames, np.int16)
+            if canales > 1:                     # el mixer quedó en estéreo (pide mono)
+                x = np.repeat(x[:, None], canales, axis=1)
+            canal = self._pygame.sndarray.make_sound(np.ascontiguousarray(x)).play()
+        except Exception:
+            return False
+        while canal is not None and canal.get_busy():
+            time.sleep(0.02)
+            if self._detener.is_set():
+                canal.stop()
+                break
+        return True
 
     def _stream_and_speak(self, texto: str) -> Optional[bytes]:
         """LLM streaming + TTS en paralelo, reproducción en cuanto llega cada frase."""
@@ -2173,10 +2281,17 @@ class VoicePipeline:
         llm_t.start()
         tts_t.start()
 
+        relleno = not RELLENO_ENABLED      # R4: ¿ya se dijo (o no se usa)?
         while True:
             try:
-                item = audio_q.get(timeout=15.0)
+                # R4: antes de la 1ª frase, a los RELLENO_S sin respuesta, un "Mmm, a ver…"
+                item = audio_q.get(timeout=RELLENO_S if (primera_frase and not relleno) else 15.0)
             except queue.Empty:
+                if primera_frase and not relleno:
+                    relleno = True
+                    if llm_t.is_alive():
+                        self._decir_relleno()
+                    continue
                 break
             if item is None:
                 break
