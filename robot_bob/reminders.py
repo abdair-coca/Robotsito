@@ -204,6 +204,12 @@ class ReminderStore:
                 self._items = [r for r in self._items if r.due_ts > now_ts]
         return vencidos
 
+    def hay_vencidos(self, now_ts: Optional[float] = None) -> bool:
+        """Como vencidos() pero sin quitarlos."""
+        now_ts = now_ts if now_ts is not None else time.time()
+        with self._lock:
+            return any(r.due_ts <= now_ts for r in self._items)
+
     def pendientes(self) -> int:
         with self._lock:
             return len(self._items)

@@ -17,6 +17,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import voice_pipeline as vp   # noqa: E402
 from jev_decision import Decision   # noqa: E402
 
+# R1: el LLM adelantado se prueba en test_especulacion.py; aquí no debe pedir al real.
+vp.JEV_EN_PARALELO = False
+
 fallos = 0
 
 

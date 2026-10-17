@@ -16,6 +16,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import voice_pipeline as vp   # noqa: E402
 from jev_decision import Decision   # noqa: E402
 
+# R1: el LLM adelantado se prueba en test_especulacion.py; aquí no debe pedir al real.
+vp.JEV_EN_PARALELO = False
+
 fallos = 0
 
 
@@ -76,7 +79,7 @@ def correr(v, turnos):
 
     v._grabar = grabar
     v._grabar_wake = grabar   # camino de respaldo (JEV_SIN_WAKE desactivado)
-    v._transcribir = lambda audio: actual['texto']
+    v._transcribir = lambda audio, **k: actual['texto']
     vp.decidir = decidir_falso
     v._wake_monitor_loop()
     return llamadas
@@ -166,7 +169,7 @@ def conversacion(v, turnos, pending_text=None, greeting=False, ruta_inicial=None
         return b'\x00' * 3200
 
     v._grabar = grabar
-    v._transcribir = lambda audio: actual['texto']
+    v._transcribir = lambda audio, **k: actual['texto']
     vp.decidir = lambda frase, ultimo: Decision(actual['ruta'], 'CURIOSO', 0.9, 0.9, 0.3,
                                                 actual['ruta'] is None, '')
     v._hablar = lambda texto, emo=None: hablados.append(texto)

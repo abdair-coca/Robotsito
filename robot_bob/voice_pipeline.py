@@ -158,6 +158,31 @@ try:
     from config import SYSTEM_PROMPT_LOCAL
 except Exception:
     SYSTEM_PROMPT_LOCAL = SYSTEM_PROMPT
+# Fase R1 (R-D1/R-D2). Guardado por si un config viejo no lo define.
+#   LLM_ROTACION        modelos de Groq en orden, con LLM_BACKEND = "rotacion";
+#                       Ollama (OLLAMA_MODEL) queda de último respaldo
+#   STT_FILTROS_ENABLED filtros de alucinación de Whisper (stt.py) y prompt con contexto
+#   JEV_EN_PARALELO     el LLM arranca mientras JEV decide la ruta (si las reglas no
+#                       ven un comando); si JEV dice que era un comando, se cancela
+#   STT_VOCAB_DUENO     vocabulario extra para Whisper con el modo dueño encendido
+try:
+    from config import LLM_ROTACION
+except Exception:
+    LLM_ROTACION = ['openai/gpt-oss-20b', 'qwen/qwen3.8-27b', 'openai/gpt-oss-120b']
+try:
+    from config import STT_FILTROS_ENABLED
+except Exception:
+    STT_FILTROS_ENABLED = True
+try:
+    from config import JEV_EN_PARALELO
+except Exception:
+    JEV_EN_PARALELO = True
+try:
+    from config import STT_VOCAB_DUENO
+except Exception:
+    STT_VOCAB_DUENO = ('Bob, aprende mi voz. Bob, te presento a mi amiga. Noticias de '
+                       'tecnología. Modo ingeniero, sal del modo ingeniero. Busca en '
+                       'internet. Abdair, Proyecto Génesis.')
 # Tope de frases por turno del guard. config.py está gitignoreado (por-máquina);
 # si un config viejo no lo define, default a 2.
 try:
@@ -180,6 +205,8 @@ from music import (parse_music_command, ejecutar as ejecutar_musica,  # P6: Spot
                    intent_desde_jev)                                  # J4: acción por JEV
 from show import es_comando_show, run_show     # modo presentación ("presentate")
 import modo_dueno                               # V5: comandos solo para la voz del dueño
+import stt                                      # R1: filtros de alucinación de Whisper
+from llm_router import RouterLLM, Backend       # R1: rotación de LLM por cupo
 from reminders import parse_recordatorio, ReminderStore   # P9: recordatorios
 from jev_decision import decidir, EMOCION_RESPALDO   # J2: ruta del turno; J3: emoción
 from expression_engine import (
@@ -487,6 +514,29 @@ def _mp3_to_wav(mp3: bytes) -> bytes:
     return proc.stdout
 
 
+def _hay_comando(texto: str) -> bool:
+    """R1: ¿las reglas de siempre ven un comando (giro, recordatorio, show, música,
+    salida)? Si sí, no se adelanta el LLM: el turno casi seguro no lo usa."""
+    try:
+        return bool(_intent_giro(texto)
+                    or (RECORDATORIOS_ENABLED and parse_recordatorio(texto))
+                    or es_comando_show(texto)
+                    or (MUSICA_ENABLED and parse_music_command(texto))
+                    or _is_exit(texto) or _is_goodbye(texto))
+    except Exception:
+        return True
+
+
+def _extra_groq(modelo: str) -> Dict:
+    """Parámetros por modelo de Groq. GPT-OSS gasta max_tokens razonando: `low` deja
+    lugar al texto. Qwen3 sin razonamiento responde en ~0.6 s (medido 2026-10-17)."""
+    if modelo.startswith('openai/gpt-oss-'):
+        return {'reasoning_effort': 'low'}
+    if modelo.startswith('qwen/qwen3'):
+        return {'reasoning_effort': 'none'}
+    return {}
+
+
 def _contexto_asistente_turno(texto: str, ruta: Optional[str]) -> str:
     """J2: datos en vivo para el LLM según la ruta de JEV.
     None (JEV no respondió): palabras clave de siempre.
@@ -512,6 +562,61 @@ def _split_sentence(buf: str) -> tuple[Optional[str], str]:
     if m is None:
         return None, buf
     return buf[:m.end()].strip(), buf[m.end():]
+
+
+class _Prefetch:
+    """R1: pedido al LLM lanzado antes de saber la ruta (JEV corre en paralelo).
+    Lee el stream en un hilo y guarda los chunks; se consume como el stream original
+    o se cancela si JEV dice que el turno era un comando."""
+
+    def __init__(self, llm, kwargs: Dict):
+        self.llm = llm
+        self.kwargs = kwargs
+        self.error: Optional[Exception] = None
+        self._q: queue.Queue = queue.Queue()
+        self._arranco = threading.Event()     # primer chunk o fin
+        self._cancelar = threading.Event()
+        self._stream = None
+        threading.Thread(target=self._leer, daemon=True, name='llm-prefetch').start()
+
+    def _leer(self) -> None:
+        try:
+            self._stream = self.llm.chat.completions.create(**self.kwargs)
+            for chunk in self._stream:
+                if self._cancelar.is_set():
+                    break
+                self._q.put(chunk)
+                self._arranco.set()
+        except Exception as e:
+            self.error = e
+        finally:
+            self._q.put(None)
+            self._arranco.set()
+            if self._cancelar.is_set():
+                self._cerrar_stream()
+
+    def _cerrar_stream(self) -> None:
+        try:
+            if self._stream is not None:
+                self._stream.close()
+        except Exception:
+            pass
+
+    def esperar_inicio(self, timeout: float) -> bool:
+        """True si llegó al menos un chunk (o terminó sin error) antes del plazo."""
+        self._arranco.wait(timeout)
+        return self._arranco.is_set() and not (self.error and self._q.qsize() <= 1)
+
+    def __iter__(self):
+        while True:
+            chunk = self._q.get()
+            if chunk is None:
+                return
+            yield chunk
+
+    def close(self) -> None:
+        self._cancelar.set()
+        self._cerrar_stream()
 
 
 # ── VoicePipeline ──────────────────────────────────────────────────────────────
@@ -565,7 +670,18 @@ class VoicePipeline:
         # "thinking": sin esto se come el max_tokens pensando y corta la respuesta.
         self._llm_extra: Dict = {}
         self._usando_ollama = False
-        if LLM_BACKEND == "gemini":
+        if LLM_BACKEND == "rotacion":
+            # R1: Groq en orden (cada modelo con su cupo) y Ollama de último respaldo.
+            from openai import OpenAI
+            backends = [Backend(m.split('/')[-1], self._client, m, _extra_groq(m), timeout=8.0)
+                        for m in LLM_ROTACION]
+            backends.append(Backend('ollama', OpenAI(base_url=OLLAMA_BASE_URL, api_key='ollama'),
+                                    OLLAMA_MODEL, local=True, timeout=30.0))
+            self._llm = RouterLLM(backends, {SYSTEM_PROMPT: SYSTEM_PROMPT_LOCAL},
+                                  log=console.print)
+            self._llm_model = 'rotación'
+            console.print(f"[dim][llm] rotación → {' → '.join(b.nombre for b in backends)}[/]")
+        elif LLM_BACKEND == "gemini":
             from openai import OpenAI
             self._llm = OpenAI(base_url=GEMINI_BASE_URL, api_key=GEMINI_API_KEY)
             self._llm_model = GEMINI_MODEL
@@ -991,6 +1107,7 @@ class VoicePipeline:
 
         es_primer_turno = True
         n_turnos = 0  # contador de turnos para el bonus de mood (charla fluye)
+        ruido_seguido = 0  # R1: frases descartadas como ruido, seguidas
 
         # ── Identidad (memoria P1): reconocer la cara y personalizar ──────────
         # Activación por JEV sin saludo (pending_text sin greeting): la identidad se
@@ -1041,6 +1158,7 @@ class VoicePipeline:
                 self._sm.iniciar_escuchando()
 
         while not self._detener.is_set():
+            self._cerrar_especulacion()   # R1: lo adelantado del turno anterior, si quedó
             # ── 1. Obtener input del turno ─────────────────────────────────────
             texto: str = ''
             audio_turno: Optional[bytes] = None   # audio de la frase (Fase V)
@@ -1051,6 +1169,7 @@ class VoicePipeline:
                 pending_text = None
                 audio_turno = getattr(self, '_audio_wake', None)   # Fase V
                 self._audio_wake = None
+                self._stt_dudosa, self._stt_descartado = False, ''   # ya filtrado en reposo
                 console.print(f'[dim][voice] Usando payload del wake: "{texto}"[/]')
                 self._sm.iniciar_pensando()
             elif pending_audio:
@@ -1081,6 +1200,33 @@ class VoicePipeline:
                 self._sm.iniciar_hablando()
                 self._hablar(FRASE_RESPALDO_STT, 'CONFUNDIDO')
                 break
+
+            if not texto and getattr(self, '_stt_descartado', ''):
+                # R1: era ruido o una alucinación de Whisper. No es un turno: se sigue
+                # escuchando sin decir nada. Varios seguidos → la charla terminó.
+                ruido_seguido += 1
+                if ruido_seguido >= 3:
+                    console.print('[dim][voice] solo ruido, fin de conversación[/]')
+                    break
+                es_primer_turno = False
+                continue
+            ruido_seguido = 0
+
+            if texto and getattr(self, '_stt_dudosa', False):
+                # R1: transcripción con confianza baja → pedir que repita, no adivinar.
+                self._sm.stt_fail_streak += 1
+                self._sm.iniciar_hablando()
+                self._serial.cmd_estado('CONFUNDIDO')
+                if self._sm.stt_fail_streak >= 2:
+                    self._sm.stt_fail_streak = 0
+                    self._hablar('Perdón, no te estoy escuchando bien. '
+                                 'Acércate un poquito y dime de nuevo, ¿sí?', 'CONFUNDIDO')
+                else:
+                    self._hablar(random.choice(['¿Perdón? ¿Me lo repites?',
+                                                'No te entendí bien, ¿me lo dices otra vez?',
+                                                '¿Cómo? Repítemelo, porfa.']), 'CONFUNDIDO')
+                es_primer_turno = False
+                continue
 
             if not texto:
                 console.print('[dim][voice] Audio sin texto[/]')
@@ -1167,6 +1313,16 @@ class VoicePipeline:
                     identificado = identificado or self._convo_persona is not None
                     es_primer_turno = False
                     continue
+
+            # ── R1: mientras JEV decide, identificar y adelantar el LLM ────────
+            # Solo si las reglas no ven un comando; si JEV dice que lo era, se cancela.
+            self._ruta_turno = None
+            if self._puede_especular(texto, es_primer_turno):
+                self._hilo_prep = threading.Thread(
+                    target=self._preparar_respuesta, args=(texto, not identificado, True),
+                    daemon=True, name='llm-especular')
+                self._hilo_prep.start()
+                identificado = True
 
             # ── J2: ruta del turno con JEV (None = parsers de siempre) ─────────
             ruta = self._decidir_ruta(texto)
@@ -1258,11 +1414,12 @@ class VoicePipeline:
                 break
 
             # ── 5. LLM + TTS paralelo ──────────────────────────────────────────
-            if not identificado:
-                self._identificar()   # J3: diferido desde el arranque (ver arriba)
+            hilo_prep, self._hilo_prep = getattr(self, '_hilo_prep', None), None
+            if hilo_prep is not None:
+                hilo_prep.join()      # R1: identidad y LLM ya salieron en paralelo con JEV
+            else:
+                self._preparar_respuesta(texto, not identificado, False)
                 identificado = True
-            if self._voz_activa():
-                self._aplicar_voz_turno()     # Fase V: quién habla, después de la cara
             console.print('[voice] Pensando...')
             captured = self._stream_and_speak(texto)
 
@@ -1271,6 +1428,7 @@ class VoicePipeline:
             es_primer_turno = False
 
         # ── 6. Fin de conversación ─────────────────────────────────────────────
+        self._cerrar_especulacion()
         # P3: la charla ajusta los estados internos (sociabilidad/motivación suben,
         # energía baja, curiosidad se sacia) según cuántos turnos y qué ánimo hubo.
         try:
@@ -1283,6 +1441,52 @@ class VoicePipeline:
             console.print(f'[dim][memoria] cierre falló: {e}[/]')
         modo_dueno.fin_charla(self)  # V5c: el modo ingeniero dura la charla
         self._sm.fin_turno()
+
+    # ── R1: respuesta adelantada (JEV en paralelo) ───────────────────────────
+
+    def _puede_especular(self, texto: str, es_primer_turno: bool) -> bool:
+        """Adelantar el LLM solo cuando vale la pena y no puede salir mal:
+        JEV va a tardar (no hay decisión previa), no es modo ingeniero (Claude),
+        no hay recordatorios por entregar (sacarlos de la cola es un efecto) y las
+        reglas no ven un comando. A mitad de charla, solo si Bob preguntó algo o le
+        dicen "Bob" (lo demás puede ser charla ajena: no gastar cupo)."""
+        if not (JEV_EN_PARALELO and JEV_ROUTING_ENABLED):
+            return False
+        previa = getattr(self, '_jev_previa', None)
+        if previa and previa[0] == texto:
+            return False
+        if modo_dueno.ajustes_ingeniero(self):
+            return False
+        if RECORDATORIOS_ENABLED and self._recordatorios.hay_vencidos():
+            return False
+        if _hay_comando(texto):
+            return False
+        if es_primer_turno:
+            return True
+        ultimo = next((m['content'] for m in reversed(self._convo) if m['role'] == 'assistant'), '')
+        return ultimo.rstrip().endswith('?') or 'bob' in stt.palabras(texto)
+
+    def _preparar_respuesta(self, texto: str, identificar: bool, adelantar: bool) -> None:
+        """Lo que va antes del LLM: identidad (si estaba diferida) y quién habla.
+        Con adelantar, además lanza el pedido al LLM (_Prefetch)."""
+        try:
+            if identificar:
+                self._identificar()   # J3: diferido desde el arranque
+            if self._voz_activa():
+                self._aplicar_voz_turno()     # Fase V: quién habla, después de la cara
+            if adelantar:
+                llm, kwargs, _ = self._armar_pedido(texto, None, None)
+                self._prefetch = _Prefetch(llm, kwargs)
+        except Exception as e:
+            console.print(f'[dim][llm] no se pudo adelantar: {e}[/]')
+
+    def _cerrar_especulacion(self) -> None:
+        hilo, self._hilo_prep = getattr(self, '_hilo_prep', None), None
+        if hilo is not None:
+            hilo.join(timeout=5.0)
+        pre, self._prefetch = getattr(self, '_prefetch', None), None
+        if pre is not None:
+            pre.close()
 
     # ── Grabación ────────────────────────────────────────────────────────────
 
@@ -1454,22 +1658,57 @@ class VoicePipeline:
 
     # ── STT ──────────────────────────────────────────────────────────────────
 
-    def _transcribir(self, wav_bytes: bytes) -> str:
-        self._stt_fallo = False   # True solo si Groq falló (no si el audio era silencio)
+    def _prompt_stt(self, contexto: bool = True) -> str:
+        """R1: prompt de sesgo de Whisper. Vocabulario de los comandos y, en charla, lo
+        último que dijo Bob (la respuesta del usuario se transcribe con ese contexto)."""
+        if not STT_FILTROS_ENABLED:
+            return STT_PROMPT
+        vocab = STT_VOCAB_DUENO if modo_dueno.MODO_DUENO_ENABLED else ''
+        ultimo = ''
+        if contexto and self._convo:
+            ultimo = next((m['content'] for m in reversed(self._convo)
+                           if m['role'] == 'assistant'), '')
+        return stt.armar_prompt(STT_PROMPT, vocab, ultimo)
+
+    def _transcribir(self, wav_bytes: bytes, contexto: bool = True) -> str:
+        """Texto de la frase, o '' si no hubo voz o Groq falló (ver _stt_fallo).
+        R1: descarta alucinaciones (_stt_descartado) y marca lo dudoso (_stt_dudosa)."""
+        self._stt_fallo = False      # True solo si Groq falló (no si el audio era silencio)
+        self._stt_dudosa = False
+        self._stt_descartado = ''
+        prompt = self._prompt_stt(contexto)
+        formato = 'verbose_json' if STT_FILTROS_ENABLED else 'json'
+        trans = self._client.audio.transcriptions
+        crear = getattr(getattr(trans, 'with_raw_response', None), 'create', None)
         for attempt in range(MAX_RETRIES + 1):
             try:
-                resp = self._client.audio.transcriptions.create(
-                    file=('audio.wav', wav_bytes, 'audio/wav'),
-                    model=GROQ_STT_MODEL,
-                    language='es',
-                    # Sesgo de vocabulario: empuja "Bob" y los comandos (música,
-                    # volumen, giros) → menos confusiones de Whisper.
-                    prompt=STT_PROMPT or None,
-                    # temperature=0 → transcripción determinista, menos alucinación.
-                    temperature=0.0,
-                    response_format='json',
-                )
-                return resp.text.strip()
+                args = dict(file=('audio.wav', wav_bytes, 'audio/wav'),
+                            model=GROQ_STT_MODEL,
+                            language='es',
+                            # Sesgo de vocabulario: "Bob", los comandos y el contexto.
+                            prompt=prompt or None,
+                            # temperature=0 → transcripción determinista, menos alucinación.
+                            temperature=0.0,
+                            response_format=formato)
+                headers = {}
+                if crear is not None:
+                    raw = crear(**args)
+                    resp, headers = raw.parse(), getattr(raw, 'headers', {}) or {}
+                else:
+                    resp = trans.create(**args)
+                self._avisar_cupo_stt(headers)
+                if not STT_FILTROS_ENABLED:
+                    return (getattr(resp, 'text', '') or '').strip()
+                r = stt.filtrar(resp.model_dump() if hasattr(resp, 'model_dump') else resp, prompt)
+                if r.descartado:
+                    self._stt_descartado = r.descartado
+                    console.print(f'[dim][stt] descartado ({r.descartado}, '
+                                  f'conf {r.confianza if r.confianza is not None else "?"}): "{r.crudo}"[/]')
+                    return ''
+                self._stt_dudosa = r.dudosa
+                if r.dudosa:
+                    console.print(f'[dim][stt] dudosa (conf {r.confianza:.2f}): "{r.texto}"[/]')
+                return r.texto
             except Exception as e:
                 if attempt == MAX_RETRIES:
                     self._stt_fallo = True
@@ -1477,6 +1716,15 @@ class VoicePipeline:
                     return ''
                 time.sleep(0.5)
         return ''
+
+    def _avisar_cupo_stt(self, headers) -> None:
+        """Avisa en el log cuando quedan pocas transcripciones de Groq (2000/día)."""
+        try:
+            quedan = int(headers.get('x-ratelimit-remaining-requests'))
+        except (TypeError, ValueError):
+            return
+        if quedan in (500, 200, 100, 50) or quedan < 20:
+            console.print(f'[yellow][stt] quedan {quedan} transcripciones de Groq hoy[/]')
 
     # ── LLM ──────────────────────────────────────────────────────────────────
 
@@ -1520,51 +1768,69 @@ class VoicePipeline:
         self._emocion_turno = d.emocion
         return d.ruta
 
-    def _stream_llm(self, texto: str) -> Iterator[str]:
-        self._convo.append({'role': 'user', 'content': texto})
+    def _armar_pedido(self, texto: str, ing: Optional[Dict], ruta: Optional[str]):
+        """(cliente, kwargs de chat.completions.create, tope de frases) para responder
+        `texto`, sin tocar el historial. Lo usan _stream_llm y la especulación (R1)."""
         # Recorte: solo los últimos N mensajes van al LLM (ahorro de tokens). La
         # memoria de largo plazo (P1) ya está en el system prompt, no se pierde.
-        hist = self._convo[-MAX_HIST_MSGS:]
+        hist = (self._convo + [{'role': 'user', 'content': texto}])[-MAX_HIST_MSGS:]
         # P3: inyecta el estado interno actual de Bob (energía/ánimo) para que su
         # tono derive con el tiempo. Se recalcula por turno → refleja el cansancio
         # acumulado dentro de una charla larga.
         # P9: si el turno pide hora/fecha/clima, inyecta datos en vivo al prompt.
         # contexto_asistente devuelve '' cuando no hay intención de asistente.
         # V5c: en modo ingeniero cambian prompt, modelo (nube) y largo; fuera, nada.
-        ing = modo_dueno.ajustes_ingeniero(self)
-        if ing and ing.get('sesion') is not None:      # Claude Code (Pro del dueño)
-            frases = modo_dueno.responder_claude(self, texto, ing['sesion'])
-            if frases:
-                for frase in frases:
-                    yield _marcar_emo(frase, self._emocion_turno)
-                self._convo.append({'role': 'assistant', 'content': ' '.join(frases)})
-                return
-            ing = modo_dueno.ajustes_ingeniero(self, motor='groq')   # respaldo este turno
         llm, modelo, extra = ((ing['llm'], ing['modelo'], ing['extra']) if ing
                               else (self._llm, self._llm_model, self._llm_extra))
         max_tokens = ing['max_tokens'] if ing else MAX_TOKENS
         max_frases = ing['max_frases'] if ing else MAX_FRASES_TURNO
         sys_content = ((ing['prompt'] if ing else self._system_prompt_actual)
                        + self._sm.estado_interno_prompt()
-                       + _contexto_asistente_turno(texto, getattr(self, '_ruta_turno', None))
+                       + _contexto_asistente_turno(texto, ruta)
                        + self._contexto_recordatorios()
                        + getattr(self, '_marca_voz', ''))   # Fase V: quién habla
-        messages = [{'role': 'system', 'content': sys_content}] + hist
+        kwargs = dict(model=modelo,
+                      messages=[{'role': 'system', 'content': sys_content}] + hist,
+                      temperature=TEMPERATURE, max_tokens=max_tokens, stream=True, **extra)
+        return llm, kwargs, max_frases
 
-        try:
-            stream = llm.chat.completions.create(
-                model=modelo,
-                messages=messages,
-                temperature=TEMPERATURE,
-                max_tokens=max_tokens,
-                stream=True,
-                **extra,
-            )
-        except Exception as e:
-            console.print(f'[red][voice] LLM error: {e} → frase de respaldo[/]')
-            # Sin LLM: Bob lo dice en voz en vez de quedarse callado.
-            yield f'[EMO:CONFUNDIDO] {FRASE_RESPALDO_LLM}'
-            return
+    def _stream_llm(self, texto: str) -> Iterator[str]:
+        ing = modo_dueno.ajustes_ingeniero(self)
+        if ing and ing.get('sesion') is not None:      # Claude Code (Pro del dueño)
+            self._convo.append({'role': 'user', 'content': texto})
+            frases = modo_dueno.responder_claude(self, texto, ing['sesion'])
+            if frases:
+                for frase in frases:
+                    yield _marcar_emo(frase, self._emocion_turno)
+                self._convo.append({'role': 'assistant', 'content': ' '.join(frases)})
+                return
+            self._convo.pop()
+            ing = modo_dueno.ajustes_ingeniero(self, motor='groq')   # respaldo este turno
+        llm, kwargs, max_frases = self._armar_pedido(texto, ing, getattr(self, '_ruta_turno', None))
+        self._convo.append({'role': 'user', 'content': texto})
+
+        # R1: si el pedido ya salió mientras JEV decidía y es el mismo, se usa ese.
+        pre, self._prefetch = getattr(self, '_prefetch', None), None
+        stream = None
+        if pre is not None:
+            if pre.llm is llm and pre.kwargs == kwargs:
+                if pre.esperar_inicio(timeout=45.0):
+                    stream = pre
+                    console.print('[dim][llm] respuesta adelantada (JEV en paralelo)[/]')
+                else:
+                    console.print(f'[red][voice] LLM error: {pre.error} → frase de respaldo[/]')
+                    yield f'[EMO:CONFUNDIDO] {FRASE_RESPALDO_LLM}'
+                    return
+            else:
+                pre.close()     # cambió el contexto (ruta, recordatorio…): pedir de nuevo
+        if stream is None:
+            try:
+                stream = llm.chat.completions.create(**kwargs)
+            except Exception as e:
+                console.print(f'[red][voice] LLM error: {e} → frase de respaldo[/]')
+                # Sin LLM: Bob lo dice en voz en vez de quedarse callado.
+                yield f'[EMO:CONFUNDIDO] {FRASE_RESPALDO_LLM}'
+                return
 
         # Guard: corta el turno al llegar a MAX_FRASES_TURNO frases y pone en cada
         # frase la emoción de JEV (_marcar_emo). Guardamos en el historial SOLO lo
@@ -1709,7 +1975,9 @@ class VoicePipeline:
 
         # Ollama local frío (cargar el modelo a VRAM) tarda más que los 10 s
         # que toleramos con Groq/Gemini → sin esto el primer turno sale mudo.
-        primer_sent_timeout = 45.0 if self._usando_ollama else 10.0
+        # R1: con la rotación, Ollama puede entrar de respaldo en frío.
+        con_local = self._usando_ollama or getattr(self._llm, 'tiene_local', lambda: False)()
+        primer_sent_timeout = 45.0 if con_local else 10.0
 
         def tts_worker():
             while True:
@@ -2035,11 +2303,14 @@ class VoicePipeline:
             if self._muted.is_set() or self._sm.en_conversacion:
                 continue   # Bob habló o arrancó una charla mientras grababa
 
-            texto = self._transcribir(audio)
+            texto = self._transcribir(audio, contexto=False)
             if not texto:
                 continue
             if _es_alucinacion(texto):
                 continue   # silencio/ruido alucinado por Whisper → ignorar
+            if getattr(self, '_stt_dudosa', False):
+                console.print(f'[dim][wake?] dudosa, ignoro: "{texto}"[/]')
+                continue   # R1: en reposo, lo dudoso no despierta a Bob
 
             ww = self._wake.detect(texto)
             payload = (ww.payload or '').strip() if ww.detected else texto.strip()

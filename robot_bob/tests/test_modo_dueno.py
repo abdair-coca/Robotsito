@@ -24,6 +24,9 @@ import voice_pipeline as vp   # noqa: E402
 import modo_dueno as md       # noqa: E402
 from memory import Memoria    # noqa: E402
 
+# R1: el LLM adelantado se prueba en test_especulacion.py; aquí no debe pedir al real.
+vp.JEV_EN_PARALELO = False
+
 fallos = 0
 
 
