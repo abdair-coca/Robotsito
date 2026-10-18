@@ -196,9 +196,104 @@ def e_b() -> None:
           'Ok, no pongo nada.' in v.dichas and not ejecutadas, f'-> {v.dichas} {ejecutadas}')
 
 
+class _Falla(Exception):
+    pass
+
+
+def _chunk(texto):
+    from types import SimpleNamespace as NS
+    return NS(choices=[NS(delta=NS(content=texto))])
+
+
+class _Stream:
+    """Entrega los trozos y luego, si `falla`, lanza como lo hace la red a mitad."""
+
+    def __init__(self, trozos, falla=False):
+        self.trozos, self.falla = trozos, falla
+
+    def __iter__(self):
+        for t in self.trozos:
+            yield _chunk(t)
+        if self.falla:
+            raise _Falla('corte de red')
+
+    def close(self):
+        pass
+
+
+class _LLM:
+    def __init__(self, stream):
+        from types import SimpleNamespace as NS
+        self.stream = stream
+        self.chat = NS(completions=NS(create=lambda **kw: self.stream))
+
+
+def _texto_hablado(v, llm_stream, texto='hola'):
+    v._llm, v._llm_model, v._llm_extra = _LLM(llm_stream), 'fake', {}
+    salida = list(v._stream_llm(texto))
+    return [vp._EMO_TAG_RE.sub('', s).strip() for s in salida]
+
+
+def e_c() -> None:
+    print('\n== E-C: respuesta del LLM ==')
+    # 1) Guardia: las frases del log que afirman una acción no hecha se cambian
+    for frase in ['Voy a crear una carpeta llamada “AppInglés” y dentro le dejo la descripción.',
+                  'Voy a abrir Spotify y buscar “Mario to Life” de Michael Giacone.',
+                  'Espera un momento, tu playlist está a punto de sonar.',
+                  'Pongo el modo ingeniero, recalibrando mi firmware y afinando cada servo.',
+                  'Puedo reproducir tu playlist favorita, solo dime el nombre de la canción.',
+                  'Puedo abrir Spotify si me das permiso.']:
+        check(f'E-C: acción no hecha → cambiada: "{frase[:45]}…"', vp._promete_accion(frase))
+    # 2) Lo que no es una promesa, o es una negación, se deja igual
+    for frase in ['Lo siento, Abdair, no puedo reproducir música directamente.',
+                  'Vamos a diseñar la app juntos, primero definimos su objetivo.',
+                  'Vamos a escuchar una canción de Queen.',
+                  'Podemos armar una app con lecciones diarias y repeticiones.',
+                  '¡Qué buena idea, Abdair!']:
+        check(f'E-C: sin cambios: "{frase[:45]}…"', not vp._promete_accion(frase))
+
+    # 3) En la charla, una frase que promete acción sale como la frase honesta
+    v = construir()
+    salida = _texto_hablado(v, _Stream(['Voy a crear una carpeta para el proyecto. ']))
+    check('E-C: la charla dice la frase honesta, no la promesa',
+          salida == [vp.FRASE_SIN_ACCION] and 'carpeta' not in ' '.join(salida), f'-> {salida}')
+
+    # 4) Stream que se corta a mitad: lo ya dicho queda y Bob lo avisa
+    v = construir()
+    salida = _texto_hablado(v, _Stream(['Hola, qué tal bien. ', 'Estoy pensando en'], falla=True))
+    check('E-C: corte a mitad → lo dicho + "se me cortó la idea"',
+          len(salida) == 2 and salida[0].startswith('Hola, qué tal bien.') and salida[1] == vp.FRASE_CORTE,
+          f'-> {salida}')
+
+    # 5) Corte antes de la primera frase: solo el aviso, sin silencio
+    v = construir()
+    salida = _texto_hablado(v, _Stream([], falla=True))
+    check('E-C: corte sin nada dicho → solo el aviso', salida == [vp.FRASE_CORTE], f'-> {salida}')
+
+    # 6) Pedido adelantado: el error del stream se relanza al consumidor (antes se perdía)
+    llm = _LLM(_Stream(['Hola. '], falla=True))
+    pre = vp._Prefetch(llm, {'model': 'fake', 'messages': []})
+    dichos, lanzo = [], False
+    try:
+        for c in pre:
+            dichos.append(c)
+    except _Falla:
+        lanzo = True
+    check('E-C: prefetch relanza el error del stream', lanzo and len(dichos) == 1,
+          f'-> lanzó={lanzo}, chunks={len(dichos)}')
+
+    # 7) La regla de charla va en el prompt del pedido
+    v = construir()
+    _llm, kwargs, _ = v._armar_pedido('hola', None, None)
+    sistema = kwargs['messages'][0]['content']
+    check('E-C: la regla "no tienes herramientas" va en el prompt',
+          'no tienes herramientas' in sistema and 'nombres propios' in sistema)
+
+
 def main() -> None:
     e_a()
     e_b()
+    e_c()
     print(f"\n{'TODO OK' if fallos == 0 else f'{fallos} FALLA(S)'}")
     sys.exit(1 if fallos else 0)
 

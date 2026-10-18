@@ -312,6 +312,43 @@ def _marcar_emo(sent: str, emo: str) -> str:
     """
     return f'[EMO:{emo}] ' + _EMO_TAG_RE.sub('', sent).strip()
 
+# ── E-C: lo que el LLM de la charla no puede afirmar ───────────────────────────
+# En la charla no hay herramientas: si Bob dice "voy a crear una carpeta", nadie la crea.
+_RE_HERRAMIENTA = re.compile(
+    r'\b(carpeta|archivo|spotify|playlist|canci[oó]n|m[uú]sica|modo ingenier\w*|firmware|'
+    r'servos?|navegador|correo|mensaje|contrase\w+|descarg\w*)\b', re.IGNORECASE)
+_VERBO_HERRAMIENTA = (r'(?:crear|abrir|poner|reproducir|enviar|borrar|descargar|guardar|buscar|'
+                      r'instalar|cambiar|encender|apagar|configurar|recalibrar|afinar)')
+_RE_ACCION_PROPIA = re.compile(
+    rf"\b(?:(?:voy|vamos) a {_VERBO_HERRAMIENTA}|acabo de \w+|a punto de \w+|"
+    r"puedo (?:reproducir|poner|abrir|crear|enviar|borrar|descargar)|"
+    r"pongo|abro|reproduzco|puse|abr[ií]|recalibr\w*|afin\w*|"
+    r"estoy (?:creando|abriendo|poniendo|reproduciendo|buscando|enviando|recalibrando|afinando))\b",
+    re.IGNORECASE)
+_RE_NEGACION = re.compile(r'\bno (?:lo |la |te )?(?:puedo|voy|pude|podr\w*)\b', re.IGNORECASE)
+FRASE_SIN_ACCION = 'Eso todavía no lo puedo hacer desde la charla.'
+FRASE_CORTE = 'Perdón, se me cortó la idea. ¿Me lo repites?'
+REGLA_CHARLA = (' En esta charla no tienes herramientas: solo hablas. Nunca digas que creaste, '
+                'abriste, pusiste, enviaste, reproduces o cambiaste algo; si te piden algo que no '
+                'puedes hacer, dilo sin rodeos. No repitas literalmente tu respuesta anterior. '
+                'Copia los nombres propios tal como vienen en el mensaje.')
+
+
+def _promete_accion(frase: str) -> bool:
+    """¿La frase afirma una acción de herramienta? Una negación ("no puedo reproducir")
+    no cuenta: es justo lo que debe decir Bob."""
+    if _RE_NEGACION.search(frase):
+        return False
+    return bool(_RE_HERRAMIENTA.search(frase) and _RE_ACCION_PROPIA.search(frase))
+
+
+def _sin_promesas(frase: str) -> str:
+    if _promete_accion(frase):
+        console.print(f'[red][guard] acción no hecha, frase cambiada: "{frase}"[/]')
+        return FRASE_SIN_ACCION
+    return frase
+
+
 FFMPEG  = imageio_ffmpeg.get_ffmpeg_exe()
 console = Console()
 
@@ -682,6 +719,9 @@ class _Prefetch:
         while True:
             chunk = self._q.get()
             if chunk is None:
+                # E-C: un error a mitad del stream se relanza; antes terminaba en silencio.
+                if self.error is not None:
+                    raise self.error
                 return
             yield chunk
 
@@ -1991,7 +2031,8 @@ class VoicePipeline:
                        + self._sm.estado_interno_prompt()
                        + _contexto_asistente_turno(texto, ruta)
                        + self._contexto_recordatorios()
-                       + getattr(self, '_marca_voz', ''))   # Fase V: quién habla
+                       + getattr(self, '_marca_voz', '')    # Fase V: quién habla
+                       + REGLA_CHARLA)                       # E-C: sin acciones no hechas
         kwargs = dict(model=modelo,
                       messages=[{'role': 'system', 'content': sys_content}] + hist,
                       temperature=TEMPERATURE, max_tokens=max_tokens, stream=True, **extra)
@@ -2003,6 +2044,7 @@ class VoicePipeline:
             self._convo.append({'role': 'user', 'content': texto})
             frases = modo_dueno.responder_claude(self, texto, ing['sesion'])
             if frases:
+                frases = [_sin_promesas(f) for f in frases]      # E-C: sin acciones no hechas
                 for frase in frases:
                     yield _marcar_emo(frase, self._emocion_turno)
                 self._convo.append({'role': 'assistant', 'content': ' '.join(frases)})
@@ -2052,36 +2094,46 @@ class VoicePipeline:
         pendiente = ''     # prefijo (tag/signo de apertura) para la próxima frase
         n_frases  = 0
         corte     = False
-        for chunk in stream:
-            delta = (chunk.choices[0].delta.content or '') if chunk.choices else ''
-            buf += delta
-            while True:
-                sent, buf = _split_sentence(buf)
-                if sent is None:
+        fallo     = False   # E-C: el stream se cortó a mitad de la respuesta
+        try:
+            for chunk in stream:
+                delta = (chunk.choices[0].delta.content or '') if chunk.choices else ''
+                buf += delta
+                while True:
+                    sent, buf = _split_sentence(buf)
+                    if sent is None:
+                        break
+                    sent = pendiente + sent
+                    pendiente = ''
+                    if not _hablable(sent):
+                        pendiente = sent        # arrastrar tag/signo al siguiente
+                        continue
+                    sent = _marcar_emo(_sin_promesas(sent), emo_turno)
+                    dicho.append(sent)
+                    yield sent
+                    n_frases += 1
+                    if n_frases >= max_frases:
+                        corte = True
+                        break
+                if corte:
                     break
-                sent = pendiente + sent
-                pendiente = ''
-                if not _hablable(sent):
-                    pendiente = sent        # arrastrar tag/signo al siguiente
-                    continue
-                sent = _marcar_emo(sent, emo_turno)
-                dicho.append(sent)
-                yield sent
-                n_frases += 1
-                if n_frases >= max_frases:
-                    corte = True
-                    break
-            if corte:
-                break
+        except Exception as e:
+            # E-C: antes el error se perdía y la respuesta quedaba a medias sin aviso.
+            fallo = True
+            console.print(f'[red][llm] stream cortado a mitad: {e}[/]')
         if corte:
             try:
                 stream.close()              # no seguir generando server-side
             except Exception:
                 pass
+        elif fallo:
+            frase = _marcar_emo(FRASE_CORTE, emo_turno)
+            dicho.append(frase)
+            yield frase
         else:
             tail = (pendiente + buf).strip()
             if _hablable(tail):
-                sent = _marcar_emo(tail, emo_turno)
+                sent = _marcar_emo(_sin_promesas(tail), emo_turno)
                 dicho.append(sent)
                 yield sent
         self._convo.append({'role': 'assistant',
