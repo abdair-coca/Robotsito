@@ -14,10 +14,13 @@ JEV_TIMEOUT_S sea real. Si JEV no responde a tiempo, falla o responde algo
 inválido, devuelve el respaldo para la parte que falló. Nunca lanza excepciones
 hacia el pipeline.
 """
+import json
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional
 
 from typesafe_sdk import Choice, RetryPolicy, TypeSafeClient
@@ -25,6 +28,10 @@ from typesafe_sdk import Choice, RetryPolicy, TypeSafeClient
 from config import JEV_MODEL, JEV_TIMEOUT_S, TYPESAFE_API_KEY
 
 EMOCION_RESPALDO = "CURIOSO"
+
+# J4: una línea JSON por decisión. Las pruebas la cambian a un archivo temporal.
+LOG_DECISIONES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "decisiones.jsonl")
+_registro_lock = threading.Lock()
 
 RUTAS = {
     "musica": "Pide algo de música que no encaja en las rutas de música específicas",
@@ -122,7 +129,7 @@ def _consultar(clave: str, frase: str, ultimo_turno: str) -> tuple:
     return respuesta.choice, float(respuesta.confidence)
 
 
-def decidir(frase: str, ultimo_turno: str = "") -> Decision:
+def _decidir(frase: str, ultimo_turno: str = "") -> Decision:
     """Decide ruta y emoción para el turno. Nunca lanza excepciones."""
     if not TYPESAFE_API_KEY:
         return Decision(None, EMOCION_RESPALDO, 0.0, 0.0, 0.0, True, "falta TYPESAFE_API_KEY")
@@ -162,3 +169,33 @@ def decidir(frase: str, ultimo_turno: str = "") -> Decision:
     return Decision(ruta=ruta, emocion=emocion, confianza_ruta=conf_ruta,
                     confianza_emocion=conf_emocion, latencia_s=latencia,
                     respaldo=bool(errores), error="; ".join(errores))
+
+
+def registrar(d: Decision, ruta_archivo: Optional[str] = None) -> None:
+    """J4: agrega la decisión como una línea JSON. No guarda el texto de la frase
+    (lo que dice la gente). Nunca lanza excepciones: un fallo de disco no corta el turno."""
+    linea = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "ruta": d.ruta,
+        "emocion": d.emocion,
+        "latencia_s": round(d.latencia_s, 3),
+        "respaldo": d.respaldo,
+        "confianza_ruta": d.confianza_ruta,
+        "confianza_emocion": d.confianza_emocion,
+        "error": d.error,
+    }
+    destino = ruta_archivo or LOG_DECISIONES
+    try:
+        with _registro_lock:
+            os.makedirs(os.path.dirname(destino), exist_ok=True)
+            with open(destino, "a", encoding="utf-8") as f:
+                f.write(json.dumps(linea, ensure_ascii=False) + "\n")
+    except OSError as e:
+        print(f"[jev] no pude registrar la decisión en {destino}: {e}", flush=True)
+
+
+def decidir(frase: str, ultimo_turno: str = "") -> Decision:
+    """Decide ruta y emoción para el turno y lo registra (J4). Nunca lanza excepciones."""
+    d = _decidir(frase, ultimo_turno)
+    registrar(d)
+    return d

@@ -9,11 +9,14 @@ error del SDK, respuestas inválidas, fallo parcial, plazo total y clave ausente
 """
 import os
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import jev_decision as jd   # noqa: E402
+
+jd.LOG_DECISIONES = os.path.join(tempfile.mkdtemp(), "decisiones.jsonl")   # no tocar logs/ reales
 
 fallos = 0
 

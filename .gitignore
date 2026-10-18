@@ -23,3 +23,6 @@ robot_bob/piper_voices/
 # de voz (son la voz de personas reales: no versionar)
 robot_bob/models/
 robot_bob/exp_voz/
+
+# Salida de ejecución: registro de decisiones de JEV (J4)
+robot_bob/logs/

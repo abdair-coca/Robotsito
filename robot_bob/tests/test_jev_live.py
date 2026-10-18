@@ -10,10 +10,13 @@ terminar sin cuelgue, con respaldo=True y en menos de 1 s.
 import os
 import statistics
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import jev_decision as jd   # noqa: E402
+
+jd.LOG_DECISIONES = os.path.join(tempfile.mkdtemp(), "decisiones.jsonl")   # no tocar logs/ reales
 
 CASOS = [
     ("pon algo de Queen", "musica_play"),
