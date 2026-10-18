@@ -143,7 +143,8 @@ def main() -> None:
         s = v._sesion_web
         check('dueño + sí: ejecuta la tarea',
               s.tareas == ['en el navegador busca el precio del ESP32-CAM'])
-        check('dueño + sí: pide confirmación antes', any('Dime sí o no' in d for d in v.dichas))
+        check('dueño: no pide confirmación',
+              not any('Dime sí o no' in d or 'Hago esto' in d for d in v.dichas))
         check('dueño + sí: con tope de pasos y tiempo',
               s.kwargs_preguntar and s.kwargs_preguntar.get('max_herramientas') == md.WEB_MAX_HERRAMIENTAS
               and s.kwargs_preguntar.get('timeout') == md.WEB_TIMEOUT_S)
@@ -151,8 +152,8 @@ def main() -> None:
         check('dueño + sí: dice el resultado (máx 3 frases)',
               'unos 8 dólares' in dicho and 'Cuarta frase' not in dicho)
         check('dueño + sí: queda de contexto', v._contexto_web and '8 dólares' in v._contexto_web)
-        check('dueño + sí: avisa lo que hace (una vez por paso)',
-              v.dichas.count('Abriendo la página para que la vean.') == 1)
+        check('dueño: anuncia "Abro el navegador." una sola vez',
+              v.dichas.count('Abro el navegador.') == 1)
 
         # 3) El siguiente turno del modo ingeniero recibe el resultado, una sola vez
         ing = FakeSesion('Con 8 dólares entra en el presupuesto.')
@@ -162,22 +163,19 @@ def main() -> None:
         md.responder_claude(v, 'otra cosa', ing)
         check('contexto web solo una vez', 'Resultado de la última tarea web' not in ing.tareas[-1])
 
-        # 4) Dice que no → no ejecuta
-        v = construir(respuesta_voz='no, mejor no')
+        # 4) La voz del dueño da la orden → abre el navegador directo, sin preguntar otra vez
+        v = construir()
         md.atender(v, 'en el navegador busca algo', VOZ)
-        check('responde no: no ejecuta', not v._sesion_web.tareas and 'Listo, no lo hago.' in v.dichas)
+        check('dueño: abre el navegador directo, sin confirmación',
+              v._sesion_web.tareas == ['en el navegador busca algo']
+              and not any('Dime sí o no' in d or 'Hago esto' in d for d in v.dichas))
 
-        # 5) Silencio → no ejecuta
-        v = construir(respuesta_voz=None)
+        # 5) Otra voz da la orden → rechazada, no ejecuta
+        v = construir()
+        v._memoria.sim = 0.1
         md.atender(v, 'en el navegador busca algo', VOZ)
-        check('silencio: no ejecuta', not v._sesion_web.tareas)
-
-        # 6) Otra voz dice "sí" → rechazo, no ejecuta
-        v = construir(respuesta_voz='sí', sim_confirmacion=0.1)
-        md.atender(v, 'en el navegador busca algo', VOZ)
-        check('"sí" de otra voz: no ejecuta', not v._sesion_web.tareas)
-        check('"sí" de otra voz: lo rechaza', any('creador' in d or 'Abdair' in d for d in v.dichas[-1:]),
-              f'-> {v.dichas[-1:]}')
+        check('orden de otra voz: rechazada, no ejecuta',
+              not v._sesion_web.tareas and bool(v.dichas), f'-> {v.dichas[-1:]}')
 
         # 7) Falla la tarea → lo dice
         v = construir(resultado=None)
@@ -201,11 +199,6 @@ def main() -> None:
               and any('Claude Code' in d for d in v.dichas))
         claude_code.disponible = lambda: True
 
-        # 9) Otra voz da la orden → rechazada antes de confirmar
-        v = construir()
-        v._memoria.sim = 0.1
-        md.atender(v, 'en el navegador busca algo', (np.ones(256, np.float32) / 16.0, 1.8))
-        check('orden de otra voz: ni pregunta', not any('Dime sí o no' in d for d in v.dichas))
 
         # 9b) Búsqueda en internet: la responde el pipeline, el navegador no se abre
         v = construir()

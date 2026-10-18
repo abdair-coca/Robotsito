@@ -40,6 +40,7 @@ import time
 from typing import Optional, Tuple
 
 import busqueda
+from rich.markup import escape
 
 try:
     from config import MODO_DUENO_ENABLED
@@ -415,6 +416,17 @@ def _buscar_para(consultas):
     return fuentes
 
 
+def _mostrar_fuentes(consultas, fuentes) -> None:
+    """Terminal: las consultas y cada fuente con su enlace, para ver de dónde sale la respuesta."""
+    from voice_pipeline import console
+    console.print(f'[bold cyan][búsqueda][/] consultas: {escape(" | ".join(consultas))}')
+    for i, f in enumerate(fuentes, 1):
+        fecha = f' · {f["fecha"]}' if f.get('fecha') else ''
+        titulo = escape(f'[{i}] {f["titulo"]}')
+        console.print(f'  {titulo} · {escape(f["dominio"] + fecha)}')
+        console.print(f'      {escape(f["url"])}')
+
+
 def _responder_con_fuentes(vp, texto: str, consultas, sesion):
     """Generador de frases: busca, rankea y responde citando [n], en streaming. Si no hay
     fuentes o algo falla, lo dice Claude (sin herramientas) con esa nota."""
@@ -425,9 +437,11 @@ def _responder_con_fuentes(vp, texto: str, consultas, sesion):
     elif not fuentes:
         nota = 'La búsqueda no encontró nada: dilo y responde con lo que sabes.'
     else:
+        _mostrar_fuentes(consultas, fuentes)
         dichas = []
         for frase in busqueda.responder_con_fuentes(texto, fuentes):
             dichas.append(frase)
+            console.print(f'  [bold cyan]Bob:[/] {escape(frase)}')
             yield frase
         if dichas:
             vp._contexto_web = ' '.join(dichas)     # el turno siguiente de Claude lo sabe
@@ -453,8 +467,6 @@ def responder_ingeniero(vp, texto: str, sesion):
 
 
 # ── Agente web (dentro del modo ingeniero) ──────────────────────────────────────
-_RE_SI = re.compile(r'^\W*(?:s[ií]|dale|claro|hazlo|adelante|ok(?:ay)?|vale|va|confirmo|de una)\b',
-                    re.IGNORECASE)
 
 
 def _sesion_web(vp):
@@ -476,8 +488,9 @@ def _sesion_web(vp):
 
 
 def web(vp, tarea: str) -> None:
-    """Tarea en la web con confirmación en voz. El navegador queda abierto hasta
-    salir del modo ingeniero; el resultado se dice y queda de contexto."""
+    """Tarea en el navegador (Playwright), sin pedir confirmación: la voz del dueño ya se
+    verificó en el comando. El navegador queda abierto hasta salir del modo ingeniero; el
+    resultado se dice, se muestra en la terminal y queda de contexto."""
     import claude_code
     from voice_pipeline import console
     if not AGENTE_WEB_ENABLED:
@@ -490,31 +503,13 @@ def web(vp, tarea: str) -> None:
         _decir(vp, 'No encuentro Claude Code en esta laptop, así que no puedo usar el navegador.',
                'TRISTE')
         return
-    # Confirmación en voz: un "no" o una voz ajena cancelan.
-    _decir(vp, f'¿Hago esto en la web: {tarea}? Dime sí o no.', 'CURIOSO')
-    vp._sm.iniciar_escuchando()
-    audio = vp._grabar(initial_timeout=6.0, invitar=False)
-    respuesta = vp._transcribir(audio) if audio else ''
-    if audio and verificar(vp, vp._analizar_voz(audio)) == 'no':
-        _decir(vp, random.choice(RECHAZOS).format(dueno=_nombre_dueno(vp)), 'SOSPECHANDO')
-        return
-    if not _RE_SI.search(respuesta or ''):
-        console.print(f'[dim][dueño] web cancelada (respuesta: "{respuesta}")[/]')
-        _decir(vp, 'Listo, no lo hago.', 'FELIZ')
-        return
-    _decir(vp, 'Voy a la web.', 'PENSANDO')
+    _decir(vp, 'Abro el navegador.', 'PENSANDO')
     pasos = []
-    # Una tarea tarda 15–30 s (medido): Bob cuenta lo que hace para no quedar mudo.
-    avisos = {'WebSearch': 'Buscando en internet...',
-              'navigate': 'Abriendo la página para que la vean.'}
 
     def al_usar(nombre, entrada):
         pasos.append(nombre.replace(_WEB, ''))
         console.print(f'[dim][web] {pasos[-1]} '
                       f'{str(entrada.get("url") or entrada.get("query") or entrada.get("text") or "")[:80]}[/]')
-        aviso = avisos.pop(pasos[-1], None)
-        if aviso:
-            _decir(vp, aviso, 'PENSANDO')
     t0 = time.monotonic()
     resultado = _sesion_web(vp).preguntar(tarea, timeout=WEB_TIMEOUT_S, al_usar=al_usar,
                                           max_herramientas=WEB_MAX_HERRAMIENTAS)
@@ -523,6 +518,8 @@ def web(vp, tarea: str) -> None:
     if not resultado:
         _decir(vp, 'No pude terminar la tarea en la web. ¿Probamos de otra forma?', 'TRISTE')
         return
+    console.print('[bold cyan][web] resultado:[/]')
+    console.print(f'  {escape(resultado)}')
     frases = frases_para_decir(resultado, 3)
     for frase in frases:
         _decir(vp, frase, 'ORGULLOSO')
@@ -585,6 +582,9 @@ def noticias_tech(vp) -> None:
         _decir(vp, 'No pude traer las noticias de tecnología, parece que no hay internet. '
                    '¿Probamos en un rato?', 'TRISTE')
         return
+    console.print('[bold cyan][noticias][/] titulares:')
+    for t in titulares:
+        console.print(f'  • {escape(t)}')
     lineas = _resumir_noticias(vp, titulares)
     origen = 'nube'
     if lineas is None:
