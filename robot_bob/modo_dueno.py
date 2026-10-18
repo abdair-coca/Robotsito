@@ -107,6 +107,17 @@ try:
 except Exception:
     BUSQUEDA_INGENIERO_ENABLED = True
 
+# Lectura del modo ingeniero (fase B1): Read, Glob y Grep solo dentro de APPINGLES_DIR
+# (config.py). Vacía = sin herramientas, como antes. .env queda fuera aunque se pida.
+try:
+    from config import APPINGLES_DIR
+except Exception:
+    APPINGLES_DIR = ''
+LECTURA_PROHIBIDAS = ['Read(**/.env)', 'Read(**/.env.*)']
+# Sin la ruta: _REGLAS_FIJAS prohíbe decir rutas.
+LECTURA_PROMPT = (' Tienes Read, Glob y Grep sobre la carpeta de trabajo de AppInglés: '
+                  'úsalas para contestar sobre sus archivos. Nunca leas ni cites .env ni claves.')
+
 # Agente web (Playwright MCP). Versión fija: probada en la laptop el 2026-10-17.
 try:
     from config import AGENTE_WEB_ENABLED
@@ -305,12 +316,20 @@ def _prompt_ingeniero(vp) -> str:
 
 
 def _crear_sesion_ingeniero(vp):
-    """Sesión de Claude Code del modo ingeniero, sin herramientas: buscar en internet lo
-    hace el pipeline de busqueda.py (fase S), no el modelo. Leer, escribir y ejecutar irán
-    en la sesión de escritura (fase B3)."""
+    """Sesión de Claude Code del modo ingeniero. Buscar en internet lo hace el pipeline
+    de busqueda.py (fase S). Con APPINGLES_DIR, lee esa carpeta (fase B1); sin ella no
+    tiene herramientas. Escribir y ejecutar irán en la sesión de escritura (fase B3)."""
     import claude_code
-    return claude_code.SesionClaude(_prompt_ingeniero(vp) + _REGLAS_FIJAS,
-                                    modelo=CLAUDE_MODELO, nombre='ingeniero')
+    if not APPINGLES_DIR:
+        return claude_code.SesionClaude(_prompt_ingeniero(vp) + _REGLAS_FIJAS,
+                                        modelo=CLAUDE_MODELO, nombre='ingeniero')
+    # cwd propio y vacío: la temporal compartida tiene logs del agente web.
+    return claude_code.SesionClaude(_prompt_ingeniero(vp) + _REGLAS_FIJAS + LECTURA_PROMPT,
+                                    modelo=CLAUDE_MODELO, nombre='ingeniero',
+                                    herramientas='Read,Glob,Grep',
+                                    permitidas=['Read', 'Glob', 'Grep'],
+                                    prohibidas=LECTURA_PROHIBIDAS, add_dirs=[APPINGLES_DIR],
+                                    cwd=os.path.join(claude_code.CWD_DEFAULT, 'lectura'))
 
 
 def entrar_ingeniero(vp) -> None:

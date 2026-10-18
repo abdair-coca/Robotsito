@@ -18,6 +18,7 @@ import voice_pipeline  # noqa: E402,F401  (carga los módulos del pipeline igual
 import claude_code     # noqa: E402
 import busqueda        # noqa: E402
 import modo_dueno as md  # noqa: E402
+md.APPINGLES_DIR = ''   # estas pruebas cubren búsqueda sin herramientas de archivo (B1 tiene su prueba)
 
 fallos = 0
 FUENTE = {'titulo': 'Nota', 'url': 'https://a.bo/1', 'snippet': 's', 'dominio': 'a.bo',

@@ -43,10 +43,12 @@ class SesionClaude:
                  effort: str = 'low', mcp: Optional[dict] = None,
                  permitidas: Sequence[str] = (), prohibidas: Sequence[str] = (),
                  cwd: str = CWD_DEFAULT, nombre: str = 'claude', herramientas: str = '',
-                 comando: Optional[list] = None):
+                 comando: Optional[list] = None, add_dirs: Sequence[str] = ()):
         """mcp: {'nombre': {'command': ..., 'args': [...]}} (formato mcpServers).
         herramientas: herramientas propias de Claude Code habilitadas ('' = ninguna;
         p. ej. 'WebSearch', que busca del lado de Anthropic y no toca la laptop).
+        add_dirs: carpetas extra donde las herramientas de archivo pueden trabajar
+        (con --restricted, nada fuera de cwd y de estas carpetas).
         comando: reemplaza el comando completo (solo para tests)."""
         self.system_prompt = system_prompt
         self.modelo, self.effort = modelo, effort
@@ -55,6 +57,7 @@ class SesionClaude:
         self.cwd = cwd
         self.nombre = nombre
         self.herramientas = herramientas
+        self.add_dirs = list(add_dirs)
         self._comando_fijo = comando
         self._proc: Optional[subprocess.Popen] = None
         self._eventos: queue.Queue = queue.Queue()
@@ -79,6 +82,10 @@ class SesionClaude:
                 cmd += ['--allowedTools', ' '.join(self.permitidas)]
             if self.prohibidas:
                 cmd += ['--disallowedTools', ' '.join(self.prohibidas)]
+        if self.add_dirs:
+            cmd += ['--restricted']          # archivos confinados a cwd y --add-dir
+            for carpeta in self.add_dirs:
+                cmd += ['--add-dir', carpeta]
         return cmd
 
     @staticmethod
