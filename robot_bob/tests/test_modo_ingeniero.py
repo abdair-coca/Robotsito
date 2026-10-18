@@ -20,6 +20,7 @@ sys.path.insert(0, _BOB)
 
 import voice_pipeline as vp   # noqa: E402
 import modo_dueno as md       # noqa: E402
+md.APPINGLES_DIR = ''         # estas pruebas miden el flujo de Claude sin sesión de escritura (B3)
 
 fallos = 0
 

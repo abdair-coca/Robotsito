@@ -1,11 +1,12 @@
 """
-test_escritura_workspace.py — Sesión de escritura del modo ingeniero (fase B3), sin red.
+test_escritura_workspace.py — Sesión de escritura del modo ingeniero (fase B3, ajustada), sin red.
 
 Cubre: el comando de Claude Code (Edit y Write dentro de AppInglés, sin Bash ni
-WebSearch, pedidos de permiso al host), el protocolo de permisos contra un proceso
-falso que emite control_request, la confirmación por voz (sí del dueño, no, voz
-ajena, voz corta, silencio) y el enrutado (solo turnos del dueño escriben; una voz
-ajena no arranca la sesión). La prueba con Claude real está en test_escritura_live.py.
+WebSearch, pedidos de permiso al host), el decisor (Edit y Write sin voz; el resto
+negado), el protocolo contra un proceso falso que emite control_request, y el
+enrutado: la sesión de escritura existe mientras dura el modo y los turnos con
+contenido de internet van a la sesión de lectura. La prueba con Claude real está en
+test_escritura_live.py.
 
   python tests/test_escritura_workspace.py
 """
@@ -28,51 +29,18 @@ def check(nombre: str, ok: bool, detalle: str = "") -> None:
     print(f"[{'OK' if ok else 'FALLA'}] {nombre} {detalle}", flush=True)
 
 
-class SMFalso:
-    def iniciar_hablando(self):
-        pass
-
-
 class MemoriaFalsa:
-    def __init__(self, similitud):
-        self.similitud = similitud
-
-    def total_voces(self, persona_id):
-        return 20
-
-    def verificar_voz(self, persona_id, embedding):
-        return self.similitud
-
     def contexto(self, persona_id):      # lo usa el prompt del modo ingeniero
         return ''
 
 
 class VPFalso:
-    """Lo que usan _decir, _aprobar_escritura y verificar: grabar, transcribir, hablar."""
-    def __init__(self, wav=b'wav', texto='sí', similitud=0.9, seg=2.0):
-        self._wav, self._texto = wav, texto
-        self._analisis = ([0.1, 0.2], seg)
-        self._memoria = MemoriaFalsa(similitud)
-        self._sm = SMFalso()
-        self.grabados = 0
-        self.hablados = []
+    def __init__(self):
+        self._memoria = MemoriaFalsa()
         self._modo_ingeniero = True
-        self._dueno_turno = False
         self._sesion_ing = None
-        self._client = None                  # respaldo Groq de ajustes_ingeniero
-
-    def _grabar(self, **kwargs):
-        self.grabados += 1
-        return self._wav
-
-    def _analizar_voz(self, wav):
-        return self._analisis
-
-    def _transcribir(self, wav, contexto=True):
-        return self._texto
-
-    def _hablar(self, texto, emo=None):
-        self.hablados.append(texto)
+        self._contexto_web = None
+        self._client = None              # respaldo Groq de ajustes_ingeniero
 
 
 def valor(cmd: list, flag: str) -> str:
@@ -97,43 +65,22 @@ for linea in sys.stdin:
 
 original_apdir = modo_dueno.APPINGLES_DIR
 original_disp = claude_code.disponible
+original_descomponer = modo_dueno.busqueda.descomponer
+original_con_fuentes = modo_dueno._responder_con_fuentes
+original_claude = modo_dueno.responder_claude
 carpeta = tempfile.mkdtemp(prefix='AppInglesEsc')
 try:
     modo_dueno.APPINGLES_DIR = carpeta
     claude_code.disponible = lambda: True
 
-    # 1) Confirmación: sí, no, nada
-    check("es_confirmacion: 'sí' es sí", modo_dueno.es_confirmacion('sí') is True)
-    check("es_confirmacion: 'sí, dale' es sí", modo_dueno.es_confirmacion('Sí, dale') is True)
-    check("es_confirmacion: 'no' es no", modo_dueno.es_confirmacion('no') is False)
-    check("es_confirmacion: 'no, espera' es no", modo_dueno.es_confirmacion('no, espera') is False)
-    check("es_confirmacion: otra cosa es None", modo_dueno.es_confirmacion('mmm qué tal') is None)
-    check("es_confirmacion: vacío es None", modo_dueno.es_confirmacion('  ') is None)
+    # 1) Decisor: Edit y Write sin voz; cualquier otra herramienta, no
+    decidir = modo_dueno._aprobar_escritura()
+    check("decisor: Write se permite sin voz", decidir('Write', {'file_path': 'nota.txt'}) is True)
+    check("decisor: Edit se permite sin voz", decidir('Edit', {'file_path': 'nota.txt'}) is True)
+    check("decisor: Bash se niega", decidir('Bash', {'command': 'dir'}) is False)
+    check("decisor: WebSearch se niega", decidir('WebSearch', {'query': 'x'}) is False)
 
-    # 2) Decisor por voz
-    decidir = modo_dueno._aprobar_escritura(VPFalso(texto='sí'))
-    check("decisor: sí del dueño → permite",
-          decidir('Edit', {'file_path': os.path.join(carpeta, 'nota.txt')}) is True)
-    vp = VPFalso(texto='no')
-    check("decisor: no del dueño → niega",
-          modo_dueno._aprobar_escritura(vp)('Write', {'file_path': 'nota.txt'}) is False)
-    vp = VPFalso(texto='sí')
-    modo_dueno._aprobar_escritura(vp)('Write', {'file_path': os.path.join(carpeta, 'nota.txt')})
-    check("decisor: dice el nombre del archivo, sin ruta",
-          any('nota.txt' in h for h in vp.hablados) and not any(carpeta in h for h in vp.hablados))
-    vp = VPFalso(texto='sí', similitud=0.1)
-    check("decisor: voz ajena con 'sí' → niega",
-          modo_dueno._aprobar_escritura(vp)('Write', {'file_path': 'nota.txt'}) is False)
-    vp = VPFalso(texto='sí', seg=0.5)
-    check("decisor: voz corta ('corta') → niega",
-          modo_dueno._aprobar_escritura(vp)('Write', {'file_path': 'nota.txt'}) is False)
-    vp = VPFalso(wav=None)
-    check("decisor: silencio → niega", modo_dueno._aprobar_escritura(vp)('Write', {}) is False)
-    vp = VPFalso(texto='sí')
-    check("decisor: Bash no se aprueba aquí (eso es B4)",
-          modo_dueno._aprobar_escritura(vp)('Bash', {'command': 'dir'}) is False and vp.grabados == 0)
-
-    # 3) Comando de la sesión de escritura
+    # 2) Comando de la sesión de escritura
     vp = VPFalso()
     sesion = modo_dueno._sesion_escritura(vp)
     cmd = sesion.comando()
@@ -151,27 +98,62 @@ try:
     check("escritura: sin ajustes del usuario", valor(cmd, '--setting-sources') == '')
     check("escritura: el prompt no revela la ruta", carpeta not in valor(cmd, '--system-prompt'))
 
-    # 4) Enrutado: solo el dueño escribe; la voz ajena usa la sesión de lectura
+    # 3) Enrutado: durante el modo, la sesión de escritura; sin modo, nada
     lectura = claude_code.SesionClaude('lectura', nombre='ingeniero')
     vp = VPFalso()
     vp._sesion_ing = lectura
-    vp._dueno_turno = False
     ajustes = modo_dueno.ajustes_ingeniero(vp)
-    check("voz ajena: sesión de lectura", ajustes['sesion'] is lectura)
-    check("voz ajena: no arranca la sesión de escritura", getattr(vp, '_sesion_esc', None) is None)
-    vp._dueno_turno = True
-    ajustes = modo_dueno.ajustes_ingeniero(vp)
-    check("dueño: sesión de escritura", ajustes['sesion'].nombre == 'escritura')
-    check("dueño: la sesión queda guardada para salir", vp._sesion_esc is ajustes['sesion'])
-    ajustes = modo_dueno.ajustes_ingeniero(vp, motor='groq')
-    check("dueño con respaldo Groq: sin sesión", 'sesion' not in ajustes)
-    vp._dueno_turno = True
+    check("modo ingeniero con carpeta: sesión de escritura", ajustes['sesion'].nombre == 'escritura')
+    check("sesión de escritura guardada para salir", vp._sesion_esc is ajustes['sesion'])
+    check("respaldo Groq: sin sesión", 'sesion' not in modo_dueno.ajustes_ingeniero(vp, motor='groq'))
     modo_dueno.APPINGLES_DIR = os.path.join(carpeta, 'no_existe')
-    check("carpeta inexistente: el dueño sigue con lectura",
-          modo_dueno.ajustes_ingeniero(vp)['sesion'] is lectura)
+    check("carpeta inexistente: sesión de lectura", modo_dueno.ajustes_ingeniero(vp)['sesion'] is lectura)
     modo_dueno.APPINGLES_DIR = carpeta
+    vp._modo_ingeniero = False
+    check("fuera del modo: sin ajustes", modo_dueno.ajustes_ingeniero(vp) is None)
+
+    # 4) Turnos con internet no escriben: se responden con la sesión de lectura
+    usadas = []
+
+    def con_fuentes(vp_, texto, consultas, sesion_turno):
+        usadas.append(('fuentes', sesion_turno.nombre if sesion_turno else None))
+        yield 'respuesta con fuentes'
+
+    def claude_falso(vp_, texto, sesion_turno, nota=''):
+        usadas.append(('claude', sesion_turno.nombre if sesion_turno else None))
+        return ['respuesta']
+
+    modo_dueno._responder_con_fuentes = con_fuentes
+    modo_dueno.responder_claude = claude_falso
+
+    def responder(plan, contexto_web=None, sesion_escritura=True):
+        modo_dueno.busqueda.descomponer = lambda texto: plan
+        vp = VPFalso()
+        vp._sesion_ing = lectura
+        vp._contexto_web = contexto_web
+        escritura = modo_dueno._sesion_escritura(vp) if sesion_escritura else None
+        usadas.clear()
+        list(modo_dueno.responder_ingeniero(vp, 'pregunta', escritura))
+        return list(usadas)
+
+    check("búsqueda en internet: va a lectura",
+          responder({'buscar': True, 'consultas': ['x']}) == [('fuentes', 'ingeniero')])
+    check("resultado web previo: va a lectura",
+          responder({'buscar': False, 'consultas': []}, contexto_web='dato') == [('claude', 'ingeniero')])
+    check("turno sin internet: va a escritura",
+          responder({'buscar': False, 'consultas': []}) == [('claude', 'escritura')])
+    usadas.clear()
+    modo_dueno.busqueda.descomponer = lambda texto: {'buscar': True, 'consultas': ['x']}
+    vp = VPFalso()
+    vp._sesion_ing = None
+    escritura = modo_dueno._sesion_escritura(vp)
+    frases = list(modo_dueno.responder_ingeniero(vp, 'pregunta', escritura))
+    check("internet sin sesión de lectura: no responde (Groq toma el turno)",
+          frases == [] and usadas == [])
 
     # 5) Protocolo: el host responde y el proceso recibe allow o deny
+    HIJOS = [sys.executable, '-c', HIJO_FALSO]
+
     def sesion_con(decision):
         pedidos = []
 
@@ -180,8 +162,7 @@ try:
             if isinstance(decision, Exception):
                 raise decision
             return decision
-        s = claude_code.SesionClaude('x', nombre='prueba',
-                                     comando=[sys.executable, '-c', HIJO_FALSO], cwd=carpeta,
+        s = claude_code.SesionClaude('x', nombre='prueba', comando=HIJOS, cwd=carpeta,
                                      aprobar=aprobar if decision is not None else None)
         return s, pedidos
 
@@ -204,6 +185,9 @@ try:
 finally:
     modo_dueno.APPINGLES_DIR = original_apdir
     claude_code.disponible = original_disp
+    modo_dueno.busqueda.descomponer = original_descomponer
+    modo_dueno._responder_con_fuentes = original_con_fuentes
+    modo_dueno.responder_claude = original_claude
     shutil.rmtree(carpeta, ignore_errors=True)
 
 print(f"\nRESULTADO: {'TODO OK' if fallos == 0 else f'{fallos} FALLA(S)'}", flush=True)

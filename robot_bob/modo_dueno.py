@@ -118,21 +118,16 @@ LECTURA_PROHIBIDAS = ['Read(**/.env)', 'Read(**/.env.*)']
 LECTURA_PROMPT = (' Tienes Read, Glob y Grep sobre la carpeta de trabajo de AppInglés: '
                   'úsalas para contestar sobre sus archivos. Nunca leas ni cites .env ni claves.')
 
-# Escritura del modo ingeniero (fase B3): solo en turnos del dueño (voz verificada). Cada
-# Edit o Write pide permiso y Bob lo confirma por voz (ver _aprobar_escritura). Sin Bash:
-# eso es B4.
+# Escritura del modo ingeniero (fase B3, ajustada): la voz del dueño se verifica al activar
+# el modo; durante el modo, Edit y Write se permiten dentro de AppInglés sin preguntar.
+# Sin Bash: eso es B4. Los turnos con contenido de internet no usan esta sesión.
 ESCRITURA_HERRAMIENTAS = 'Read,Glob,Grep,Edit,Write'
 ESCRITURA_PERMITIDAS = ['Read', 'Glob', 'Grep']
 ESCRITURA_PROHIBIDAS = LECTURA_PROHIBIDAS + ['Edit(**/.env)', 'Edit(**/.env.*)',
                                              'Write(**/.env)', 'Write(**/.env.*)']
 ESCRITURA_PROMPT = (' Puedes leer, crear y editar archivos de la carpeta de trabajo de AppInglés. '
-                    'No preguntes la confirmación en el texto: al usar Write o Edit, Bob le pregunta '
-                    'por voz a Abdair y espera su respuesta. Si no la da, dilo en una frase. '
                     'Nunca leas ni escribas .env ni claves.')
-ESCRITURA_TIMEOUT_S = 120.0    # una confirmación por voz puede tardar más que ING_TIMEOUT_S
 ACCION_ESCRITURA = {'Write': 'crear o reemplazar', 'Edit': 'editar'}
-_RE_SI = re.compile(r'\b(s[ií]|dale|hazlo|adelante|claro|ok|okay|de acuerdo)\b', re.IGNORECASE)
-_RE_NO = re.compile(r'\b(no|cancel\w*|espera|mejor no)\b', re.IGNORECASE)
 
 # Agente web (Playwright MCP). Versión fija: probada en la laptop el 2026-10-17.
 try:
@@ -348,51 +343,25 @@ def _crear_sesion_ingeniero(vp):
                                     cwd=os.path.join(claude_code.CWD_DEFAULT, 'lectura'))
 
 
-def es_confirmacion(texto: str) -> Optional[bool]:
-    """'sí' → True, 'no' → False, otra cosa → None. Un 'no' gana sobre un 'sí'."""
-    t = (texto or '').strip()
-    if not t:
-        return None
-    if _RE_NO.search(t):
-        return False
-    if _RE_SI.search(t):
-        return True
-    return None
-
-
-def _aprobar_escritura(vp):
-    """Decisor de los permisos de escritura (B3): Bob dice qué archivo va a cambiar y
-    espera el 'sí' del dueño. Cuenta solo si la voz de esa respuesta es la del dueño y
-    dice sí. Cualquier otra cosa niega."""
+def _aprobar_escritura():
+    """Decisor de los permisos de escritura (B3, ajustado). La voz del dueño se verificó al
+    activar el modo ingeniero; después no se pregunta ni se verifica otra vez. Se permiten
+    Edit y Write dentro de AppInglés; cualquier otra herramienta se niega. Queda en la
+    terminal, no en la voz."""
     from voice_pipeline import console
 
     def aprobar(herramienta: str, entrada: dict) -> bool:
-        if herramienta not in ACCION_ESCRITURA:
-            console.print(f'[dueño] permiso fuera de escritura ({herramienta}): no')
-            return False
-        nombre = os.path.basename(str(entrada.get('file_path') or '')) or 'un archivo'
-        _decir(vp, f'Voy a {ACCION_ESCRITURA[herramienta]} {nombre}. ¿Lo hago? Dime sí o no.',
-               'CURIOSO')
-        wav = vp._grabar(initial_timeout=8.0, invitar=False)
-        if not wav:
-            _decir(vp, 'No te escuché. No lo hago.', 'CONFUNDIDO')
-            return False
-        veredicto = verificar(vp, vp._analizar_voz(wav))
-        respuesta = vp._transcribir(wav)
-        console.print(f'[dueño] permiso {herramienta} {nombre}: voz {veredicto}, dijo {respuesta!r}')
-        if veredicto != 'si':
-            _decir(vp, 'No reconozco tu voz para esto. No lo hago.', 'SOSPECHANDO')
-            return False
-        if es_confirmacion(respuesta) is not True:
-            _decir(vp, 'Entendido, no lo hago.', 'TRISTE')
-            return False
-        return True
+        permitido = herramienta in ACCION_ESCRITURA
+        nombre = os.path.basename(str(entrada.get('file_path') or '')) or '-'
+        console.print(f'[dueño] {herramienta} {nombre}: {"sí" if permitido else "no"}')
+        return permitido
     return aprobar
 
 
 def _sesion_escritura(vp):
-    """Sesión de escritura (B3): Read, Glob, Grep, Edit y Write con cwd en AppInglés. Cada
-    Edit o Write pasa por _aprobar_escritura. Se crea solo en turnos del dueño."""
+    """Sesión de escritura (B3): Read, Glob, Grep, Edit y Write con cwd en AppInglés. Existe
+    mientras dura el modo ingeniero, que el dueño activó por voz. Los turnos con contenido
+    de internet no la usan (ver responder_ingeniero)."""
     import claude_code
     from voice_pipeline import console
     sesion = getattr(vp, '_sesion_esc', None)
@@ -402,18 +371,17 @@ def _sesion_escritura(vp):
             modelo=CLAUDE_MODELO, nombre='escritura',
             herramientas=ESCRITURA_HERRAMIENTAS, permitidas=ESCRITURA_PERMITIDAS,
             prohibidas=ESCRITURA_PROHIBIDAS, cwd=APPINGLES_DIR, restringido=True,
-            aprobar=_aprobar_escritura(vp))
+            aprobar=_aprobar_escritura())
         vp._sesion_esc = sesion
         console.print('[dim][dueño] sesión de escritura (AppInglés)[/]')
     return sesion
 
 
 def _puede_escribir(vp) -> bool:
-    """Turno del dueño, con la carpeta existente y Claude Code disponible."""
+    """Carpeta existente y Claude Code disponible. El dueño ya fue verificado al activar."""
     import claude_code
-    return bool(getattr(vp, '_dueno_turno', False) and APPINGLES_DIR
-                and os.path.isdir(APPINGLES_DIR) and MOTOR_INGENIERO == 'claude'
-                and claude_code.disponible())
+    return bool(APPINGLES_DIR and os.path.isdir(APPINGLES_DIR)
+                and MOTOR_INGENIERO == 'claude' and claude_code.disponible())
 
 
 def entrar_ingeniero(vp) -> None:
@@ -503,8 +471,7 @@ def responder_claude(vp, texto: str, sesion, nota: str = ''):
     vp._contexto_web = None
     mensaje = (f'[Contexto de este turno: {" ".join(notas)}]\n{texto}' if notas else texto)
     t0 = time.monotonic()
-    tope = ESCRITURA_TIMEOUT_S if getattr(sesion, 'aprobar', None) else ING_TIMEOUT_S
-    respuesta = sesion.preguntar(mensaje, timeout=tope)
+    respuesta = sesion.preguntar(mensaje, timeout=ING_TIMEOUT_S)
     if not respuesta:
         console.print('[yellow][dueño] Claude Code no respondió: este turno va con Groq[/]')
         return None
@@ -557,19 +524,34 @@ def _responder_con_fuentes(vp, texto: str, consultas, sesion):
     yield from (responder_claude(vp, texto, sesion, nota=nota) or [])
 
 
+def _sesion_sin_escritura(vp, sesion):
+    """Un turno con contenido de internet no puede usar la sesión de escritura: en su lugar,
+    la de lectura del modo. Las demás sesiones se usan tal cual."""
+    if sesion is not None and getattr(sesion, 'nombre', '') == 'escritura':
+        return getattr(vp, '_sesion_ing', None)
+    return sesion
+
+
 def responder_ingeniero(vp, texto: str, sesion):
     """Generador de frases de un turno del modo ingeniero. Primero descompone la pregunta
     (busqueda.descomponer): si hace falta buscar, responde con fuentes; si no, Claude Code
-    sin herramientas. Si el descompositor falla, busca con la pregunta tal cual."""
-    if not BUSQUEDA_INGENIERO_ENABLED:
-        yield from (responder_claude(vp, texto, sesion) or [])
+    sin herramientas. Si el descompositor falla, busca con la pregunta tal cual.
+    Un turno con contenido de internet (búsqueda o resultado web) no escribe: va con la
+    sesión de lectura (B-D1). Si no hay sesión de lectura, no responde y lo hace Groq."""
+    if BUSQUEDA_INGENIERO_ENABLED:
+        plan = busqueda.descomponer(texto)
+        con_busqueda = plan is None or plan['buscar']
+        consultas = (plan['consultas'] if plan else [texto]) if con_busqueda else []
+    else:
+        con_busqueda, consultas = False, []
+    con_web = con_busqueda or bool(getattr(vp, '_contexto_web', None))
+    sesion_turno = _sesion_sin_escritura(vp, sesion) if con_web else sesion
+    if sesion is not None and sesion_turno is None:    # solo había escritura: Groq responde
         return
-    plan = busqueda.descomponer(texto)
-    if plan is None or plan['buscar']:
-        consultas = plan['consultas'] if plan else [texto]
-        yield from _responder_con_fuentes(vp, texto, consultas, sesion)
+    if con_busqueda:
+        yield from _responder_con_fuentes(vp, texto, consultas, sesion_turno)
         return
-    yield from (responder_claude(vp, texto, sesion) or [])
+    yield from (responder_claude(vp, texto, sesion_turno) or [])
 
 
 # ── Agente web (dentro del modo ingeniero) ──────────────────────────────────────

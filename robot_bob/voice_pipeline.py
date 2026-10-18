@@ -762,7 +762,6 @@ class VoicePipeline:
         self._sesion_ing = None              # V5c: Claude Code del modo ingeniero
         self._sesion_web = None              # V5d: Claude Code + Playwright MCP
         self._sesion_esc = None              # B3: Claude Code con Edit y Write (solo turnos del dueño)
-        self._dueno_turno = False            # B3: la voz de este turno es la del dueño
         self._contexto_web = None            # V5d: resultado web para el turno siguiente
         self._espera_cancion = False         # E-B: Bob preguntó qué canción poner
 
@@ -1456,7 +1455,6 @@ class VoicePipeline:
 
             # ── Fase V: "Bob, aprende mi voz" / quién habla / muestra pasiva ───
             self._voz_turno = None
-            self._dueno_turno = False
             if self._voz_activa():
                 if _pide_aprender_voz(texto):
                     if not identificado:       # vino como payload del wake: ver la cara ya
@@ -1467,7 +1465,6 @@ class VoicePipeline:
                     continue
                 analisis = self._analizar_voz(audio_turno)
                 self._voz_turno = self._verificar_voz_turno(analisis)   # antes de sumar la muestra
-                self._dueno_turno = modo_dueno.verificar(self, analisis) == 'si'   # B3
                 if self._dueno_por_cara():
                     self._muestra_voz(audio_turno, 'pasivo', analisis)
                 # V5: comandos que solo obedecen a la voz del dueño

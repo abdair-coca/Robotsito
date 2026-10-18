@@ -1,9 +1,9 @@
 """
-test_escritura_live.py — Claude Code real escribiendo desde el modo ingeniero (fase B3).
+test_escritura_live.py — Claude Code real escribiendo desde el modo ingeniero (fase B3, ajustada).
 
-Usa una carpeta temporal, no AppInglés. La voz del dueño es simulada: en una corrida
-responde "sí" y en la otra "no". Gasta dos turnos de Claude (Haiku, suscripción Pro).
-Comprueba: con "sí" el archivo se crea; con "no" no se crea.
+Usa una carpeta temporal, no AppInglés. Sin confirmación por voz: el dueño ya se verificó
+al activar el modo. Dos turnos: crear nota.txt y después editarlo. Gasta dos turnos de
+Claude (Haiku, suscripción Pro).
 
   PYTHONIOENCODING=utf-8 python tests/test_escritura_live.py
 """
@@ -26,85 +26,53 @@ def check(nombre: str, ok: bool, detalle: str = "") -> None:
     print(f"[{'OK' if ok else 'FALLA'}] {nombre} {detalle}", flush=True)
 
 
-class SMFalso:
-    def iniciar_hablando(self):
-        pass
-
-
 class MemoriaFalsa:
-    def total_voces(self, persona_id):
-        return 20
-
-    def verificar_voz(self, persona_id, embedding):
-        return 0.9               # voz del dueño
-
     def contexto(self, persona_id):
         return ''
 
 
 class VPFalso:
-    """Voz simulada: graba un trozo cualquiera y transcribe lo que se le diga."""
-    def __init__(self, respuesta):
-        self.respuesta = respuesta
+    """Lo mínimo que el modo ingeniero lee del pipeline. Sin micrófono ni voz."""
+    def __init__(self):
         self._memoria = MemoriaFalsa()
-        self._sm = SMFalso()
         self._modo_ingeniero = True
-        self._dueno_turno = True
         self._sesion_ing = None
+        self._contexto_web = None
         self._client = None
-        self.hablados = []
-
-    def _grabar(self, **kwargs):
-        return b'wav'
-
-    def _analizar_voz(self, wav):
-        return [0.1, 0.2], 2.0
-
-    def _transcribir(self, wav, contexto=True):
-        return self.respuesta
-
-    def _hablar(self, texto, emo=None):
-        self.hablados.append(texto)
 
 
-def corrida(respuesta: str):
-    """Un turno de escritura con la voz `respuesta`. Devuelve (archivo creado, texto, vp)."""
-    carpeta = tempfile.mkdtemp(prefix='AppInglesEscLive')
-    original = modo_dueno.APPINGLES_DIR
-    original_disp = claude_code.disponible
-    modo_dueno.APPINGLES_DIR = carpeta
-    claude_code.disponible = lambda: True
-    sesion = None
-    try:
-        vp = VPFalso(respuesta)
-        ajustes = modo_dueno.ajustes_ingeniero(vp)
-        sesion = ajustes['sesion']
-        sesion.iniciar()
-        texto = sesion.preguntar('Crea un archivo llamado nota.txt con la palabra hola dentro. '
-                                 'Usa la herramienta de escritura.',
-                                 timeout=modo_dueno.ESCRITURA_TIMEOUT_S)
-        creado = os.path.exists(os.path.join(carpeta, 'nota.txt'))
-        contenido = ''
-        if creado:
-            with open(os.path.join(carpeta, 'nota.txt'), encoding='utf-8') as f:
-                contenido = f.read()
-        return creado, contenido, texto, vp
-    finally:
-        if sesion is not None:
-            sesion.cerrar()
-        modo_dueno.APPINGLES_DIR = original
-        claude_code.disponible = original_disp
-        shutil.rmtree(carpeta, ignore_errors=True)
+def leer(ruta: str) -> str:
+    if not os.path.exists(ruta):
+        return ''
+    with open(ruta, encoding='utf-8') as f:
+        return f.read()
 
 
-creado, contenido, texto, vp = corrida('sí')
-check("con 'sí' del dueño: el archivo se crea", creado, f"-> {texto}")
-check("con 'sí': Bob preguntó antes de escribir",
-      any('nota.txt' in h for h in vp.hablados), f"-> {vp.hablados}")
-check("con 'sí': el contenido incluye 'hola'", 'hola' in contenido.lower(), f"-> {contenido!r}")
+carpeta = tempfile.mkdtemp(prefix='AppInglesEscLive')
+original = modo_dueno.APPINGLES_DIR
+original_disp = claude_code.disponible
+modo_dueno.APPINGLES_DIR = carpeta
+claude_code.disponible = lambda: True
+sesion = None
+try:
+    sesion = modo_dueno.ajustes_ingeniero(VPFalso())['sesion']
+    ruta = os.path.join(carpeta, 'nota.txt')
 
-creado, contenido, texto, vp = corrida('no')
-check("con 'no' del dueño: el archivo no se crea", not creado, f"-> {texto}")
+    t1 = sesion.preguntar('Crea un archivo llamado nota.txt con la palabra hola dentro.',
+                          timeout=60)
+    check("crear: sin voz, nota.txt se crea", os.path.exists(ruta), f"-> {t1}")
+    check("crear: el contenido incluye 'hola'", 'hola' in leer(ruta).lower(), f"-> {leer(ruta)!r}")
+
+    t2 = sesion.preguntar('Edita nota.txt y cambia la palabra hola por adios.', timeout=60)
+    check("editar: cambia el contenido sin voz",
+          'adios' in leer(ruta).lower() and 'hola' not in leer(ruta).lower(),
+          f"-> {leer(ruta)!r} / {t2}")
+finally:
+    if sesion is not None:
+        sesion.cerrar()
+    modo_dueno.APPINGLES_DIR = original
+    claude_code.disponible = original_disp
+    shutil.rmtree(carpeta, ignore_errors=True)
 
 print(f"\nRESULTADO: {'TODO OK' if fallos == 0 else f'{fallos} FALLA(S)'}", flush=True)
 sys.exit(0 if fallos == 0 else 1)
