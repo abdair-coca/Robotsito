@@ -69,8 +69,12 @@ def main() -> None:
     check('"sí" corto y claro pasa', r.texto == 'sí')
 
     # 3) Eco del prompt (large-v3 con silencio: "POTOSÍ, BOLIVIA, UATF.")
+    r = stt.filtrar(resp('POTOSÍ, BOLIVIA, UATF.', -0.82), PROMPT)
+    check('eco del prompt fuera (confianza de eco real)', r.descartado == 'eco_prompt', f'-> {r}')
+    # E-A: con confianza alta y frase corta no se descarta: puede ser una orden del dueño
+    # ("Modo ingeniero." −0.48). Eco de baja confianza sigue fuera.
     r = stt.filtrar(resp('POTOSÍ, BOLIVIA, UATF.', -0.30), PROMPT)
-    check('eco del prompt fuera', r.descartado == 'eco_prompt', f'-> {r}')
+    check('eco corto con confianza alta pasa (E-A)', r.texto == 'POTOSÍ, BOLIVIA, UATF.', f'-> {r}')
     r = stt.filtrar(resp('Hola Bob, pon música de Queen', -0.20), PROMPT)
     check('frase con palabras del prompt pero nueva: pasa', r.texto == 'Hola Bob, pon música de Queen')
 

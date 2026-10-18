@@ -20,8 +20,14 @@ from collections import deque
 from dataclasses import dataclass
 from typing import List, Optional
 
-LOGPROB_RUIDO = -0.7       # frase corta (≤ PALABRAS_CORTA) por debajo → ruido, se descarta
+# Calibración (2026-10-17): ruido real −1.01 a −1.06; frases cortas reales −0.13 a −0.78
+# ("Ok, ponlo." −0.78 era una orden y se descartaba con −0.7).
+LOGPROB_RUIDO = -0.9       # frase corta (≤ PALABRAS_CORTA) por debajo → ruido, se descarta
 LOGPROB_DUDOSA = -0.9      # frase más larga por debajo → dudosa: Bob pide repetir
+# Eco del prompt: "Conversación en español." salió con −0.82 (eco real); "Modo ingeniero."
+# con −0.48 era la orden del dueño. Con poca confianza o frase larga, es eco.
+ECO_CONF_MAX = -0.6
+ECO_PALABRAS_MIN = 6
 COMPRESION_MAX = 2.4       # segmento muy repetitivo (bucle de Whisper) → fuera
 PALABRAS_CORTA = 3
 # Frases que Whisper suele inventar con silencio. Solo se descartan con confianza
@@ -121,14 +127,20 @@ def filtrar(resp, prompt: str = '') -> Transcripcion:
     def fuera(motivo: str) -> Transcripcion:
         return Transcripcion('', crudo, confianza, descartado=motivo)
 
+    # Si la frase menciona a Bob, el dueño le está hablando: no se descarta por ruido,
+    # eco ni alucinación (el "Ok, ponlo." con "Bob" de la charla se perdía así).
+    dirigido = any(p.startswith('bob') for p in palabras(texto))
     if not palabras(texto):
         return fuera('ruido') if crudo else Transcripcion('', crudo, confianza)
-    if prompt and es_eco_prompt(texto, prompt):
+    eco = prompt and es_eco_prompt(texto, prompt) and (
+        confianza is None or confianza < ECO_CONF_MAX or len(palabras(texto)) >= ECO_PALABRAS_MIN)
+    if eco and not dirigido:
         return fuera('eco_prompt')
     if confianza is not None:
-        if ' '.join(palabras(texto)) in ALUCINACIONES and confianza < LOGPROB_ALUCINACION:
+        if not dirigido and ' '.join(palabras(texto)) in ALUCINACIONES \
+                and confianza < LOGPROB_ALUCINACION:
             return fuera('alucinacion')
-        if len(palabras(texto)) <= PALABRAS_CORTA and confianza < LOGPROB_RUIDO:
+        if not dirigido and len(palabras(texto)) <= PALABRAS_CORTA and confianza < LOGPROB_RUIDO:
             return fuera('ruido')
         if confianza < LOGPROB_DUDOSA:
             return Transcripcion(texto, crudo, confianza, dudosa=True)

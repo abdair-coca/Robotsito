@@ -316,6 +316,17 @@ console = Console()
 _LAP_SAMPLE_RATE = 16000  # sounddevice graba a 16 kHz
 
 
+def _segundos_wav(wav: Optional[bytes]) -> float:
+    """Duración de un WAV en segundos (0 si no hay audio o no es WAV)."""
+    if not wav:
+        return 0.0
+    try:
+        with wave.open(_io.BytesIO(wav)) as wf:
+            return wf.getnframes() / float(wf.getframerate())
+    except Exception:
+        return 0.0
+
+
 def _mic_device():
     """Índice del mic Intel por DirectSound. El default de Windows (MME) en la
     laptop captó casi nada; DirectSound a 16 kHz sí captura la voz.
@@ -1295,11 +1306,15 @@ class VoicePipeline:
 
             if not texto and getattr(self, '_stt_descartado', ''):
                 # R1: era ruido o una alucinación de Whisper. No es un turno: se sigue
-                # escuchando sin decir nada. Varios seguidos → la charla terminó.
+                # escuchando. Varios seguidos → la charla terminó. E-A: si hubo voz real
+                # (≥ 1 s), Bob lo dice: en silencio el dueño cree que lo ignoró.
                 ruido_seguido += 1
                 if ruido_seguido >= 3:
                     console.print('[dim][voice] solo ruido, fin de conversación[/]')
                     break
+                if _segundos_wav(audio_turno) >= 1.0:
+                    self._sm.iniciar_hablando()
+                    self._hablar('¿Perdón? No te escuché bien.', 'CONFUNDIDO')
                 es_primer_turno = False
                 continue
             ruido_seguido = 0
@@ -1869,7 +1884,7 @@ class VoicePipeline:
                 r = stt.filtrar(resp.model_dump() if hasattr(resp, 'model_dump') else resp, prompt)
                 if r.descartado:
                     console.print(f'[dim][stt] descartado ({r.descartado}, '
-                                  f'conf {r.confianza if r.confianza is not None else "?"}): "{r.crudo}"[/]')
+                                  f'conf {f"{r.confianza:.2f}" if r.confianza is not None else "?"}): "{r.crudo}"[/]')
                     return '', False, False, r.descartado
                 if r.dudosa:
                     console.print(f'[dim][stt] dudosa (conf {r.confianza:.2f}): "{r.texto}"[/]')
