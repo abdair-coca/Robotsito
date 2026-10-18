@@ -118,6 +118,22 @@ LECTURA_PROHIBIDAS = ['Read(**/.env)', 'Read(**/.env.*)']
 LECTURA_PROMPT = (' Tienes Read, Glob y Grep sobre la carpeta de trabajo de AppInglés: '
                   'úsalas para contestar sobre sus archivos. Nunca leas ni cites .env ni claves.')
 
+# Escritura del modo ingeniero (fase B3): solo en turnos del dueño (voz verificada). Cada
+# Edit o Write pide permiso y Bob lo confirma por voz (ver _aprobar_escritura). Sin Bash:
+# eso es B4.
+ESCRITURA_HERRAMIENTAS = 'Read,Glob,Grep,Edit,Write'
+ESCRITURA_PERMITIDAS = ['Read', 'Glob', 'Grep']
+ESCRITURA_PROHIBIDAS = LECTURA_PROHIBIDAS + ['Edit(**/.env)', 'Edit(**/.env.*)',
+                                             'Write(**/.env)', 'Write(**/.env.*)']
+ESCRITURA_PROMPT = (' Puedes leer, crear y editar archivos de la carpeta de trabajo de AppInglés. '
+                    'No preguntes la confirmación en el texto: al usar Write o Edit, Bob le pregunta '
+                    'por voz a Abdair y espera su respuesta. Si no la da, dilo en una frase. '
+                    'Nunca leas ni escribas .env ni claves.')
+ESCRITURA_TIMEOUT_S = 120.0    # una confirmación por voz puede tardar más que ING_TIMEOUT_S
+ACCION_ESCRITURA = {'Write': 'crear o reemplazar', 'Edit': 'editar'}
+_RE_SI = re.compile(r'\b(s[ií]|dale|hazlo|adelante|claro|ok|okay|de acuerdo)\b', re.IGNORECASE)
+_RE_NO = re.compile(r'\b(no|cancel\w*|espera|mejor no)\b', re.IGNORECASE)
+
 # Agente web (Playwright MCP). Versión fija: probada en la laptop el 2026-10-17.
 try:
     from config import AGENTE_WEB_ENABLED
@@ -332,6 +348,74 @@ def _crear_sesion_ingeniero(vp):
                                     cwd=os.path.join(claude_code.CWD_DEFAULT, 'lectura'))
 
 
+def es_confirmacion(texto: str) -> Optional[bool]:
+    """'sí' → True, 'no' → False, otra cosa → None. Un 'no' gana sobre un 'sí'."""
+    t = (texto or '').strip()
+    if not t:
+        return None
+    if _RE_NO.search(t):
+        return False
+    if _RE_SI.search(t):
+        return True
+    return None
+
+
+def _aprobar_escritura(vp):
+    """Decisor de los permisos de escritura (B3): Bob dice qué archivo va a cambiar y
+    espera el 'sí' del dueño. Cuenta solo si la voz de esa respuesta es la del dueño y
+    dice sí. Cualquier otra cosa niega."""
+    from voice_pipeline import console
+
+    def aprobar(herramienta: str, entrada: dict) -> bool:
+        if herramienta not in ACCION_ESCRITURA:
+            console.print(f'[dueño] permiso fuera de escritura ({herramienta}): no')
+            return False
+        nombre = os.path.basename(str(entrada.get('file_path') or '')) or 'un archivo'
+        _decir(vp, f'Voy a {ACCION_ESCRITURA[herramienta]} {nombre}. ¿Lo hago? Dime sí o no.',
+               'CURIOSO')
+        wav = vp._grabar(initial_timeout=8.0, invitar=False)
+        if not wav:
+            _decir(vp, 'No te escuché. No lo hago.', 'CONFUNDIDO')
+            return False
+        veredicto = verificar(vp, vp._analizar_voz(wav))
+        respuesta = vp._transcribir(wav)
+        console.print(f'[dueño] permiso {herramienta} {nombre}: voz {veredicto}, dijo {respuesta!r}')
+        if veredicto != 'si':
+            _decir(vp, 'No reconozco tu voz para esto. No lo hago.', 'SOSPECHANDO')
+            return False
+        if es_confirmacion(respuesta) is not True:
+            _decir(vp, 'Entendido, no lo hago.', 'TRISTE')
+            return False
+        return True
+    return aprobar
+
+
+def _sesion_escritura(vp):
+    """Sesión de escritura (B3): Read, Glob, Grep, Edit y Write con cwd en AppInglés. Cada
+    Edit o Write pasa por _aprobar_escritura. Se crea solo en turnos del dueño."""
+    import claude_code
+    from voice_pipeline import console
+    sesion = getattr(vp, '_sesion_esc', None)
+    if sesion is None:
+        sesion = claude_code.SesionClaude(
+            _prompt_ingeniero(vp) + _REGLAS_FIJAS + ESCRITURA_PROMPT,
+            modelo=CLAUDE_MODELO, nombre='escritura',
+            herramientas=ESCRITURA_HERRAMIENTAS, permitidas=ESCRITURA_PERMITIDAS,
+            prohibidas=ESCRITURA_PROHIBIDAS, cwd=APPINGLES_DIR, restringido=True,
+            aprobar=_aprobar_escritura(vp))
+        vp._sesion_esc = sesion
+        console.print('[dim][dueño] sesión de escritura (AppInglés)[/]')
+    return sesion
+
+
+def _puede_escribir(vp) -> bool:
+    """Turno del dueño, con la carpeta existente y Claude Code disponible."""
+    import claude_code
+    return bool(getattr(vp, '_dueno_turno', False) and APPINGLES_DIR
+                and os.path.isdir(APPINGLES_DIR) and MOTOR_INGENIERO == 'claude'
+                and claude_code.disponible())
+
+
 def entrar_ingeniero(vp) -> None:
     from voice_pipeline import console
     import claude_code
@@ -355,7 +439,7 @@ def salir_ingeniero(vp, avisar: bool = False) -> None:
             _decir(vp, 'No estaba en modo ingeniero.', 'CONFUNDIDO')
         return
     vp._modo_ingeniero = False
-    for atributo in ('_sesion_ing', '_sesion_web'):      # cierra Claude y el navegador
+    for atributo in ('_sesion_ing', '_sesion_web', '_sesion_esc'):   # cierra Claude y el navegador
         sesion = getattr(vp, atributo, None)
         if sesion is not None:
             sesion.cerrar()
@@ -372,6 +456,8 @@ def ajustes_ingeniero(vp, motor: Optional[str] = None):
     como respaldo): {llm, modelo, extra, max_tokens, max_frases, prompt}."""
     if not getattr(vp, '_modo_ingeniero', False):
         return None
+    if motor != 'groq' and _puede_escribir(vp):      # B3: turno del dueño
+        return {'sesion': _sesion_escritura(vp), 'max_frases': ING_MAX_FRASES}
     sesion = getattr(vp, '_sesion_ing', None)
     if sesion is not None and motor != 'groq':
         return {'sesion': sesion, 'max_frases': ING_MAX_FRASES}
@@ -417,7 +503,8 @@ def responder_claude(vp, texto: str, sesion, nota: str = ''):
     vp._contexto_web = None
     mensaje = (f'[Contexto de este turno: {" ".join(notas)}]\n{texto}' if notas else texto)
     t0 = time.monotonic()
-    respuesta = sesion.preguntar(mensaje, timeout=ING_TIMEOUT_S)
+    tope = ESCRITURA_TIMEOUT_S if getattr(sesion, 'aprobar', None) else ING_TIMEOUT_S
+    respuesta = sesion.preguntar(mensaje, timeout=tope)
     if not respuesta:
         console.print('[yellow][dueño] Claude Code no respondió: este turno va con Groq[/]')
         return None

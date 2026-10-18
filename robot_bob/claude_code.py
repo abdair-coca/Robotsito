@@ -43,12 +43,18 @@ class SesionClaude:
                  effort: str = 'low', mcp: Optional[dict] = None,
                  permitidas: Sequence[str] = (), prohibidas: Sequence[str] = (),
                  cwd: str = CWD_DEFAULT, nombre: str = 'claude', herramientas: str = '',
-                 comando: Optional[list] = None, add_dirs: Sequence[str] = ()):
+                 comando: Optional[list] = None, add_dirs: Sequence[str] = (),
+                 aprobar: Optional[Callable[[str, dict], bool]] = None,
+                 restringido: bool = False):
         """mcp: {'nombre': {'command': ..., 'args': [...]}} (formato mcpServers).
         herramientas: herramientas propias de Claude Code habilitadas ('' = ninguna;
         p. ej. 'WebSearch', que busca del lado de Anthropic y no toca la laptop).
         add_dirs: carpetas extra donde las herramientas de archivo pueden trabajar
         (con --restricted, nada fuera de cwd y de estas carpetas).
+        aprobar: decide cada pedido de permiso (herramienta, entrada) → sí o no. Con
+        aprobar, Claude pide permiso al host (B2) en vez de denegar solo; sin decisor
+        o si falla, se deniega.
+        restringido: --restricted aunque no haya add_dirs (archivos solo en cwd).
         comando: reemplaza el comando completo (solo para tests)."""
         self.system_prompt = system_prompt
         self.modelo, self.effort = modelo, effort
@@ -58,6 +64,8 @@ class SesionClaude:
         self.nombre = nombre
         self.herramientas = herramientas
         self.add_dirs = list(add_dirs)
+        self.aprobar = aprobar
+        self.restringido = restringido
         self._comando_fijo = comando
         self._proc: Optional[subprocess.Popen] = None
         self._eventos: queue.Queue = queue.Queue()
@@ -77,12 +85,15 @@ class SesionClaude:
         if self.mcp:
             cmd += ['--mcp-config', os.path.join(self.cwd, f'{self.nombre}-mcp.json')]
         if self.mcp or self.herramientas:
-            cmd += ['--permission-mode', 'dontAsk']
+            if self.aprobar is None:
+                cmd += ['--permission-mode', 'dontAsk']
+            else:                            # B3: cada pedido sale al host (B2, B-D7)
+                cmd += ['--permission-mode', 'default', '--permission-prompt-tool', 'stdio']
             if self.permitidas:
                 cmd += ['--allowedTools', ' '.join(self.permitidas)]
             if self.prohibidas:
                 cmd += ['--disallowedTools', ' '.join(self.prohibidas)]
-        if self.add_dirs:
+        if self.add_dirs or self.restringido:
             cmd += ['--restricted']          # archivos confinados a cwd y --add-dir
             for carpeta in self.add_dirs:
                 cmd += ['--add-dir', carpeta]
@@ -103,11 +114,14 @@ class SesionClaude:
                 return True
             try:
                 os.makedirs(self.cwd, exist_ok=True)
+                os.makedirs(CWD_DEFAULT, exist_ok=True)
                 if self.mcp:
                     with open(os.path.join(self.cwd, f'{self.nombre}-mcp.json'), 'w',
                               encoding='utf-8') as f:
                         json.dump({'mcpServers': self.mcp}, f)
-                log = open(os.path.join(self.cwd, f'{self.nombre}-stderr.log'), 'a',
+                # El stderr va a la carpeta común, no al cwd: en AppInglés no debe aparecer
+                # ningún archivo de Bob.
+                log = open(os.path.join(CWD_DEFAULT, f'{self.nombre}-stderr.log'), 'a',
                            encoding='utf-8')
                 self._eventos = queue.Queue()
                 try:
@@ -159,6 +173,31 @@ class SesionClaude:
                 pass
 
     # ── Turnos ──────────────────────────────────────────────────────────────
+    def _responder_permiso(self, proc, ev: dict) -> None:
+        """Pedido de permiso del CLI (B2, B-D7): el decisor dice sí o no. Sin decisor, o si
+        falla, se niega: el turno nunca queda colgado esperando."""
+        req = ev.get('request') or {}
+        resp: dict = {}
+        if req.get('subtype') == 'can_use_tool':
+            permitido = False
+            if self.aprobar is not None:
+                try:
+                    permitido = bool(self.aprobar(req.get('tool_name', ''), req.get('input') or {}))
+                except Exception as e:
+                    print(f'[claude] {self.nombre}: el permiso falló ({e}), se niega')
+            if permitido:
+                resp = {'behavior': 'allow', 'updatedInput': req.get('input') or {}}
+            else:
+                resp = {'behavior': 'deny', 'message': 'El dueño no confirmó'}
+        salida = {'type': 'control_response',
+                  'response': {'subtype': 'success', 'request_id': ev.get('request_id'),
+                               'response': resp}}
+        try:
+            proc.stdin.write(json.dumps(salida, ensure_ascii=False) + '\n')
+            proc.stdin.flush()
+        except Exception as e:
+            print(f'[claude] {self.nombre}: no se pudo responder el permiso ({e})')
+
     def preguntar(self, texto: str, timeout: float = 30.0,
                   al_usar: Optional[Callable[[str, dict], None]] = None,
                   max_herramientas: Optional[int] = None) -> Optional[str]:
@@ -208,6 +247,8 @@ class SesionClaude:
                                       'herramientas, se corta')
                                 self.cerrar()
                                 return None
+                elif tipo == 'control_request':
+                    self._responder_permiso(self._proc, ev)
                 elif tipo == 'result':
                     if ev.get('is_error'):
                         print(f'[claude] {self.nombre}: error ({ev.get("subtype")})')
