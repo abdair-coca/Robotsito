@@ -1,24 +1,27 @@
 """
-test_busqueda_ingeniero.py — Búsqueda web del modo ingeniero (fase B0), sin red ni micrófono.
+test_busqueda_ingeniero.py — Modo ingeniero con búsqueda en internet (fase S4), sin red.
 
-Sesión de Claude Code con WebSearch y nada más (sin lectura, escritura ni comandos),
-bandera BUSQUEDA_INGENIERO_ENABLED, aviso "Buscando en internet..." una vez por turno
-y tope de búsquedas por turno, cableado en entrar_ingeniero y responder_claude.
+La sesión de Claude no tiene herramientas. responder_ingeniero decide por turno entre
+buscar (respuesta con fuentes, en streaming) y responder sin buscar, y dice cuándo falla
+la búsqueda: sin Serper, sin resultados o sin respuesta del modelo.
 
   python tests/test_busqueda_ingeniero.py
 """
 import os
 import sys
 import types
+from contextlib import contextmanager
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import voice_pipeline  # noqa: E402,F401  (carga los módulos del pipeline igual que en producción)
 import claude_code     # noqa: E402
+import busqueda        # noqa: E402
 import modo_dueno as md  # noqa: E402
 
 fallos = 0
-PROHIBIDAS_B0 = ('Read', 'Edit', 'Write', 'Bash', 'Glob', 'Grep')
+FUENTE = {'titulo': 'Nota', 'url': 'https://a.bo/1', 'snippet': 's', 'dominio': 'a.bo',
+          'fecha': '', 'posicion': 1}
 
 
 def check(nombre: str, ok: bool, detalle: str = "") -> None:
@@ -27,8 +30,20 @@ def check(nombre: str, ok: bool, detalle: str = "") -> None:
     print(f"[{'OK' if ok else 'FALLA'}] {nombre} {detalle}", flush=True)
 
 
+@contextmanager
+def parches(objeto, **nuevos):
+    """Reemplaza atributos del módulo y los restaura al salir."""
+    originales = {k: getattr(objeto, k) for k in nuevos}
+    for k, v in nuevos.items():
+        setattr(objeto, k, v)
+    try:
+        yield
+    finally:
+        for k, v in originales.items():
+            setattr(objeto, k, v)
+
+
 def _valor(cmd: list, bandera: str):
-    """Valor que sigue a una bandera en la línea de comando, o None si no está."""
     return cmd[cmd.index(bandera) + 1] if bandera in cmd else None
 
 
@@ -37,81 +52,11 @@ def _vp_falso():
                                  _marca_voz='', _ruta_turno=None, _contexto_web=None)
 
 
-def probar_sesion_con_busqueda() -> None:
-    s = md._crear_sesion_ingeniero(_vp_falso())
-    cmd = s.comando()
-    check('sesión con búsqueda: --tools WebSearch', _valor(cmd, '--tools') == 'WebSearch',
-          f'(--tools={_valor(cmd, "--tools")!r})')
-    check('sesión con búsqueda: --allowedTools WebSearch',
-          _valor(cmd, '--allowedTools') == 'WebSearch')
-    check('sesión con búsqueda: --permission-mode dontAsk',
-          _valor(cmd, '--permission-mode') == 'dontAsk')
-    herramientas = [t for t in cmd if t in PROHIBIDAS_B0]
-    check('sesión con búsqueda: sin lectura, escritura ni comandos', not herramientas,
-          f'(encontradas: {herramientas})')
-    check('sesión con búsqueda: nota de WebSearch en el prompt',
-          md.NOTA_BUSQUEDA in s.system_prompt)
-
-
-def probar_bandera_apagada() -> None:
-    original = md.BUSQUEDA_INGENIERO_ENABLED
-    md.BUSQUEDA_INGENIERO_ENABLED = False
-    try:
-        s = md._crear_sesion_ingeniero(_vp_falso())
-        cmd = s.comando()
-    finally:
-        md.BUSQUEDA_INGENIERO_ENABLED = original
-    check('bandera apagada: --tools vacío (como antes)', _valor(cmd, '--tools') == '')
-    check('bandera apagada: sin --allowedTools ni WebSearch',
+def probar_sesion_sin_herramientas() -> None:
+    cmd = md._crear_sesion_ingeniero(_vp_falso()).comando()
+    check('sesión: sin herramientas (--tools vacío)', _valor(cmd, '--tools') == '')
+    check('sesión: sin WebSearch ni permisos de herramienta',
           '--allowedTools' not in cmd and 'WebSearch' not in cmd)
-    check('bandera apagada: sin nota de WebSearch', md.NOTA_BUSQUEDA not in s.system_prompt)
-
-
-def probar_aviso_una_vez() -> None:
-    dichos = []
-    original = md._decir
-    md._decir = lambda vp, texto, emo: dichos.append(texto)
-    try:
-        al_usar = md._avisar_busqueda(_vp_falso())
-        al_usar('WebSearch', {'query': 'noticias de hoy'})
-        al_usar('WebSearch', {'query': 'otra búsqueda'})
-        al_usar('Read', {'file_path': 'x.py'})
-    finally:
-        md._decir = original
-    check('aviso: una sola vez por turno con dos búsquedas',
-          dichos == ['Buscando en internet...'], f'(dichos={dichos})')
-
-
-def probar_aviso_por_turno() -> None:
-    dichos = []
-    original = md._decir
-    md._decir = lambda vp, texto, emo: dichos.append(texto)
-    try:
-        vp = _vp_falso()
-        md._avisar_busqueda(vp)('WebSearch', {'query': 'a'})
-        md._avisar_busqueda(vp)('WebSearch', {'query': 'b'})
-    finally:
-        md._decir = original
-    check('aviso: cada turno (nuevo callback) vuelve a avisar', len(dichos) == 2,
-          f'(avisos={len(dichos)})')
-
-
-def probar_responder_claude_cablea() -> None:
-    llamadas = []
-
-    class SesionFalsa:
-        def preguntar(self, texto, timeout=None, al_usar=None, max_herramientas=None):
-            llamadas.append({'timeout': timeout, 'al_usar': al_usar,
-                             'max_herramientas': max_herramientas})
-            return 'Hola, Abdair.'
-
-    frases = md.responder_claude(_vp_falso(), 'hola', SesionFalsa())
-    check('responder_claude: pasa al_usar y el tope de búsquedas',
-          len(llamadas) == 1 and callable(llamadas[0]['al_usar'])
-          and llamadas[0]['max_herramientas'] == md.ING_MAX_BUSQUEDAS,
-          f'(max_herramientas={llamadas[0]["max_herramientas"] if llamadas else None})')
-    check('responder_claude: devuelve las frases', frases == ['Hola, Abdair.'],
-          f'(frases={frases})')
 
 
 def probar_entrar_ingeniero() -> None:
@@ -120,8 +65,7 @@ def probar_entrar_ingeniero() -> None:
                   md.MOTOR_INGENIERO)
     md._decir = lambda vp, texto, emo: dichos.append(texto)
     claude_code.disponible = lambda: True
-    # Sin proceso real: solo nos interesa la configuración de la sesión.
-    claude_code.SesionClaude.iniciar_en_fondo = lambda self: None
+    claude_code.SesionClaude.iniciar_en_fondo = lambda self: None   # sin proceso real
     md.MOTOR_INGENIERO = 'claude'
     try:
         vp = _vp_falso()
@@ -130,18 +74,89 @@ def probar_entrar_ingeniero() -> None:
     finally:
         md._decir, claude_code.disponible, claude_code.SesionClaude.iniciar_en_fondo, \
             md.MOTOR_INGENIERO = originales
-    check('entrar_ingeniero: la sesión tiene WebSearch y nada más',
-          _valor(cmd, '--tools') == 'WebSearch' and not any(t in PROHIBIDAS_B0 for t in cmd))
+    check('entrar_ingeniero: la sesión arranca sin herramientas', _valor(cmd, '--tools') == '')
     check('entrar_ingeniero: confirma en voz el modo', bool(dichos), f'(dichos={dichos})')
 
 
+def correr(texto: str, *, activa: bool = True, plan='no llamar', buscar=None,
+           frases_busqueda=('Dato [1].',), frases_claude=('Respuesta de Claude.',)):
+    """Corre responder_ingeniero con componentes falsos. Devuelve (frases, registro)."""
+    reg = {'claude': [], 'buscar': [], 'fuentes': 0, 'contexto': None}
+
+    def descomponer(pregunta, **kw):
+        if plan == 'no llamar':
+            raise AssertionError('no debía descomponer')
+        return plan
+
+    def buscar_todas(consultas, noticias=False, timeout=None):
+        reg['buscar'].append((tuple(consultas), noticias))
+        return buscar(noticias) if buscar else None
+
+    def responder_con_fuentes(pregunta, fuentes, **kw):
+        reg['fuentes'] = len(fuentes)
+        for f in frases_busqueda:
+            yield f
+
+    def claude(vp, t, sesion, nota=''):
+        reg['claude'].append(nota)
+        return list(frases_claude)
+
+    vp = _vp_falso()
+    with parches(md, BUSQUEDA_INGENIERO_ENABLED=activa, responder_claude=claude), \
+            parches(busqueda, descomponer=descomponer, buscar_todas=buscar_todas,
+                    responder_con_fuentes=responder_con_fuentes):
+        frases = list(md.responder_ingeniero(vp, texto, sesion=None))
+    reg['contexto'] = vp._contexto_web
+    return frases, reg
+
+
+def probar_flujo() -> None:
+    frases, reg = correr('¿Qué es un servo?', activa=False)
+    check('bandera apagada: responde Claude sin descomponer ni buscar',
+          frases == ['Respuesta de Claude.'] and not reg['buscar'])
+
+    frases, reg = correr('¿Qué es un servo?', plan={'buscar': False, 'consultas': []})
+    check('concepto: no busca, responde Claude sin herramientas',
+          frases == ['Respuesta de Claude.'] and reg['claude'] == [''] and not reg['buscar'])
+
+    frases, reg = correr('¿Cuál es el dólar?', plan={'buscar': True, 'consultas': ['q1', 'q2']},
+                         buscar=lambda noticias: [FUENTE])
+    check('actualidad: busca con las consultas y responde con fuentes',
+          frases == ['Dato [1].'] and reg['buscar'] == [(('q1', 'q2'), True)]
+          and reg['fuentes'] == 1 and not reg['claude'])
+    check('actualidad: guarda lo dicho como contexto del turno siguiente',
+          reg['contexto'] == 'Dato [1].')
+
+    frases, reg = correr('¿Cuál es el dólar?', plan={'buscar': True, 'consultas': ['q1']},
+                         buscar=lambda noticias: None)
+    check('Serper caído: responde sin fuentes y lo dice',
+          len(reg['claude']) == 1 and 'No pude buscar' in reg['claude'][0])
+
+    frases, reg = correr('¿Cuál es el dólar?', plan={'buscar': True, 'consultas': ['q1']},
+                         buscar=lambda noticias: [] if noticias else [FUENTE])
+    check('sin noticias: reintenta con búsqueda general',
+          reg['buscar'] == [(('q1',), True), (('q1',), False)] and reg['fuentes'] == 1)
+
+    frases, reg = correr('¿Algo raro?', plan={'buscar': True, 'consultas': ['q1']},
+                         buscar=lambda noticias: [])
+    check('sin resultados: lo dice Claude',
+          len(reg['claude']) == 1 and 'no encontró nada' in reg['claude'][0])
+
+    frases, reg = correr('¿Cuál es el dólar hoy?', plan=None, buscar=lambda noticias: [FUENTE])
+    check('descompositor caído: busca con la pregunta tal cual',
+          reg['buscar'][0] == (('¿Cuál es el dólar hoy?',), True))
+
+    frases, reg = correr('¿Cuál es el dólar?', plan={'buscar': True, 'consultas': ['q1']},
+                         buscar=lambda noticias: [FUENTE], frases_busqueda=())
+    check('respuesta con fuentes vacía: Claude responde con la nota',
+          len(reg['claude']) == 1 and 'No pude armar' in reg['claude'][0]
+          and frases == ['Respuesta de Claude.'])
+
+
 def main() -> int:
-    probar_sesion_con_busqueda()
-    probar_bandera_apagada()
-    probar_aviso_una_vez()
-    probar_aviso_por_turno()
-    probar_responder_claude_cablea()
+    probar_sesion_sin_herramientas()
     probar_entrar_ingeniero()
+    probar_flujo()
     print(f"\n{'OK' if fallos == 0 else f'{fallos} FALLA(S)'}", flush=True)
     return 1 if fallos else 0
 

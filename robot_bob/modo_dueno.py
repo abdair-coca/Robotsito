@@ -36,6 +36,8 @@ import re
 import time
 from typing import Optional, Tuple
 
+import busqueda
+
 try:
     from config import MODO_DUENO_ENABLED
 except Exception:
@@ -93,18 +95,13 @@ except Exception:
 # Claude Code le pasa el correo de la cuenta y Bob habla frente al público.
 _REGLAS_FIJAS = (' Nunca digas correos, datos de cuenta, rutas ni detalles del sistema '
                  'donde corres. No uses emojis.')
-# Búsqueda web en el modo ingeniero (WebSearch de Claude Code). Apagable con
-# BUSQUEDA_INGENIERO_ENABLED = False en config.py (la feria puede ir sin ella).
+# Búsqueda en internet del modo ingeniero (fase S: Serper + Groq, ver busqueda.py).
+# Apagable con BUSQUEDA_INGENIERO_ENABLED = False en config.py: sin ella, el modo
+# ingeniero responde como antes, sin buscar.
 try:
     from config import BUSQUEDA_INGENIERO_ENABLED
 except Exception:
     BUSQUEDA_INGENIERO_ENABLED = True
-ING_MAX_BUSQUEDAS = 3    # más de estas en un turno → ese turno va con Groq
-NOTA_BUSQUEDA = (' Tienes WebSearch. Para noticias, hechos recientes, precios o algo que pudo '
-                 'cambiar después de tu fecha de corte, busca antes de responder, aunque haya '
-                 'titulares en el contexto (esos son generales). Para conceptos de ingeniería '
-                 'responde sin buscar. No preguntes si quieres que busques: busca y responde con '
-                 'lo que encontraste, sin enlaces ni nombres de fuentes largos.')
 
 # Agente web (Playwright MCP). Versión fija: probada en la laptop el 2026-10-17.
 try:
@@ -290,32 +287,12 @@ def _prompt_ingeniero(vp) -> str:
 
 
 def _crear_sesion_ingeniero(vp):
-    """Sesión de Claude Code del modo ingeniero. Con la búsqueda activa: WebSearch y
-    nada más (lectura, escritura y comandos van en la sesión de escritura, fase B3).
-    Sin búsqueda: sin herramientas, como antes."""
+    """Sesión de Claude Code del modo ingeniero, sin herramientas: buscar en internet lo
+    hace el pipeline de busqueda.py (fase S), no el modelo. Leer, escribir y ejecutar irán
+    en la sesión de escritura (fase B3)."""
     import claude_code
-    prompt = _prompt_ingeniero(vp) + _REGLAS_FIJAS
-    if not BUSQUEDA_INGENIERO_ENABLED:
-        return claude_code.SesionClaude(prompt, modelo=CLAUDE_MODELO, nombre='ingeniero')
-    return claude_code.SesionClaude(prompt + NOTA_BUSQUEDA, modelo=CLAUDE_MODELO,
-                                    nombre='ingeniero', herramientas='WebSearch',
-                                    permitidas=['WebSearch'])
-
-
-def _avisar_busqueda(vp):
-    """al_usar de preguntar(): Bob dice 'Buscando en internet...' una vez por turno,
-    en la primera búsqueda, y la consulta queda en el log."""
-    from voice_pipeline import console
-    avisado = []
-
-    def al_usar(nombre, entrada):
-        if nombre != 'WebSearch':
-            return
-        console.print(f'[dim][dueño] búsqueda: {entrada.get("query", "")}[/]')
-        if not avisado:
-            avisado.append(True)
-            _decir(vp, 'Buscando en internet...', 'PENSANDO')
-    return al_usar
+    return claude_code.SesionClaude(_prompt_ingeniero(vp) + _REGLAS_FIJAS,
+                                    modelo=CLAUDE_MODELO, nombre='ingeniero')
 
 
 def entrar_ingeniero(vp) -> None:
@@ -389,25 +366,73 @@ def frases_para_decir(texto: str, maximo: int):
     return frases[:maximo]
 
 
-def responder_claude(vp, texto: str, sesion):
-    """Un turno del modo ingeniero con Claude Code. Devuelve las frases a decir,
-    o None si Claude Code no respondió (el turno sigue con Groq)."""
+def responder_claude(vp, texto: str, sesion, nota: str = ''):
+    """Un turno del modo ingeniero con Claude Code, sin herramientas. Devuelve las frases a
+    decir, o None si Claude Code no respondió (el turno sigue con Groq). `nota` es una
+    instrucción para este turno, p. ej. que no pudo buscar."""
     from voice_pipeline import _contexto_asistente_turno, console
     notas = [n for n in (
         (getattr(vp, '_marca_voz', '') or '').strip(' \n[]'),
         _contexto_asistente_turno(texto, getattr(vp, '_ruta_turno', None)).strip(),
         f'Resultado de la última tarea web: {vp._contexto_web}'
-        if getattr(vp, '_contexto_web', None) else '') if n]
+        if getattr(vp, '_contexto_web', None) else '',
+        nota) if n]
     vp._contexto_web = None
     mensaje = (f'[Contexto de este turno: {" ".join(notas)}]\n{texto}' if notas else texto)
     t0 = time.monotonic()
-    respuesta = sesion.preguntar(mensaje, timeout=ING_TIMEOUT_S, al_usar=_avisar_busqueda(vp),
-                                 max_herramientas=ING_MAX_BUSQUEDAS)
+    respuesta = sesion.preguntar(mensaje, timeout=ING_TIMEOUT_S)
     if not respuesta:
         console.print('[yellow][dueño] Claude Code no respondió: este turno va con Groq[/]')
         return None
     console.print(f'[dim][dueño] Claude Code respondió en {time.monotonic() - t0:.1f} s[/]')
     return frases_para_decir(respuesta, ING_MAX_FRASES) or None
+
+
+# ── Búsqueda en internet del modo ingeniero (fase S4) ─────────────────────────────
+def _buscar_para(consultas):
+    """Fuentes para las consultas: primero noticias y, si no hay, búsqueda general.
+    Lista (puede ser []), o None si Serper no respondió."""
+    fuentes = busqueda.buscar_todas(consultas, noticias=True)
+    if fuentes == []:
+        fuentes = busqueda.buscar_todas(consultas, noticias=False)
+    return fuentes
+
+
+def _responder_con_fuentes(vp, texto: str, consultas, sesion):
+    """Generador de frases: busca, rankea y responde citando [n], en streaming. Si no hay
+    fuentes o algo falla, lo dice Claude (sin herramientas) con esa nota."""
+    from voice_pipeline import console
+    fuentes = _buscar_para(consultas)
+    if fuentes is None:
+        nota = 'No pude buscar en internet ahora: dilo y responde con lo que sabes.'
+    elif not fuentes:
+        nota = 'La búsqueda no encontró nada: dilo y responde con lo que sabes.'
+    else:
+        dichas = []
+        for frase in busqueda.responder_con_fuentes(texto, fuentes):
+            dichas.append(frase)
+            yield frase
+        if dichas:
+            vp._contexto_web = ' '.join(dichas)     # el turno siguiente de Claude lo sabe
+            return
+        nota = 'No pude armar la respuesta con las fuentes: dilo y responde con lo que sabes.'
+    console.print(f'[yellow][dueño] búsqueda sin respuesta: {nota}[/]')
+    yield from (responder_claude(vp, texto, sesion, nota=nota) or [])
+
+
+def responder_ingeniero(vp, texto: str, sesion):
+    """Generador de frases de un turno del modo ingeniero. Primero descompone la pregunta
+    (busqueda.descomponer): si hace falta buscar, responde con fuentes; si no, Claude Code
+    sin herramientas. Si el descompositor falla, busca con la pregunta tal cual."""
+    if not BUSQUEDA_INGENIERO_ENABLED:
+        yield from (responder_claude(vp, texto, sesion) or [])
+        return
+    plan = busqueda.descomponer(texto)
+    if plan is None or plan['buscar']:
+        consultas = plan['consultas'] if plan else [texto]
+        yield from _responder_con_fuentes(vp, texto, consultas, sesion)
+        return
+    yield from (responder_claude(vp, texto, sesion) or [])
 
 
 # ── Agente web (dentro del modo ingeniero) ──────────────────────────────────────

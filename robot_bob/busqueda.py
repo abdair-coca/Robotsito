@@ -233,7 +233,9 @@ SISTEMA_FUENTES = (
     'Máximo 3 frases cortas, sin listas, sin markdown, sin URLs ni nombres de fuentes largos.')
 _RE_CITA = re.compile(r'\[\s*(\d+(?:\s*,\s*\d+)*)\s*\]')
 _RE_URL_VOZ = re.compile(r'https?://\S+')
-_RE_FIN_FRASE = re.compile(r'(?<=[.!?…])\s+')
+# Solo corta si la frase siguiente empieza con mayúscula o signo de apertura: así
+# "BrainChip Holdings Ltd. ha presentado…" no se parte en "Ltd." (abreviatura).
+_RE_FIN_FRASE = re.compile(r'(?<=[.!?…])\s+(?=[A-ZÁÉÍÓÚÑ¿¡"“«\[])')
 
 
 def _cliente_groq(timeout: float = 3.0):

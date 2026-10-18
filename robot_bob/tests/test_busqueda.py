@@ -310,6 +310,14 @@ def probar_respuesta_fuentes() -> None:
           kw['stream'] is True and kw['model'] == 'openai/gpt-oss-20b'
           and kw['reasoning_effort'] == 'low')
 
+    abreviada = ClienteStreamFalso(['BrainChip Holdings Ltd. ha presentado', ' su núcleo. Otra',
+                                    ' frase.'])
+    frases = list(busqueda.responder_con_fuentes('p', FUENTES, cliente=abreviada,
+                                                 modelo='openai/gpt-oss-20b'))
+    check('frases: no corta en una abreviatura ("Ltd.") seguida de minúscula',
+          frases == ['BrainChip Holdings Ltd. ha presentado su núcleo.', 'Otra frase.'],
+          f'({frases})')
+
     cortado = ClienteStreamFalso(['Primera frase.', ' Segunda'], error=RuntimeError('stream roto'))
     registro = {}
     frases = list(busqueda.responder_con_fuentes('p', FUENTES, cliente=cortado,

@@ -2042,11 +2042,12 @@ class VoicePipeline:
         ing = modo_dueno.ajustes_ingeniero(self)
         if ing and ing.get('sesion') is not None:      # Claude Code (Pro del dueño)
             self._convo.append({'role': 'user', 'content': texto})
-            frases = modo_dueno.responder_claude(self, texto, ing['sesion'])
+            frases = []
+            for frase in modo_dueno.responder_ingeniero(self, texto, ing['sesion']):   # S4
+                frase = _sin_promesas(frase)      # E-C: sin acciones no hechas
+                frases.append(frase)
+                yield _marcar_emo(frase, self._emocion_turno)
             if frases:
-                frases = [_sin_promesas(f) for f in frases]      # E-C: sin acciones no hechas
-                for frase in frases:
-                    yield _marcar_emo(frase, self._emocion_turno)
                 self._convo.append({'role': 'assistant', 'content': ' '.join(frases)})
                 return
             self._convo.pop()
