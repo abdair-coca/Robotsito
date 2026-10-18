@@ -9,6 +9,7 @@ Respuestas simuladas: formato de la petición, parseo de resultados, y la difere
 import json
 import os
 import sys
+import time
 import types
 import urllib.error
 
@@ -183,6 +184,70 @@ def probar_descompositor() -> None:
           and kw['messages'][0]['content'] == busqueda.DESCOMPONER_PROMPT)
 
 
+def _res(url: str, posicion: int, fecha: str = '') -> dict:
+    return {'titulo': url, 'url': url, 'snippet': '', 'dominio': busqueda._dominio(url),
+            'fecha': fecha, 'posicion': posicion}
+
+
+def probar_paralelo_y_ranking() -> None:
+    original = busqueda.buscar
+
+    def lenta(q, **kw):
+        time.sleep(1.0)
+        return []
+    busqueda.buscar = lenta
+    try:
+        t0 = time.monotonic()
+        busqueda.buscar_todas(['a', 'b'])
+        dt = time.monotonic() - t0
+    finally:
+        busqueda.buscar = original
+    check('paralelo: dos consultas de 1 s tardan ~1 s, no 2 s', dt < 1.5, f'(dt={dt:.2f} s)')
+
+    def mixta(q, **kw):
+        return None if q == 'falla' else [_res('https://ok.example.com/x', 1)]
+    busqueda.buscar = mixta
+    try:
+        res_parcial = busqueda.buscar_todas(['falla', 'bien'])
+        res_nula = busqueda.buscar_todas(['falla'])
+    finally:
+        busqueda.buscar = original
+    check('parcial: si una consulta falla, usa la otra', res_parcial and len(res_parcial) == 1)
+    check('todas fallan: None', res_nula is None)
+
+    listas = [[_res('https://www.diario.bo/nota/1/', 1), _res('https://diario.bo/nota/1', 2)],
+              [_res('https://otro.com/a', 1)]]
+    res = busqueda.rankear(listas)
+    check('ranking: quita URLs repetidas (con o sin www y barra final)',
+          [r['url'] for r in res] == ['https://www.diario.bo/nota/1/', 'https://otro.com/a'],
+          f'(urls={[r["url"] for r in res]})')
+
+    mismo = [_res(f'https://sitio.bo/{i}', i) for i in range(1, 5)]
+    res = busqueda.rankear([mismo])
+    check('ranking: máximo 2 fuentes por dominio', len(res) == 2, f'(n={len(res)})')
+
+    muchas = [_res(f'https://d{i}.com/x', i) for i in range(1, 13)]
+    check('ranking: como mucho 8 fuentes', len(busqueda.rankear([muchas])) == 8)
+
+    por_posicion = [_res('https://c.com/3', 3), _res('https://a.com/1', 1), _res('https://b.com/2', 2)]
+    check('ranking: orden por posición (sin fechas)',
+          [r['posicion'] for r in busqueda.rankear([por_posicion])] == [1, 2, 3])
+
+    noticias = [_res('https://n.com/sin', 1, ''), _res('https://n.com/dos', 2, 'hace 2 días'),
+                _res('https://m.com/tres', 3, 'hace 3 horas')]
+    orden = [r['url'] for r in busqueda.rankear([noticias])]
+    check('ranking de noticias: más recientes primero, sin fecha al final',
+          orden == ['https://m.com/tres', 'https://n.com/dos', 'https://n.com/sin'], f'({orden})')
+
+
+def probar_fechas() -> None:
+    check('fecha: "hace 11 horas" → 11',
+          busqueda._horas('hace 11 horas') == 11)
+    check('fecha: "hace 1 día" → 24', busqueda._horas('hace 1 día') == 24)
+    check('fecha: "hace 2 semanas" → 336', busqueda._horas('hace 2 semanas') == 336)
+    check('fecha: "Oct 17, 2026" (absoluta) → None', busqueda._horas('Oct 17, 2026') is None)
+
+
 def main() -> int:
     probar_sin_clave()
     probar_resultados()
@@ -191,6 +256,8 @@ def main() -> int:
     probar_fallos()
     probar_sin_resultados()
     probar_descompositor()
+    probar_paralelo_y_ranking()
+    probar_fechas()
     print(f"\n{'OK' if fallos == 0 else f'{fallos} FALLA(S)'}", flush=True)
     return 1 if fallos else 0
 

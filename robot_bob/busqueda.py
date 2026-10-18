@@ -15,8 +15,10 @@ entorno; la clave nunca se imprime.
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 from urllib.parse import urlparse
 
@@ -70,6 +72,67 @@ def buscar(consulta: str, n: int = 10, noticias: bool = False,
             'posicion': it.get('position') or len(resultados) + 1,
         })
     return resultados
+
+
+# ── S2. Búsqueda en paralelo y ranking (sin LLM) ──────────────────────────────────
+MAX_FUENTES = 8
+MAX_POR_DOMINIO = 2
+
+
+def _horas(fecha: str) -> Optional[float]:
+    """'hace 3 horas' → 3.0, 'hace 2 días' → 48.0. None si no es una fecha relativa."""
+    m = re.search(r'hace\s+(\d+)\s+(\w+)', fecha or '', re.IGNORECASE)
+    if not m:
+        return None
+    cantidad, unidad = int(m.group(1)), m.group(2).lower()
+    for prefijo, horas in (('minut', 1 / 60), ('hora', 1), ('d', 24), ('seman', 168),
+                           ('mes', 720), ('a', 8760)):
+        if unidad.startswith(prefijo):
+            return cantidad * horas
+    return None
+
+
+def _clave_orden(r: dict):
+    """Noticias: las más recientes primero; sin fecha, al final. Después, la posición."""
+    h = _horas(r.get('fecha', ''))
+    return (h is None, h or 0.0, r.get('posicion', 99))
+
+
+def _clave_url(url: str) -> str:
+    """Igual nota aunque cambie www, la barra final o el fragmento."""
+    p = urlparse(url.lower())
+    host = p.netloc[4:] if p.netloc.startswith('www.') else p.netloc
+    return host + p.path.rstrip('/') + (f'?{p.query}' if p.query else '')
+
+
+def rankear(listas: List[List[dict]], maximo: int = MAX_FUENTES) -> List[dict]:
+    """Une los resultados de varias consultas: quita URLs repetidas, máximo
+    MAX_POR_DOMINIO por dominio, y devuelve como mucho `maximo` fuentes."""
+    vistos, por_dominio, aceptados = set(), {}, []
+    for r in sorted((r for lista in listas for r in lista), key=_clave_orden):
+        clave = _clave_url(r['url'])
+        if clave in vistos or por_dominio.get(r['dominio'], 0) >= MAX_POR_DOMINIO:
+            continue
+        vistos.add(clave)
+        por_dominio[r['dominio']] = por_dominio.get(r['dominio'], 0) + 1
+        aceptados.append(r)
+        if len(aceptados) == maximo:
+            break
+    return aceptados
+
+
+def buscar_todas(consultas: List[str], noticias: bool = False,
+                 timeout: float = BUSQUEDA_TIMEOUT_S) -> Optional[List[dict]]:
+    """Una búsqueda por consulta, en paralelo, y el ranking de todo lo que llegó.
+    Lista (puede ser []), o None si ninguna consulta pudo buscarse."""
+    if not consultas:
+        return []
+    with ThreadPoolExecutor(max_workers=len(consultas)) as pool:
+        listas = list(pool.map(lambda q: buscar(q, noticias=noticias, timeout=timeout),
+                               consultas))
+    if all(lista is None for lista in listas):
+        return None
+    return rankear([lista for lista in listas if lista])
 
 
 # ── S1. Descompositor: pregunta → 0 a 4 consultas (0 = no hace falta buscar) ───────
