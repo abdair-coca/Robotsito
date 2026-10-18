@@ -72,6 +72,69 @@ def buscar(consulta: str, n: int = 10, noticias: bool = False,
     return resultados
 
 
+# ── S1. Descompositor: pregunta → 0 a 4 consultas (0 = no hace falta buscar) ───────
+DESCOMPONER_MODELO = 'qwen/qwen3.8-27b'     # medido: 20/20 aciertos; gpt-oss-20b, 18/20
+MAX_CONSULTAS = 4
+DESCOMPONER_PROMPT = (
+    'Eres el planificador de búsqueda de Bob, un robot. Decide si la pregunta necesita '
+    'información de internet actual o verificable. Responde SOLO con JSON: '
+    '{"buscar": true o false, "consultas": ["...", "..."]}. '
+    'buscar = false para conceptos generales, matemáticas, charla, opiniones y cosas que no '
+    'cambian; entonces consultas = []. buscar = true para noticias, hechos recientes, precios, '
+    'lanzamientos, cargos o eventos actuales; entonces da de 1 a 4 consultas cortas, en '
+    'español, cada una buscable en Google.')
+
+
+def _razonamiento(modelo: str) -> dict:
+    """Mismo criterio que voice_pipeline: que el modelo no gaste tokens razonando."""
+    if modelo.startswith('openai/gpt-oss-'):
+        return {'reasoning_effort': 'low'}
+    if modelo.startswith('qwen/qwen3'):
+        return {'reasoning_effort': 'none'}
+    return {}
+
+
+def _json_de(texto: Optional[str]):
+    """El objeto JSON del texto del modelo (acepta bloques ```json), o None."""
+    t = (texto or '').strip()
+    if t.startswith('```'):
+        t = t.strip('`').removeprefix('json').strip()
+    i, j = t.find('{'), t.rfind('}')
+    if i < 0 or j < i:
+        return None
+    try:
+        return json.loads(t[i:j + 1])
+    except ValueError:
+        return None
+
+
+def descomponer(pregunta: str, cliente=None, modelo: str = DESCOMPONER_MODELO,
+                timeout: float = 3.0) -> Optional[dict]:
+    """{'buscar': bool, 'consultas': [...]} o None si el modelo falló o no devolvió
+    un JSON válido. Con buscar=True y sin consultas, la respuesta es inválida (None)."""
+    if cliente is None:
+        from groq import Groq
+        cliente = Groq(api_key=config.GROQ_API_KEY, timeout=timeout)
+    try:
+        r = cliente.chat.completions.create(
+            model=modelo, temperature=0, max_tokens=300,
+            messages=[{'role': 'system', 'content': DESCOMPONER_PROMPT},
+                      {'role': 'user', 'content': pregunta}],
+            **_razonamiento(modelo))
+    except Exception as e:
+        print(f'[busqueda] descomposición falló ({modelo}): {e}')
+        return None
+    datos = _json_de(r.choices[0].message.content)
+    if not isinstance(datos, dict):
+        return None
+    if datos.get('buscar') is not True:
+        return {'buscar': False, 'consultas': []}
+    consultas = [str(c).strip() for c in (datos.get('consultas') or []) if str(c).strip()]
+    if not consultas:
+        return None
+    return {'buscar': True, 'consultas': consultas[:MAX_CONSULTAS]}
+
+
 if __name__ == '__main__':
     import sys
     consulta = ' '.join(sys.argv[1:]) or 'noticias de tecnología hoy'

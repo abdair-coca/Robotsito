@@ -9,6 +9,7 @@ Respuestas simuladas: formato de la petición, parseo de resultados, y la difere
 import json
 import os
 import sys
+import types
 import urllib.error
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -132,6 +133,56 @@ def probar_sin_resultados() -> None:
     check('sin resultados: lista vacía, no None', res == [], f'(res={res!r})')
 
 
+class ClienteGroqFalso:
+    """Imita chat.completions.create de Groq: devuelve `contenido` o lanza `error`."""
+
+    def __init__(self, contenido=None, error=None):
+        self.contenido, self.error, self.llamadas = contenido, error, []
+        self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=self._create))
+
+    def _create(self, **kw):
+        self.llamadas.append(kw)
+        if self.error:
+            raise self.error
+        msg = types.SimpleNamespace(content=self.contenido)
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)])
+
+
+def descomponer_con(contenido=None, error=None, modelo=None):
+    cliente = ClienteGroqFalso(contenido, error)
+    kwargs = {'cliente': cliente}
+    if modelo:
+        kwargs['modelo'] = modelo
+    return busqueda.descomponer('pregunta de prueba', **kwargs), cliente
+
+
+def probar_descompositor() -> None:
+    res, _ = descomponer_con('{"buscar": true, "consultas": ["dólar hoy Bolivia", "tipo de cambio"]}')
+    check('descomponer: buscar=true con consultas', res == {'buscar': True,
+          'consultas': ['dólar hoy Bolivia', 'tipo de cambio']}, f'(res={res})')
+    res, _ = descomponer_con('{"buscar": false, "consultas": ["algo"]}')
+    check('descomponer: buscar=false descarta las consultas', res == {'buscar': False,
+          'consultas': []}, f'(res={res})')
+    res, _ = descomponer_con('{"buscar": true, "consultas": ["a", "b", "c", "d", "e", "f"]}')
+    check('descomponer: máximo 4 consultas', res and len(res['consultas']) == 4)
+    res, _ = descomponer_con('{"buscar": true, "consultas": ["  ", "", "uno"]}')
+    check('descomponer: descarta consultas vacías', res == {'buscar': True, 'consultas': ['uno']},
+          f'(res={res})')
+    res, _ = descomponer_con('{"buscar": true, "consultas": []}')
+    check('descomponer: buscar=true sin consultas es inválido (None)', res is None)
+    res, _ = descomponer_con('```json\n{"buscar": false, "consultas": []}\n```')
+    check('descomponer: acepta bloque ```json', res == {'buscar': False, 'consultas': []})
+    res, _ = descomponer_con('no sé, quizá sí')
+    check('descomponer: texto sin JSON es None', res is None)
+    res, _ = descomponer_con(error=RuntimeError('timeout'))
+    check('descomponer: error del cliente es None', res is None)
+    res, cliente = descomponer_con('{"buscar": false, "consultas": []}', modelo='qwen/qwen3.8-27b')
+    kw = cliente.llamadas[0]
+    check('descomponer: envía el modelo, el prompt y reasoning none para qwen',
+          kw['model'] == 'qwen/qwen3.8-27b' and kw['reasoning_effort'] == 'none'
+          and kw['messages'][0]['content'] == busqueda.DESCOMPONER_PROMPT)
+
+
 def main() -> int:
     probar_sin_clave()
     probar_resultados()
@@ -139,6 +190,7 @@ def main() -> int:
     probar_noticias()
     probar_fallos()
     probar_sin_resultados()
+    probar_descompositor()
     print(f"\n{'OK' if fallos == 0 else f'{fallos} FALLA(S)'}", flush=True)
     return 1 if fallos else 0
 
