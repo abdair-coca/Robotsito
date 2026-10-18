@@ -128,8 +128,77 @@ def e_a() -> None:
           not any('Perdón' in d for d in v.dichas), f'-> {v.dichas}')
 
 
+def e_b() -> None:
+    import music
+    import modo_dueno as md
+    from jev_decision import Decision
+    print('\n== E-B: comandos de música y modo ingeniero ==')
+    music.MUSICA_ENABLED = True
+    vp.MUSICA_ENABLED = True
+
+    # 1) Frases del log: el tema sale limpio
+    r = music.parse_music_command('Ok, quiero que pongas Mario to Life de Michael Giaccino en Spotify.')
+    check('E-B: "pongas Mario to Life… en Spotify" → play con el tema',
+          r is not None and r.accion == 'play' and 'mario to life' in r.query.lower()
+          and 'spotify' not in r.query.lower(), f'-> {r}')
+    r = music.parse_music_command('Bobsito, quiero que pongas música, estoy un poco aburrido.')
+    check('E-B: "música, estoy aburrido" no busca "estoy aburrido"',
+          r is not None and 'aburrido' not in (r.query or '').lower(), f'-> {r}')
+    r = music.parse_music_command('pon música de Queen')
+    check('E-B: "pon música de Queen" → Queen', r is not None and r.query == 'Queen', f'-> {r}')
+    r = music.parse_music_command('quiero que pongas algo de rock')
+    check('E-B: "pongas algo de rock" → rock', r is not None and r.query == 'rock', f'-> {r}')
+    r = music.parse_music_command('ponlo')
+    check('E-B: "ponlo" sola no es un comando de play', r is None or r.accion != 'play', f'-> {r}')
+
+    # 2) Modo ingeniero con las formas del log
+    for texto, esperado in [('Hey Bob, quiero que te pongas el modo ingeniero', 'ingeniero'),
+                            ('Bob, modo ingeniero', 'ingeniero'),
+                            ('entra en modo ingeniero', 'ingeniero'),
+                            ('sal del modo ingeniero', 'salir_ingeniero')]:
+        d = md.detectar(texto)
+        check(f'E-B: "{texto}" → {esperado}', d is not None and d[0] == esperado, f'-> {d}')
+    d = md.detectar('¿qué es el modo ingeniero?')
+    check('E-B: una pregunta sobre el modo no lo activa', d is None, f'-> {d}')
+
+    # 3) "¿Qué canción?" → la respuesta del turno siguiente es el tema
+    def charla(textos, rutas):
+        v = construir()                 # apaga JEV real: se enciende después
+        vp.JEV_ROUTING_ENABLED = True
+        vp.JEV_EN_PARALELO = False
+        ejecutadas = []
+        vp.ejecutar_musica = lambda intent: (ejecutadas.append(intent), 'Listo.')[1]
+        cola_t, cola_r = list(textos), list(rutas)
+        v._grabar = lambda **k: b'wav' if cola_t else None
+
+        def transcribir(audio, **k):
+            return cola_t.pop(0) if cola_t else ''
+        v._transcribir = transcribir
+        vp.decidir = lambda frase, ultimo: Decision(cola_r.pop(0) if cola_r else 'charla', 'FELIZ',
+                                                    0.9, 0.9, 0.1, False, '')
+        v.llm_llamadas = []
+        v._stream_and_speak = lambda texto: v.llm_llamadas.append(texto)
+        v._run_conversation()
+        vp.JEV_ROUTING_ENABLED = False
+        return v, ejecutadas
+
+    v, ejecutadas = charla(['me gustaría que pusieras un tema', 'Mario to Life'],
+                           ['musica_play', 'charla'])
+    check('E-B: JEV "pon música" sin tema → pregunta, no inventa',
+          '¿Qué canción quieres que ponga?' in v.dichas and not v.llm_llamadas, f'-> {v.dichas}')
+    check('E-B: la respuesta siguiente es el tema',
+          len(ejecutadas) == 1 and 'mario' in (ejecutadas[0].query or '').lower(),
+          f'-> {[(e.accion, e.query) for e in ejecutadas]}')
+
+    v, ejecutadas = charla(['me gustaría que pusieras un tema', 'no, mejor no'],
+                           ['musica_play', 'charla'])
+    check('E-B: "no, mejor no" cancela sin reproducir',
+          'Ok, no pongo nada.' in v.dichas and not ejecutadas, f'-> {v.dichas} {ejecutadas}')
+
+
 def main() -> None:
     e_a()
+    e_b()
     print(f"\n{'TODO OK' if fallos == 0 else f'{fallos} FALLA(S)'}")
     sys.exit(1 if fallos else 0)
 

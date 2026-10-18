@@ -257,7 +257,10 @@ except Exception:
     MUSICA_ENABLED = False
 from music import (parse_music_command, ejecutar as ejecutar_musica,  # P6: Spotify
                    esta_sonando as sonando_musica,                    # baile
-                   intent_desde_jev)                                  # J4: acción por JEV
+                   intent_desde_jev,                                  # J4: acción por JEV
+                   MusicIntent, tema_de)                              # E-B: "¿qué canción?"
+# E-B: respuesta de "no" a "¿qué canción quieres que ponga?"
+_RE_NO_MUSICA = re.compile(r'\b(?:no|cancela|cancelalo|olvidalo|olvídalo|mejor no)\b', re.IGNORECASE)
 from show import es_comando_show, run_show     # modo presentación ("presentate")
 import modo_dueno                               # V5: comandos solo para la voz del dueño
 import stt                                      # R1: filtros de alucinación de Whisper
@@ -719,6 +722,7 @@ class VoicePipeline:
         self._sesion_ing = None              # V5c: Claude Code del modo ingeniero
         self._sesion_web = None              # V5d: Claude Code + Playwright MCP
         self._contexto_web = None            # V5d: resultado web para el turno siguiente
+        self._espera_cancion = False         # E-B: Bob preguntó qué canción poner
 
         # Estado de identidad de la conversación actual (P1).
         self._convo_persona       = None     # id en la base, o None
@@ -1204,6 +1208,7 @@ class VoicePipeline:
         es_primer_turno = True
         n_turnos = 0  # contador de turnos para el bonus de mood (charla fluye)
         ruido_seguido = 0  # R1: frases descartadas como ruido, seguidas
+        self._espera_cancion = False   # E-B: la espera de "¿qué canción?" no sobrevive la charla
 
         # ── Identidad (memoria P1): reconocer la cara y personalizar ──────────
         # Activación por JEV sin saludo (pending_text sin greeting): la identidad se
@@ -1493,11 +1498,30 @@ class VoicePipeline:
                 continue      # sin música: sigue la charla normal
 
             # ── P6: control de música (Spotify) ────────────────────────────────
-            ruta_musica = ruta is None or ruta == 'musica' or (ruta or '').startswith('musica_')
+            # E-B: si Bob acababa de preguntar "¿qué canción?", este turno es la respuesta.
+            esperaba_cancion, self._espera_cancion = self._espera_cancion, False
+            ruta_musica = (esperaba_cancion or ruta is None or ruta == 'musica'
+                           or (ruta or '').startswith('musica_'))
             if MUSICA_ENABLED and ruta_musica:
                 mintent = parse_music_command(texto)
                 if ruta and ruta.startswith('musica_'):
                     mintent = intent_desde_jev(ruta, texto, mintent)   # J4: JEV manda la acción
+                if mintent is None and esperaba_cancion:
+                    if _RE_NO_MUSICA.search(texto):
+                        self._sm.iniciar_hablando()
+                        self._hablar('Ok, no pongo nada.', 'FELIZ')
+                        es_primer_turno = False
+                        continue
+                    if tema_de(texto) and not _is_exit(texto) and not _is_goodbye(texto):
+                        mintent = MusicIntent('play', query=tema_de(texto))
+                if mintent is None and ruta == 'musica_play':
+                    # E-B: JEV entendió "pon música" pero no hay tema. Antes caía a la
+                    # charla y el LLM inventaba que no podía; ahora pregunta.
+                    self._sm.iniciar_hablando()
+                    self._hablar('¿Qué canción quieres que ponga?', 'CURIOSO')
+                    self._espera_cancion = True
+                    es_primer_turno = False
+                    continue
                 if mintent:
                     self._sm.iniciar_hablando()
                     ack = ejecutar_musica(mintent)          # hace la llamada a Spotify

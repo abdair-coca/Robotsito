@@ -50,14 +50,16 @@ class MusicIntent:
 
 # Gatillos para reproducir algo específico ("pon X", "reproduce X"). El grupo (.+)
 # captura el tema. Van con el verbo al inicio para no robar frases de charla.
+# E-B: "pon" conjugado como se habla ("quiero que pongas", "ponlo", "pongamos", "pones").
+_VERBO_PON = r"pon(?:e|me|ele|er|emos|en|es|as|amos|an|lo|la|los|las|le|go|gas)?"
 _RE_PLAY = re.compile(
-    r"\b(?:pon(?:e|me|ele)?|reproduce|reproduci|toca|escuch(?:a|ar|emos)|"
+    rf"\b(?:{_VERBO_PON}|reproduce|reproduci|toca|escuch(?:a|ar|emos)|"
     r"quiero escuchar|quiero oir|quiero oír)\b\s+(.+)",
     re.IGNORECASE)
 
 # Verbo de reproducción presente en la frase (para distinguir comando de charla).
 _RE_PLAY_VERB = re.compile(
-    r"\b(?:pon(?:e|me|ele)?|reproduce|reproduci|toca|escuch\w*|"
+    rf"\b(?:{_VERBO_PON}|reproduce|reproduci|toca|escuch\w*|"
     r"quiero (?:escuchar|oir|oír)|dale play)\b", re.IGNORECASE)
 
 # Playlist: captura el nombre tras "playlist"/"lista (de reproducción)". Acepta
@@ -140,6 +142,15 @@ def _limpiar_query(q: str) -> str:
     return q
 
 
+def tema_de(texto_orden: str) -> str:
+    """E-B: el tema de una orden de música. Corta en la primera coma o frase (lo que
+    sigue es charla: "pon música, estoy aburrido" no busca "estoy aburrido") y quita
+    "en Spotify" del final. Puede devolver '' si no hay tema."""
+    q = re.split(r"[,.;:!?¡¿]", texto_orden, maxsplit=1)[0]
+    q = re.sub(r"\s+en\s+spotify\b.*$", "", q, flags=re.IGNORECASE)
+    return _limpiar_query(q)
+
+
 def parse_music_command(texto: str) -> Optional[MusicIntent]:
     """Devuelve un MusicIntent si `texto` es un comando de música, o None."""
     if not MUSICA_ENABLED:
@@ -178,7 +189,7 @@ def parse_music_command(texto: str) -> Optional[MusicIntent]:
     # Reproducir algo específico ("pon despacito", "reproduce bohemian rhapsody").
     m = _RE_PLAY.search(texto)
     if m:
-        query = _limpiar_query(m.group(1))
+        query = tema_de(m.group(1))
         if query:
             return MusicIntent("play", query=query)
         return MusicIntent("resume")     # "pon" sin tema → reanudar

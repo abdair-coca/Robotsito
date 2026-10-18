@@ -146,8 +146,9 @@ _RE_ING_SALIR = re.compile(
     r'(?:del?\s+|el\s+)?modo\s+ingenier[oa]\b|\bmodo\s+normal\b', re.IGNORECASE)
 # Entrar pide un verbo ("activa el modo ingeniero") o la orden sola ("Bob, modo
 # ingeniero"): así "¿qué es el modo ingeniero?" no lo activa.
+# E-B: conjugado como se habla ("te pongas el modo ingeniero", "entra en modo…").
 _RE_ING_ENTRAR = re.compile(
-    r'\b(?:activa(?:r)?|entra(?:r)?|pon(?:te|er)?|pasa(?:r)?|cambia(?:r)?)\s+'
+    r'\b(?:activ\w*|entr\w*|pon\w*|pas\w*|cambi\w*)\s+'
     r'(?:en\s+|a\s+|al\s+)?(?:el\s+)?modo\s+ingenier[oa]\b', re.IGNORECASE)
 _RE_LIMPIA = re.compile(r'[^\wáéíóúñ ]+')
 

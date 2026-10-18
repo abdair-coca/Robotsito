@@ -288,9 +288,11 @@ try:
     check("J4: volumen sin número -> no ejecuta, pasa a la charla",
           intent is None and llm == ["pon el volumen más alto"], f"-> {intent} llm={llm}")
 
+    # E-B: JEV dice play pero sin tema no se manda a la charla (el LLM inventaba que no
+    # podía poner música): Bob pregunta "¿Qué canción quieres que ponga?" y no llama al LLM.
     intent, llm = accion_de("ponte cómodo", 'musica_play')
-    check("J4: JEV play sin tema claro -> pasa a la charla",
-          intent is None and llm == ["ponte cómodo"], f"-> {intent} llm={llm}")
+    check("J4 (E-B): JEV play sin tema claro → pregunta, sin LLM",
+          intent is None and llm == [], f"-> {intent} llm={llm}")
 finally:
     vp.MUSICA_ENABLED = musica_gate
     vp.ejecutar_musica = musica_fn
