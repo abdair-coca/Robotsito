@@ -19,6 +19,7 @@ import re
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from typing import List, Optional
 from urllib.parse import urlparse
 
@@ -79,17 +80,37 @@ MAX_FUENTES = 8
 MAX_POR_DOMINIO = 2
 
 
-def _horas(fecha: str) -> Optional[float]:
-    """'hace 3 horas' → 3.0, 'hace 2 días' → 48.0. None si no es una fecha relativa."""
-    m = re.search(r'hace\s+(\d+)\s+(\w+)', fecha or '', re.IGNORECASE)
-    if not m:
+_MESES_ES = {'ene': 1, 'feb': 2, 'mar': 3, 'abr': 4, 'may': 5, 'jun': 6, 'jul': 7,
+             'ago': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dic': 12}
+_RE_FECHA_ES = re.compile(r'(\d{1,2})\s+([a-z]{3})\w*\.?\s+(?:de\s+)?(\d{4})', re.IGNORECASE)
+_RE_FECHA_EN = re.compile(r'([a-z]{3})\w*\.?\s+(\d{1,2}),?\s+(\d{4})', re.IGNORECASE)
+
+
+def _horas(fecha: str, ahora: Optional[datetime] = None) -> Optional[float]:
+    """Horas desde la publicación. 'hace 3 horas' → 3.0; '15 jul de 2026' o
+    'Oct 17, 2026' → horas desde esa fecha. None si no hay fecha reconocible."""
+    fecha = fecha or ''
+    m = re.search(r'hace\s+(\d+)\s+(\w+)', fecha, re.IGNORECASE)
+    if m:
+        cantidad, unidad = int(m.group(1)), m.group(2).lower()
+        for prefijo, horas in (('minut', 1 / 60), ('hora', 1), ('d', 24), ('seman', 168),
+                               ('mes', 720), ('a', 8760)):
+            if unidad.startswith(prefijo):
+                return cantidad * horas
         return None
-    cantidad, unidad = int(m.group(1)), m.group(2).lower()
-    for prefijo, horas in (('minut', 1 / 60), ('hora', 1), ('d', 24), ('seman', 168),
-                           ('mes', 720), ('a', 8760)):
-        if unidad.startswith(prefijo):
-            return cantidad * horas
-    return None
+    m = _RE_FECHA_ES.search(fecha)
+    if m and m.group(2).lower() in _MESES_ES:
+        dia, mes, anio = int(m.group(1)), _MESES_ES[m.group(2).lower()], int(m.group(3))
+    else:
+        m = _RE_FECHA_EN.search(fecha)
+        if not m or m.group(1).lower() not in _MESES_ES:
+            return None
+        mes, dia, anio = _MESES_ES[m.group(1).lower()], int(m.group(2)), int(m.group(3))
+    try:
+        publicado = datetime(anio, mes, dia)
+    except ValueError:
+        return None
+    return max(0.0, ((ahora or datetime.now()) - publicado).total_seconds() / 3600)
 
 
 def _clave_orden(r: dict):
@@ -143,9 +164,12 @@ DESCOMPONER_PROMPT = (
     'información de internet actual o verificable. Responde SOLO con JSON: '
     '{"buscar": true o false, "consultas": ["...", "..."]}. '
     'buscar = false para conceptos generales, matemáticas, charla, opiniones y cosas que no '
-    'cambian; entonces consultas = []. buscar = true para noticias, hechos recientes, precios, '
+    'cambian; entonces consultas = []. Ante la duda, busca: una búsqueda de más cuesta poco, '
+    'y responder de memoria algo que pudo cambiar sale mal. buscar = true para noticias, '
+    'hechos recientes, precios, '
     'lanzamientos, cargos o eventos actuales; entonces da de 1 a 4 consultas cortas, en '
-    'español, cada una buscable en Google.')
+    'español, cada una buscable en Google. No agregues años ni fechas que la pregunta no '
+    'mencione.')
 
 
 def _razonamiento(modelo: str) -> dict:
@@ -176,8 +200,7 @@ def descomponer(pregunta: str, cliente=None, modelo: str = DESCOMPONER_MODELO,
     """{'buscar': bool, 'consultas': [...]} o None si el modelo falló o no devolvió
     un JSON válido. Con buscar=True y sin consultas, la respuesta es inválida (None)."""
     if cliente is None:
-        from groq import Groq
-        cliente = Groq(api_key=config.GROQ_API_KEY, timeout=timeout)
+        cliente = _cliente_groq(timeout)
     try:
         r = cliente.chat.completions.create(
             model=modelo, temperature=0, max_tokens=300,
@@ -196,6 +219,88 @@ def descomponer(pregunta: str, cliente=None, modelo: str = DESCOMPONER_MODELO,
     if not consultas:
         return None
     return {'buscar': True, 'consultas': consultas[:MAX_CONSULTAS]}
+
+
+# ── S3. Respuesta con citas, en streaming (frases para la voz) ─────────────────────
+RESPUESTA_TEMPERATURA = 0.3
+RESPUESTA_MODELO = getattr(config, 'GROQ_LLM_MODEL', 'openai/gpt-oss-20b')
+SISTEMA_FUENTES = (
+    'Eres Bob, un robot que responde en voz alta en español. Responde SOLO con lo que dicen '
+    'las fuentes numeradas que te doy. Cita cada dato con su número entre corchetes, por '
+    'ejemplo [2]. Cada frase repite SOLO lo que dice la fuente que cita: si la fuente dice '
+    '"en análisis" o "propuesta", no digas "aprobó"; si no lo dice, no lo agregues. No '
+    'inventes datos, cifras ni nombres. Si las fuentes no alcanzan, dilo en una frase. '
+    'Máximo 3 frases cortas, sin listas, sin markdown, sin URLs ni nombres de fuentes largos.')
+_RE_CITA = re.compile(r'\[\s*(\d+(?:\s*,\s*\d+)*)\s*\]')
+_RE_URL_VOZ = re.compile(r'https?://\S+')
+_RE_FIN_FRASE = re.compile(r'(?<=[.!?…])\s+')
+
+
+def _cliente_groq(timeout: float = 3.0):
+    from groq import Groq
+    return Groq(api_key=config.GROQ_API_KEY, timeout=timeout)
+
+
+def _prompt_fuentes(pregunta: str, fuentes: List[dict]):
+    bloques = []
+    for i, f in enumerate(fuentes, 1):
+        meta = ', '.join(x for x in (f['dominio'], f.get('fecha', '')) if x)
+        bloques.append(f'[{i}] {f["titulo"]} ({meta})\n    {f["snippet"]}')
+    return SISTEMA_FUENTES, 'Fuentes:\n' + '\n'.join(bloques) + f'\n\nPregunta: {pregunta}'
+
+
+def _limpiar_frase(frase: str, n_fuentes: int, usadas: set) -> str:
+    """Quita las citas del texto (no se leen en voz alta) y guarda las que existen.
+    Un [n] fuera de rango se quita y no cuenta como cita."""
+    def cita(m):
+        for k in re.findall(r'\d+', m.group(1)):
+            if 1 <= int(k) <= n_fuentes:
+                usadas.add(int(k))
+        return ''
+    texto = _RE_CITA.sub(cita, frase)
+    texto = re.sub(r'[\[\]]', '', texto)              # corchetes sueltos
+    texto = _RE_URL_VOZ.sub('', texto)
+    texto = re.sub(r'[*#_`>]+', '', texto)
+    texto = re.sub(r'\s+([.,;:!?])', r'\1', texto)    # "dato ." → "dato."
+    return ' '.join(texto.split())
+
+
+def responder_con_fuentes(pregunta: str, fuentes: List[dict], cliente=None,
+                          modelo: str = RESPUESTA_MODELO,
+                          registro: Optional[dict] = None):
+    """Frases para la voz, en streaming, redactadas solo con `fuentes` y citadas [n].
+    Al terminar, registro['usadas'] tiene las fuentes citadas y registro['error'] el
+    motivo si el stream se cortó. Sin frases, el llamador usa su respaldo."""
+    registro = registro if registro is not None else {}
+    usadas = registro['usadas'] = set()
+    if cliente is None:
+        cliente = _cliente_groq()
+    sistema, usuario = _prompt_fuentes(pregunta, fuentes)
+    buffer = ''
+    try:
+        stream = cliente.chat.completions.create(
+            model=modelo, temperature=RESPUESTA_TEMPERATURA, max_tokens=400, stream=True,
+            messages=[{'role': 'system', 'content': sistema},
+                      {'role': 'user', 'content': usuario}],
+            **_razonamiento(modelo))
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content if chunk.choices else None
+            if not delta:
+                continue
+            buffer += delta
+            *completas, buffer = _RE_FIN_FRASE.split(buffer)
+            for frase in completas:
+                limpia = _limpiar_frase(frase, len(fuentes), usadas)
+                if limpia:
+                    yield limpia
+        if buffer.strip():
+            limpia = _limpiar_frase(buffer, len(fuentes), usadas)
+            if limpia:
+                yield limpia
+    except Exception as e:
+        registro['error'] = str(e)
+        print(f'[busqueda] respuesta cortada ({modelo}): {e}')
+    print(f'[busqueda] fuentes citadas: {sorted(usadas)} de {len(fuentes)}')
 
 
 if __name__ == '__main__':

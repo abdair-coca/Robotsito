@@ -12,6 +12,7 @@ import sys
 import time
 import types
 import urllib.error
+from datetime import datetime
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -245,7 +246,77 @@ def probar_fechas() -> None:
           busqueda._horas('hace 11 horas') == 11)
     check('fecha: "hace 1 día" → 24', busqueda._horas('hace 1 día') == 24)
     check('fecha: "hace 2 semanas" → 336', busqueda._horas('hace 2 semanas') == 336)
-    check('fecha: "Oct 17, 2026" (absoluta) → None', busqueda._horas('Oct 17, 2026') is None)
+    ahora = datetime(2026, 10, 18)
+    check('fecha: "15 jul de 2026" (absoluta, español)',
+          busqueda._horas('15 jul de 2026', ahora) == (ahora - datetime(2026, 7, 15)).total_seconds() / 3600)
+    check('fecha: "Oct 17, 2026" (absoluta, inglés) → 24 h',
+          busqueda._horas('Oct 17, 2026', ahora) == 24)
+    check('fecha: texto sin fecha → None', busqueda._horas('ayer por la tarde') is None)
+    absolutas = [_res('https://viejo.bo/x', 1, '15 jul de 2026'),
+                 _res('https://nuevo.bo/y', 2, '10 oct de 2026')]
+    orden = [r['url'] for r in busqueda.rankear([absolutas])]
+    check('ranking: fechas absolutas, la más reciente primero',
+          orden == ['https://nuevo.bo/y', 'https://viejo.bo/x'], f'({orden})')
+
+
+class ClienteStreamFalso:
+    """Imita chat.completions.create(stream=True): emite `chunks` y, si `error`, falla al final."""
+
+    def __init__(self, chunks, error=None):
+        self.chunks, self.error, self.llamadas = chunks, error, []
+        self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=self._create))
+
+    def _create(self, **kw):
+        self.llamadas.append(kw)
+        return self._emitir()
+
+    def _emitir(self):
+        for c in self.chunks:
+            yield types.SimpleNamespace(choices=[types.SimpleNamespace(
+                delta=types.SimpleNamespace(content=c))])
+        if self.error:
+            raise self.error
+
+
+FUENTES = [
+    {'titulo': 'Dólar sube', 'url': 'https://a.bo/1', 'snippet': 'Cotización oficial 6,96.',
+     'dominio': 'a.bo', 'fecha': 'hace 2 horas', 'posicion': 1},
+    {'titulo': 'Otra nota', 'url': 'https://b.bo/2', 'snippet': 'Dato dos.', 'dominio': 'b.bo',
+     'fecha': '', 'posicion': 2},
+    {'titulo': 'Tercera', 'url': 'https://c.bo/3', 'snippet': 'Dato tres.', 'dominio': 'c.bo',
+     'fecha': '', 'posicion': 3},
+]
+
+
+def probar_respuesta_fuentes() -> None:
+    chunks = ['El dólar', ' está en 6,96 [1].', ' Otro dato [9] tomado.', ' Y [2, 3] más', '.']
+    cliente = ClienteStreamFalso(chunks)
+    registro = {}
+    frases = list(busqueda.responder_con_fuentes(
+        '¿Cuál es el dólar?', FUENTES, cliente=cliente, modelo='openai/gpt-oss-20b',
+        registro=registro))
+    check('streaming: arma frases a partir de fragmentos y las limpia',
+          frases == ['El dólar está en 6,96.', 'Otro dato tomado.', 'Y más.'], f'({frases})')
+    check('citas: guarda las fuentes citadas; el [9] fuera de rango no cuenta',
+          registro['usadas'] == {1, 2, 3}, f'(usadas={registro["usadas"]})')
+    check('voz: ninguna frase contiene corchetes ni URLs',
+          not any(('[' in f or ']' in f or 'http' in f) for f in frases))
+    usuario = cliente.llamadas[0]['messages'][1]['content']
+    check('prompt: fuentes numeradas y la pregunta',
+          '[1] Dólar sube (a.bo, hace 2 horas)' in usuario and 'Pregunta: ¿Cuál es el dólar?'
+          in usuario, f'({usuario[:80]!r}...)')
+    kw = cliente.llamadas[0]
+    check('petición: stream=True, modelo y razonamiento bajo para gpt-oss',
+          kw['stream'] is True and kw['model'] == 'openai/gpt-oss-20b'
+          and kw['reasoning_effort'] == 'low')
+
+    cortado = ClienteStreamFalso(['Primera frase.', ' Segunda'], error=RuntimeError('stream roto'))
+    registro = {}
+    frases = list(busqueda.responder_con_fuentes('p', FUENTES, cliente=cortado,
+                                                 modelo='openai/gpt-oss-20b', registro=registro))
+    check('stream cortado: conserva lo ya dicho y registra el error',
+          frases == ['Primera frase.'] and 'stream roto' in registro.get('error', ''),
+          f'(frases={frases}, error={registro.get("error")})')
 
 
 def main() -> int:
@@ -258,6 +329,7 @@ def main() -> int:
     probar_descompositor()
     probar_paralelo_y_ranking()
     probar_fechas()
+    probar_respuesta_fuentes()
     print(f"\n{'OK' if fallos == 0 else f'{fallos} FALLA(S)'}", flush=True)
     return 1 if fallos else 0
 
