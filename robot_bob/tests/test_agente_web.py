@@ -117,26 +117,32 @@ def main() -> None:
     original_disp = claude_code.disponible
     claude_code.disponible = lambda: True
     try:
-        # 1) Detección
-        for t in ('Bob, busca en internet el precio del ESP32-CAM',
-                  'busca el clima de Potosí en la web', 'en internet busca robots baratos',
+        # 1) Detección: el navegador solo si se pide explícitamente; buscar va al pipeline
+        for t in ('Bob, en el navegador busca el precio del ESP32-CAM',
                   'abre la página de wikipedia', 'entra a wikipedia.org',
-                  'investiga en google qué es un servo MG996R'):
+                  'haz clic en el primer resultado', 'navega a wikipedia.org'):
             d = md.detectar(t)
             check(f'web: "{t}"', d is not None and d[0] == 'web', f'-> {d}')
+        for t in ('Bob, busca en internet el precio del ESP32-CAM',
+                  'busca el clima de Potosí en la web', 'en internet busca robots baratos',
+                  'investiga en google qué es un servo MG996R'):
+            d = md.detectar(t)
+            check(f'buscar (pipeline): "{t}"', d is not None and d[0] == 'buscar_web', f'-> {d}')
         check('web: quita el "Bob," de la tarea',
-              md.detectar('Bob, busca en internet X')[1]['tarea'] == 'busca en internet X')
+              md.detectar('Bob, en el navegador busca X')[1]['tarea'] == 'en el navegador busca X')
         for t in ('abre los ojos', 'busca una idea para los servos', 'en internet hay de todo',
                   'me gusta navegar'):
-            check(f'no es web: "{t}"', md.detectar(t) is None or md.detectar(t)[0] != 'web',
-                  f'-> {md.detectar(t)}')
+            d = md.detectar(t)
+            check(f'no es navegador ni búsqueda: "{t}"',
+                  d is None or d[0] not in ('web', 'buscar_web'), f'-> {d}')
 
         # 2) Confirmado por el dueño → ejecuta, dice el resultado y lo guarda de contexto
         v = construir(resultado='El ESP32-CAM cuesta unos 8 dólares. Lo venden en varias '
                                 'tiendas. Hay modelos con antena. Cuarta frase de más.')
-        md.atender(v, 'Bob, busca en internet el precio del ESP32-CAM', VOZ)
+        md.atender(v, 'Bob, en el navegador busca el precio del ESP32-CAM', VOZ)
         s = v._sesion_web
-        check('dueño + sí: ejecuta la tarea', s.tareas == ['busca en internet el precio del ESP32-CAM'])
+        check('dueño + sí: ejecuta la tarea',
+              s.tareas == ['en el navegador busca el precio del ESP32-CAM'])
         check('dueño + sí: pide confirmación antes', any('Dime sí o no' in d for d in v.dichas))
         check('dueño + sí: con tope de pasos y tiempo',
               s.kwargs_preguntar and s.kwargs_preguntar.get('max_herramientas') == md.WEB_MAX_HERRAMIENTAS
@@ -158,39 +164,39 @@ def main() -> None:
 
         # 4) Dice que no → no ejecuta
         v = construir(respuesta_voz='no, mejor no')
-        md.atender(v, 'busca en internet algo', VOZ)
+        md.atender(v, 'en el navegador busca algo', VOZ)
         check('responde no: no ejecuta', not v._sesion_web.tareas and 'Listo, no lo hago.' in v.dichas)
 
         # 5) Silencio → no ejecuta
         v = construir(respuesta_voz=None)
-        md.atender(v, 'busca en internet algo', VOZ)
+        md.atender(v, 'en el navegador busca algo', VOZ)
         check('silencio: no ejecuta', not v._sesion_web.tareas)
 
         # 6) Otra voz dice "sí" → rechazo, no ejecuta
         v = construir(respuesta_voz='sí', sim_confirmacion=0.1)
-        md.atender(v, 'busca en internet algo', VOZ)
+        md.atender(v, 'en el navegador busca algo', VOZ)
         check('"sí" de otra voz: no ejecuta', not v._sesion_web.tareas)
         check('"sí" de otra voz: lo rechaza', any('creador' in d or 'Abdair' in d for d in v.dichas[-1:]),
               f'-> {v.dichas[-1:]}')
 
         # 7) Falla la tarea → lo dice
         v = construir(resultado=None)
-        md.atender(v, 'busca en internet algo', VOZ)
+        md.atender(v, 'en el navegador busca algo', VOZ)
         check('tarea fallida: lo dice', any('No pude terminar' in d for d in v.dichas))
 
         # 8) Fuera del modo ingeniero / flag apagado / sin Claude Code
         v = construir(en_modo=False)
-        md.atender(v, 'busca en internet algo', VOZ)
+        md.atender(v, 'en el navegador busca algo', VOZ)
         check('fuera del modo ingeniero: lo indica', not v._sesion_web.tareas
               and any('modo ingeniero' in d for d in v.dichas))
         md.AGENTE_WEB_ENABLED = False
         v = construir()
-        md.atender(v, 'busca en internet algo', VOZ)
+        md.atender(v, 'en el navegador busca algo', VOZ)
         check('AGENTE_WEB_ENABLED=False: no ejecuta', not v._sesion_web.tareas)
         md.AGENTE_WEB_ENABLED = True
         claude_code.disponible = lambda: False
         v = construir()
-        md.atender(v, 'busca en internet algo', VOZ)
+        md.atender(v, 'en el navegador busca algo', VOZ)
         check('sin Claude Code: no ejecuta', not v._sesion_web.tareas
               and any('Claude Code' in d for d in v.dichas))
         claude_code.disponible = lambda: True
@@ -198,8 +204,18 @@ def main() -> None:
         # 9) Otra voz da la orden → rechazada antes de confirmar
         v = construir()
         v._memoria.sim = 0.1
-        md.atender(v, 'busca en internet algo', (np.ones(256, np.float32) / 16.0, 1.8))
+        md.atender(v, 'en el navegador busca algo', (np.ones(256, np.float32) / 16.0, 1.8))
         check('orden de otra voz: ni pregunta', not any('Dime sí o no' in d for d in v.dichas))
+
+        # 9b) Búsqueda en internet: la responde el pipeline, el navegador no se abre
+        v = construir()
+        check('buscar en modo ingeniero: no es comando (el turno va al LLM)',
+              md.atender(v, 'Bob, busca en internet el precio del ESP32-CAM', VOZ) is False
+              and not v._sesion_web.tareas and not any('Dime sí o no' in d for d in v.dichas))
+        v = construir(en_modo=False)
+        md.atender(v, 'en el navegador busca algo', VOZ)
+        check('buscar fuera del modo ingeniero: lo indica y no abre el navegador',
+              any('modo ingeniero' in d for d in v.dichas) and not v._sesion_web.tareas)
 
         # 10) Limpieza para la voz: respuesta real de WebSearch (2026-10-17)
         real = ('El ESP32-CAM cuesta unos 7 a 11 € en tiendas europeas, y más en Latinoamérica. '

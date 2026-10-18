@@ -11,10 +11,13 @@ Comandos:
                            suscripción Pro del dueño; Groq de respaldo), hasta 4
                            frases por respuesta. "Sal del modo ingeniero" (cualquier
                            voz: solo baja de modo) o el fin de la charla lo apagan.
-  "busca en internet …"    (dentro del modo ingeniero) agente web: Claude Code con
-  / "abre la página de …"  Playwright MCP y navegador visible. Bob confirma en voz
-                           antes de empezar; lista blanca de herramientas y tope de
-                           pasos. Apagado aparte: AGENTE_WEB_ENABLED.
+  "busca en internet …"    (dentro del modo ingeniero) búsqueda con Serper y respuesta
+                           citada (busqueda.py). No abre el navegador.
+  "en el navegador …"      (dentro del modo ingeniero) agente web: Claude Code con
+  / "abre la página de …"  Playwright MCP y navegador visible, solo si se pide
+  / "entra a …"            explícitamente. Bob confirma en voz antes de empezar; lista
+                           blanca de herramientas y tope de pasos. Apagado aparte:
+                           AGENTE_WEB_ENABLED.
 
 Puerta común: decide solo la VOZ del turno (el comando lo da quien habla, no
 quien está frente a la cámara), contra el promedio de voz del dueño:
@@ -169,13 +172,19 @@ def _es_orden_sola(texto: str, orden: str) -> bool:
     return ' '.join(t) in (orden, orden[:-1] + 'a')
 
 
-# Web: pide la acción y dónde ("busca … en internet", "en internet busca …") o
-# una página concreta ("abre la página de …", "entra a wikipedia.org").
+# Navegador (Playwright): solo si se pide explícitamente que maneje una página: "en el
+# navegador …", "abre la página de …", "entra a wikipedia.org", "navega a …", "haz clic …".
 _RE_WEB = re.compile(
-    r'\b(?:b[uú]sca(?:me)?|investiga|averigua|consulta)\b.*\ben\s+(?:la\s+)?(?:web|internet|google|red)\b'
-    r'|\ben\s+(?:la\s+)?(?:web|internet|google)\s*,?\s*(?:b[uú]sca(?:me)?|investiga|averigua)\b'
-    r'|\b(?:abre|abr[ií]me|entra\s+a|navega\s+a)\s+'
+    r'\ben\s+(?:el\s+)?navegador\b'
+    r'|\b(?:navega(?:r|s)?\s+(?:a|hasta|por)|haz\s+clic|clic(?:k)?ea)\b'
+    r'|\b(?:abre|abr[ií]me|entra\s+a)\s+'
     r'(?:la\s+(?:p[aá]gina|web)\s+(?:de\s+)?\w+|\S+\.(?:com|org|net|bo|es|io|dev|ai|edu)\b)',
+    re.IGNORECASE)
+# Búsqueda en internet ("busca … en internet", "investiga … en google"): la responde el
+# pipeline del modo ingeniero (fase S), no el navegador.
+_RE_BUSCAR = re.compile(
+    r'\b(?:b[uú]sca(?:me)?|investiga|averigua|consulta)\b.*\ben\s+(?:la\s+)?(?:web|internet|google|red)\b'
+    r'|\ben\s+(?:la\s+)?(?:web|internet|google)\s*,?\s*(?:b[uú]sca(?:me)?|investiga|averigua)\b',
     re.IGNORECASE)
 _RE_BOB_INICIO = re.compile(r'^\s*bob\s*[,.:]?\s*', re.IGNORECASE)
 
@@ -186,6 +195,8 @@ def detectar(texto: str) -> Optional[Tuple[str, dict]]:
         return 'salir_ingeniero', {}
     if _RE_WEB.search(texto or ''):
         return 'web', {'tarea': _RE_BOB_INICIO.sub('', texto).strip()}
+    if _RE_BUSCAR.search(texto or ''):
+        return 'buscar_web', {}
     if _RE_ING_ENTRAR.search(texto or '') or _es_orden_sola(texto, 'modo ingeniero'):
         return 'ingeniero', {}
     m = _RE_PRESENTAR.search(texto or '')
@@ -244,6 +255,12 @@ def atender(vp, texto: str, analisis) -> bool:
     from voice_pipeline import console
     if nombre_cmd == 'salir_ingeniero':      # bajar de modo no necesita la voz del dueño
         salir_ingeniero(vp, avisar=True)
+        return True
+    if nombre_cmd == 'buscar_web':           # la responde el pipeline de búsqueda (fase S)
+        if getattr(vp, '_modo_ingeniero', False):
+            return False                     # no es un comando: el turno va al LLM
+        _decir(vp, 'La búsqueda en internet la hago en modo ingeniero. Dime: Bob, modo ingeniero.',
+               'CURIOSO')
         return True
     veredicto = verificar(vp, analisis)
     console.print(f'[bold magenta][dueño][/] {nombre_cmd}: {veredicto} '
