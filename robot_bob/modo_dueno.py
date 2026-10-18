@@ -93,6 +93,18 @@ except Exception:
 # Claude Code le pasa el correo de la cuenta y Bob habla frente al público.
 _REGLAS_FIJAS = (' Nunca digas correos, datos de cuenta, rutas ni detalles del sistema '
                  'donde corres. No uses emojis.')
+# Búsqueda web en el modo ingeniero (WebSearch de Claude Code). Apagable con
+# BUSQUEDA_INGENIERO_ENABLED = False en config.py (la feria puede ir sin ella).
+try:
+    from config import BUSQUEDA_INGENIERO_ENABLED
+except Exception:
+    BUSQUEDA_INGENIERO_ENABLED = True
+ING_MAX_BUSQUEDAS = 3    # más de estas en un turno → ese turno va con Groq
+NOTA_BUSQUEDA = (' Tienes WebSearch. Para noticias, hechos recientes, precios o algo que pudo '
+                 'cambiar después de tu fecha de corte, busca antes de responder, aunque haya '
+                 'titulares en el contexto (esos son generales). Para conceptos de ingeniería '
+                 'responde sin buscar. No preguntes si quieres que busques: busca y responde con '
+                 'lo que encontraste, sin enlaces ni nombres de fuentes largos.')
 
 # Agente web (Playwright MCP). Versión fija: probada en la laptop el 2026-10-17.
 try:
@@ -277,6 +289,35 @@ def _prompt_ingeniero(vp) -> str:
                                                if contexto else '')
 
 
+def _crear_sesion_ingeniero(vp):
+    """Sesión de Claude Code del modo ingeniero. Con la búsqueda activa: WebSearch y
+    nada más (lectura, escritura y comandos van en la sesión de escritura, fase B3).
+    Sin búsqueda: sin herramientas, como antes."""
+    import claude_code
+    prompt = _prompt_ingeniero(vp) + _REGLAS_FIJAS
+    if not BUSQUEDA_INGENIERO_ENABLED:
+        return claude_code.SesionClaude(prompt, modelo=CLAUDE_MODELO, nombre='ingeniero')
+    return claude_code.SesionClaude(prompt + NOTA_BUSQUEDA, modelo=CLAUDE_MODELO,
+                                    nombre='ingeniero', herramientas='WebSearch',
+                                    permitidas=['WebSearch'])
+
+
+def _avisar_busqueda(vp):
+    """al_usar de preguntar(): Bob dice 'Buscando en internet...' una vez por turno,
+    en la primera búsqueda, y la consulta queda en el log."""
+    from voice_pipeline import console
+    avisado = []
+
+    def al_usar(nombre, entrada):
+        if nombre != 'WebSearch':
+            return
+        console.print(f'[dim][dueño] búsqueda: {entrada.get("query", "")}[/]')
+        if not avisado:
+            avisado.append(True)
+            _decir(vp, 'Buscando en internet...', 'PENSANDO')
+    return al_usar
+
+
 def entrar_ingeniero(vp) -> None:
     from voice_pipeline import console
     import claude_code
@@ -286,8 +327,7 @@ def entrar_ingeniero(vp) -> None:
     vp._modo_ingeniero = True
     vp._sesion_ing = None
     if MOTOR_INGENIERO == 'claude' and claude_code.disponible():
-        vp._sesion_ing = claude_code.SesionClaude(
-            _prompt_ingeniero(vp) + _REGLAS_FIJAS, modelo=CLAUDE_MODELO, nombre='ingeniero')
+        vp._sesion_ing = _crear_sesion_ingeniero(vp)
         vp._sesion_ing.iniciar_en_fondo()      # arranca mientras Bob habla
     motor = 'Claude Code' if vp._sesion_ing else 'Groq'
     console.print(f'[bold magenta][dueño][/] modo ingeniero ON ({motor})')
@@ -361,7 +401,8 @@ def responder_claude(vp, texto: str, sesion):
     vp._contexto_web = None
     mensaje = (f'[Contexto de este turno: {" ".join(notas)}]\n{texto}' if notas else texto)
     t0 = time.monotonic()
-    respuesta = sesion.preguntar(mensaje, timeout=ING_TIMEOUT_S)
+    respuesta = sesion.preguntar(mensaje, timeout=ING_TIMEOUT_S, al_usar=_avisar_busqueda(vp),
+                                 max_herramientas=ING_MAX_BUSQUEDAS)
     if not respuesta:
         console.print('[yellow][dueño] Claude Code no respondió: este turno va con Groq[/]')
         return None
