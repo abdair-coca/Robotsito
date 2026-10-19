@@ -8,7 +8,7 @@ Resuelve el problema histórico de **IPs DHCP que cambian** al mover de WiFi.
 ## 1. Auto-discovery de IPs — `robot_bob/discovery.py`
 
 Las 3 placas toman IP por DHCP; hardcodearlas rompía la conexión cada vez que
-cambiaba la red. `discovery.py` las localiza solas:
+cambiaba la red. `hardware/discovery.py` las localiza solas:
 
 - **Escaneo de puertos** del /24 local: clasifica cada placa por su puerto único —
   CAM=`81`, DevKit control=`5007`, DevKit audio=`5005/6`.
@@ -27,12 +27,12 @@ re-escanea al arrancar si el cache está muerto.
 ### Uso
 ```bash
 # desde robot_bob/, con venv311 activo
-python discovery.py            # escanea, imprime tabla, guarda devices.json
-python discovery.py --force    # ignora el cache y re-escanea
-python discovery.py --json     # salida JSON
-python discovery.py --subnet 192.168.1   # forzar otra subred
+python -m hardware.discovery            # escanea, imprime tabla, guarda devices.json
+python -m hardware.discovery --force    # ignora el cache y re-escanea
+python -m hardware.discovery --json     # salida JSON
+python -m hardware.discovery --subnet 192.168.1   # forzar otra subred
 ```
-Flujo tras cambiar de WiFi: `python discovery.py` → `python main.py`.
+Flujo tras cambiar de WiFi: `python -m hardware.discovery` → `python main.py`.
 
 ---
 
@@ -88,8 +88,8 @@ Objetivo: que el control por WiFi rinda igual que por USB COM3. El cable es el
 | Síntoma | Causa probable | Acción |
 |---|---|---|
 | `[stream] No conecta (timed out)` pero ping a la CAM responde | CAM con `accept()` atascado de un run previo (sirve 1 cliente a la vez) | **Power-cycle de la CAM**. Cerrar runs con **Q**, no Ctrl-C. |
-| ping a la CAM no responde | CAM caída / no en WiFi / IP cambió | Power-cycle; `python discovery.py --force`. |
-| `[serial] No conecta WiFi ...:5007` | DevKit caído / no en la red | Ver IP real (Thonny); `discovery.py`; revisar `REDES` en su config. |
+| ping a la CAM no responde | CAM caída / no en WiFi / IP cambió | Power-cycle; `python -m hardware.discovery --force`. |
+| `[serial] No conecta WiFi ...:5007` | DevKit caído / no en la red | Ver IP real (Thonny); `hardware/discovery.py`; revisar `REDES` en su config. |
 | Stream conecta pero FPS bajo / se corta | Jitter/congestión WiFi 2.4 GHz, señal débil | Red dedicada, canal limpio (1/6/11), ESP32 a <3-5 m del AP. |
 | Funciona unos minutos y muere el stream | Reconexión MJPEG bajo WiFi ruidoso | El tracker reconecta solo; si no, power-cycle CAM + mejorar señal. |
 

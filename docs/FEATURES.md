@@ -104,10 +104,10 @@ Dos fuentes, en cascada (barata → rica):
 | Archivo | Cambio |
 |---|---|
 | `config.py` | Flags + tiempos + banco de frases (sección nueva "SOLILOQUIO"). |
-| `voice_pipeline.py` | Método `decir_soliloquio(texto)` (TTS + gating de mic) reutilizando el pipeline TTS; generador LLM opcional. |
-| `state_machine.py` | Helper `puede_soliloquiar()` (estado válido) + hook de "última actividad". |
-| `behavior.py` | Tick del scheduler de soliloquio + muecas de cabeza suaves. |
-| `expression_engine.py` | Secuencias de mueca (OLED) reutilizando los 21 estados. |
+| `voz/pipeline/` | Método `decir_soliloquio(texto)` (TTS + gating de mic) reutilizando el pipeline TTS; generador LLM opcional. |
+| `nucleo/state_machine.py` | Helper `puede_soliloquiar()` (estado válido) + hook de "última actividad". |
+| `nucleo/behavior.py` | Tick del scheduler de soliloquio + muecas de cabeza suaves. |
+| `nucleo/expression_engine.py` | Secuencias de mueca (OLED) reutilizando los 21 estados. |
 | `Esp32/oled_ojos.py` (opcional) | Solo si se quieren muecas nuevas; recompilar `.mpy`. Evitable al inicio. |
 
 ---

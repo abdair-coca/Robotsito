@@ -14,7 +14,7 @@ red ver [NETWORK.md](NETWORK.md); para los motores de tracción ver
 | **ESP32-CAM** (AI-Thinker) | WiFi | Stream MJPEG en `:81/stream`, panel HTTP en `:80` |
 | **Laptop** | local | Toda la lógica Python (visión, IA, audio) |
 
-> IPs: **ya no se hardcodean** — `discovery.py` las resuelve sola (DHCP cambia). Ver
+> IPs: **ya no se hardcodean** — `hardware/discovery.py` las resuelve sola (DHCP cambia). Ver
 > [NETWORK.md](NETWORK.md). MACs: CAM `F8:B3:B7:A7:14:60`, DevKit `EC:E3:34:22:A6:6C`.
 
 ---
@@ -61,7 +61,7 @@ Síntoma: tras unos segundos de seguimiento, el **OLED parpadea/se reinicia** y 
 **servos + radio WiFi** sobre una fuente débil (cargador USB de pared) → caída de
 voltaje → brownout/reset del ESP32.
 
-- **Software (hecho):** `serial_manager.py` detecta el socket muerto y reconecta solo
+- **Software (hecho):** `hardware/serial_manager.py` detecta el socket muerto y reconecta solo
   (cada 2 s). Recupera el control tras el reset, pero no lo evita.
 - **Hardware (pendiente, lo resuelve el usuario):** fuente de **≥2 A**; idealmente un
   **rail separado para los servos** con GND común + **capacitor 470–1000 µF** entre V+

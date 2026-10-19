@@ -3,8 +3,8 @@ calibrar_mic.py — Calibra WAKE_MIN_LEVEL con el ruido real de la sala y tu voz
 y lo escribe en config.py.
 
 Uso (desde robot_bob/):
-  python calibrar_mic.py               # mide, escribe config.py y verifica
-  python calibrar_mic.py --solo-medir  # mide y muestra, sin tocar config.py
+  python -m hardware.calibrar_mic               # mide, escribe config.py y verifica
+  python -m hardware.calibrar_mic --solo-medir  # mide y muestra, sin tocar config.py
 
 Mide con la MISMA función que usa el robot (VoicePipeline._grabar_wake_laptop),
 con el gate desactivado solo durante la medición. Así el nivel es el que vería

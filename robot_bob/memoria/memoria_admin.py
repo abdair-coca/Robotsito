@@ -2,14 +2,14 @@
 memoria_admin.py — Ver y editar la base de memoria de Bob (memory.db).
 
 Uso (desde robot_bob/, con el venv):
-  python memoria_admin.py                      lista todas las personas
-  python memoria_admin.py show <id>            ficha + recuerdos de una persona
-  python memoria_admin.py rename <id> <nombre> cambia el nombre
-  python memoria_admin.py set <id> <campo> <valor>   campo: edad|gustos|temas|relacion
-  python memoria_admin.py addep <id> <texto>   agrega un recuerdo a mano
-  python memoria_admin.py del <id>             borra la persona y sus recuerdos
-  python memoria_admin.py delep <id_episodio>  borra un recuerdo
-  python memoria_admin.py clear                BORRA TODO (pide confirmar)
+  python -m memoria.memoria_admin                      lista todas las personas
+  python -m memoria.memoria_admin show <id>            ficha + recuerdos de una persona
+  python -m memoria.memoria_admin rename <id> <nombre> cambia el nombre
+  python -m memoria.memoria_admin set <id> <campo> <valor>   campo: edad|gustos|temas|relacion
+  python -m memoria.memoria_admin addep <id> <texto>   agrega un recuerdo a mano
+  python -m memoria.memoria_admin del <id>             borra la persona y sus recuerdos
+  python -m memoria.memoria_admin delep <id_episodio>  borra un recuerdo
+  python -m memoria.memoria_admin clear                BORRA TODO (pide confirmar)
 
 El embedding facial NO se muestra ni se edita (es el vector de la cara).
 """

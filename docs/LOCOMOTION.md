@@ -31,7 +31,7 @@ de texto (USB COM3 / TCP 5007) y el `SerialManager` como único dueño.
 - **Fase 0 (bloqueante, resuelto):** OLED movido a I2C 32/33 (libera 21/22 para motores);
   motores con cargador aparte + GND común.
 - **Fase 1 (firmware) ✅:** `mover_motores()`, comando `M:<izq>,<der>`, watchdog 400 ms.
-- **Fase 2 (laptop) ✅:** `SerialManager.cmd_motor()` + `tests/test_motor.py` (teclado WASD,
+- **Fase 2 (laptop) ✅:** `SerialManager.cmd_motor()` + `tests/hardware/test_motor.py` (teclado WASD,
   reenvía cada 150 ms).
 - **Fase 3 (autónomo) ✅:** `behavior._maybe_girar_cuerpo` — Bob **gira sobre su eje** (no
   traslada) en ráfagas cortas (`GIRO_BURST_S`) + cooldown cuando el pan se satura y la
@@ -51,7 +51,7 @@ NO abrir los pines desde la laptop — todo va por el firmware.
    boot y en cualquier error.
 2. **`robot_bob/serial_manager.py`:** `cmd_motor(izq,der)` con prioridad alta en la cola +
    throttle. Mismo patrón que `cmd_servo`/`cmd_estado`.
-3. **Control en `behavior.py`:** decide cuándo girar (cara lejana, deambular en IDLE).
+3. **Control en `nucleo/behavior.py`:** decide cuándo girar (cara lejana, deambular en IDLE).
 4. **`config.py`:** `MOTORES_ENABLED`, velocidades, watchdog timeout.
 
 ---

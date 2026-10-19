@@ -2,7 +2,7 @@
 Preflight de arranque de Bob: verifica red, placas, cámara, COM3, micrófono,
 voz (Piper), LLM local (Ollama) y Groq. Imprime VERDE/ROJO por cada punto.
 
-Uso (desde robot_bob/):  python preflight.py
+Uso (desde robot_bob/):  python -m hardware.preflight
 Sale con 0 si todo está en VERDE; distinto de 0 si algún punto está en ROJO.
 
 No abre COM3 (abrirlo resetea el DevKit): solo verifica que esté listado.

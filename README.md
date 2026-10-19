@@ -12,7 +12,7 @@ servos/OLED/audio (DevKit) y el video (CAM).
 ```bash
 cd robot_bob
 .\venv311\Scripts\Activate.ps1      # Windows PowerShell  (Python 3.11)
-python discovery.py                  # localiza las IPs de los ESP32 (tras cambiar de WiFi)
+python -m hardware.discovery                  # localiza las IPs de los ESP32 (tras cambiar de WiFi)
 python main.py                       # sistema completo — Q para salir
 ```
 

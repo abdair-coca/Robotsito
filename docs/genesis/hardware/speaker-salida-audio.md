@@ -41,7 +41,7 @@ edge-tts (laptop) → ffmpeg (EQ + dither) → uint8 8-bit @ 8 kHz
   metálicos en el parlante chico — techo recortado. Subir para más caricatura.
 - `voice_pipeline._mp3_a_u8`: `-dither_method triangular` al bajar a 8 bits
   (grano áspero → hiss suave).
-- Pacing de envío: `voice_pipeline.py` `_reproducir_mp3_robot`, factor `0.90` del
+- Pacing de envío: `voz/pipeline/` `_reproducir_mp3_robot`, factor `0.90` del
   `time.sleep`. Sube hacia 1.0 si hay chasquidos (overrun); baja si entrecorta.
 
 ### Gotchas

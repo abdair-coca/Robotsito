@@ -11,7 +11,7 @@ Cada estado del robot afecta 4-5 componentes. Olvidar uno deja inconsistencias v
 
 Para agregar un estado nuevo, modificar **en este orden**:
 
-### 1. Enum `RobotState` en `state_machine.py`
+### 1. Enum `RobotState` en `nucleo/state_machine.py`
 
 ```python
 class RobotState(enum.Enum):
@@ -60,7 +60,7 @@ if nuevo == RobotState.MI_NUEVO_ESTADO:
     self.ev_mi_nuevo.set()
 ```
 
-### 4. Comportamiento de servo en `behavior.py`
+### 4. Comportamiento de servo en `nucleo/behavior.py`
 
 Definir cómo se mueven los servos en ese estado:
 
@@ -100,7 +100,7 @@ COLOR_STATE = {
 Decidir desde qué estados se puede entrar y salir. Modificar `notificar_cara`, `notificar_wake_word`, `tick_conversation_idle`, o agregar nuevos métodos.
 
 Ejemplo: si el estado debe entrarse cuando se detecta una sonrisa:
-- Detectar sonrisa en `facial_tracker.py` (requiere landmarks de MediaPipe Face Mesh, no BlazeFace)
+- Detectar sonrisa en `vision/facial_tracker.py` (requiere landmarks de MediaPipe Face Mesh, no BlazeFace)
 - Llamar `sm.iniciar_mi_nuevo_estado()` desde el main loop
 
 ## Anti-patrones a evitar

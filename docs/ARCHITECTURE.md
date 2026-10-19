@@ -48,19 +48,40 @@ directo.
 
 ## 3. Módulos en `robot_bob/`
 
+Carpetas por función (reestructura del 2026-10-19). `main.py`, `config.py` y `rutas.py`
+quedan en la raíz, y también los datos de runtime (`memory.db`, `devices.json`,
+`models/`, `piper_voices/`). Los módulos no calculan rutas con `__file__`: las toman de
+`rutas.py`.
+
 | Archivo | Rol |
 |---|---|
 | `main.py` | Orquestador / entrada. |
 | `config.py` | **TODA** la config modificable (hardware, IPs, audio, conversación, servos, LLM/TTS, prompt). Gitignoreado. |
-| `serial_manager.py` | Único dueño del canal de control. Cola priorizada SERVO > ESTADO > SIGUIENDO, throttle, dedup. WiFi/USB/none. |
-| `state_machine.py` | Máquina de estados central + mood drift emocional. |
-| `facial_tracker.py` | `LectorStream` (socket MJPEG) + `DetectorFacial` (MediaPipe). Delega al SerialManager. |
-| `voice_pipeline.py` | STT (Whisper) → LLM (Llama) → TTS (edge-tts). Wake word, barge-in, multi-turno, parser de tags `[EMO:X]`. |
-| `behavior.py` | Motor de movimiento humano @20 Hz (incluye soliloquio/muecas y giro de cuerpo). |
-| `expression_engine.py` | Reacciones instantáneas a lo que dice el usuario (`react_to_user_text`). |
-| `memory.py` / `memoria_admin.py` | Memoria persistente (cara↔nombre + SQLite) y su CLI de administración. |
-| `face_id.py` | Embeddings faciales (InsightFace) para reconocer personas. |
-| `discovery.py` | Auto-localiza las IPs de los 3 ESP32 (ver [NETWORK.md](NETWORK.md)). |
+| `rutas.py` | Rutas de datos (`memory.db`, `devices.json`, `models/`, `logs/`) y de `shared/voicechatLap`. |
+| `nucleo/state_machine.py` | Máquina de estados central + mood drift emocional. |
+| `nucleo/behavior.py` | Motor de movimiento humano @20 Hz (incluye soliloquio/muecas y giro de cuerpo). |
+| `nucleo/expression_engine.py` | Reacciones instantáneas a lo que dice el usuario (`react_to_user_text`). |
+| `nucleo/show.py` | Modo presentación ("preséntate"). |
+| `hardware/serial_manager.py` | Único dueño del canal de control. Cola priorizada SERVO > ESTADO > SIGUIENDO, throttle, dedup. WiFi/USB/none. |
+| `hardware/discovery.py` | Auto-localiza las IPs de los 3 ESP32 (ver [NETWORK.md](NETWORK.md)). |
+| `hardware/preflight.py` | Chequeo de arranque: red, placas, cámara, COM3, micrófono, voz, LLM y Groq. |
+| `hardware/calibrar_mic.py` | Calibra `WAKE_MIN_LEVEL` con el ruido real de la sala. |
+| `vision/facial_tracker.py` | `LectorStream` (socket MJPEG) + `DetectorFacial` (MediaPipe). Delega al SerialManager. |
+| `vision/face_id.py` | Embeddings faciales (InsightFace) para reconocer personas. |
+| `voz/pipeline/__init__.py` | `VoicePipeline`: STT (Whisper) → LLM (Llama) → TTS (edge-tts). Wake word, barge-in, multi-turno, parser de tags `[EMO:X]`. Las funciones auxiliares están en `voz/pipeline/`: `emocion`, `reglas_turno`, `frases`, `audio`, `tts`, `contexto`, `texto`, `prefetch`, `consola`. |
+| `voz/stt.py` | Transcripción (Whisper vía Groq) y filtros de alucinaciones. |
+| `voz/audio_engine.py` | Micrófono continuo + Silero VAD + fin de frase adaptativo. |
+| `voz/voice_id.py` | Identidad por voz (WeSpeaker, embeddings). |
+| `voz/jev_decision.py` | Decisiones de turno con JEV: ruta y emoción. |
+| `llm/llm_router.py` | Rotación de LLM por cupo (Groq / Ollama). |
+| `asistente/assistant.py` | Hora, fecha, clima y noticias, inyectados al prompt. |
+| `asistente/reminders.py` | Recordatorios y alarmas. |
+| `asistente/music.py` | Control de Spotify por voz. |
+| `asistente/busqueda.py` | Búsqueda web del modo ingeniero (Serper). |
+| `agente/modo_dueno.py` | Comandos de la voz del dueño y modo ingeniero. |
+| `agente/claude_code.py` | Sesión de Claude Code del modo ingeniero. |
+| `memoria/memory.py` | Memoria persistente (cara↔nombre + voz, SQLite). |
+| `memoria/memoria_admin.py` | CLI para ver y editar la memoria (`python -m memoria.memoria_admin`). |
 
 Deps vivas fuera de `robot_bob/`: `shared/voicechatLap/` (audio_io TCP, wake_word,
 config base) y `firmware/Esp32ThinkerAICam/blaze_face_short_range.tflite` (modelo).
@@ -126,16 +147,16 @@ Entorno: **Python 3.11**, venv en `robot_bob/venv311/`. Deps en
 
 ```bash
 # desde robot_bob/, con venv311 activo
-python discovery.py       # refresca IPs de los ESP32 (tras cambiar de WiFi)
+python -m hardware.discovery       # refresca IPs de los ESP32 (tras cambiar de WiFi)
 python main.py            # sistema completo (Q para salir)
 
-python tests/test_1_serial.py        # COM3 / OLED / servos / throttle
-python tests/test_2_tracker.py       # stream MJPEG + MediaPipe + servos (sin voz)
-python tests/test_2b_stream_only.py  # diagnóstico ESP32-CAM aislado
-python tests/test_3_voice.py         # mic + Whisper + Llama + TTS + OLED
-python tests/test_5_integration.py   # integración
-python tests/test_6_multipersona.py  # varias personas (escenario feria)
-python tests/test_memoria.py         # memoria persistente
+python tests/hardware/test_1_serial.py        # COM3 / OLED / servos / throttle
+python tests/hardware/test_2_tracker.py       # stream MJPEG + MediaPipe + servos (sin voz)
+python tests/hardware/test_2b_stream_only.py  # diagnóstico ESP32-CAM aislado
+python tests/hardware/test_3_voice.py         # mic + Whisper + Llama + TTS + OLED
+python tests/hardware/test_5_integration.py   # integración
+python tests/hardware/test_6_multipersona.py  # varias personas (escenario feria)
+python tests/hardware/test_memoria.py         # memoria persistente
 ```
 
 > Skills de Claude Code para el flujo guiado: `bob-run`, `bob-test`, `bob-diagnose`,

@@ -20,13 +20,13 @@ OUIs conocidos. No es obligatorio que coincida (algunos clones traen otra MAC).
 
 Uso
 ---
-    python discovery.py            # escanea, imprime tabla, guarda devices.json
-    python discovery.py --json     # salida JSON (para scripts)
-    python discovery.py --force    # ignora el cache y re-escanea
-    python discovery.py --subnet 192.168.1   # forzar otra subred
+    python -m hardware.discovery            # escanea, imprime tabla, guarda devices.json
+    python -m hardware.discovery --json     # salida JSON (para scripts)
+    python -m hardware.discovery --force    # ignora el cache y re-escanea
+    python -m hardware.discovery --subnet 192.168.1   # forzar otra subred
 
 config.py lee devices.json al importarse y sobrescribe las IPs. Por eso tras
-cambiar de WiFi basta con correr `python discovery.py` una vez y arrancar main.
+cambiar de WiFi basta con correr `python -m hardware.discovery` una vez y arrancar main.
 """
 
 from __future__ import annotations

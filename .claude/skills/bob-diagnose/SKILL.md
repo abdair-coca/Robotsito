@@ -28,7 +28,7 @@ Causa raíz: el ESP32-CAM emite a 60-80 FPS y nuestro main loop intenta procesar
 Cambios ya aplicados (verificar que están en su lugar):
 - `cv2.setNumThreads(1)` al inicio de main.py / test_2_tracker.py
 - `TARGET_FPS = 20` con `time.sleep(TARGET_PERIOD - elapsed)` al final del main loop
-- `STREAM_TIMEOUT_S = 5.0` en `facial_tracker.py`
+- `STREAM_TIMEOUT_S = 5.0` en `vision/facial_tracker.py`
 
 Si todavía falla: bajar `TARGET_FPS` a 15.
 
@@ -73,7 +73,7 @@ Si el ESP32 aparece como `COM4` o `COM5`, cambiar `PUERTO_SERIAL` en `main.py` y
 
 2. **Hablar más fuerte y cerca del mic.** El wake monitor graba en chunks de 3s y transcribe con Whisper — si tu voz queda por debajo del piso de ruido, Whisper devuelve string vacío.
 
-3. **Ver qué transcribe Whisper:** agregar `print` temporal en `voice_pipeline.py` antes de `self._wake.detect(texto)`:
+3. **Ver qué transcribe Whisper:** agregar `print` temporal en `voz/pipeline/` antes de `self._wake.detect(texto)`:
    ```python
    print(f'[wake-debug] transcrito: "{texto}"')
    ```
@@ -86,7 +86,7 @@ Si el ESP32 aparece como `COM4` o `COM5`, cambiar `PUERTO_SERIAL` en `main.py` y
 
 Causa probable: los parámetros del servo están calibrados para una frecuencia distinta del main loop.
 
-Verificar en `facial_tracker.py`:
+Verificar en `vision/facial_tracker.py`:
 - `GANANCIA_PAN/TILT = 0.025` (era 0.018 a 60 Hz)
 - `ADELANTO_MAX = 12` (era 6)
 
@@ -112,7 +112,7 @@ Si todo está correcto y sigue brusco: activar el `BehaviorEngine` que agrega ea
 
 Era un bug del refactor inicial. Ya está arreglado: `_run_conversation` mantiene un loop interno entre turnos sin requerir wake word.
 
-Si reaparece: verificar que `voice_pipeline.py` tiene el método `_run_conversation` (no `_run_one_turn`).
+Si reaparece: verificar que `voz/pipeline/` tiene el método `_run_conversation` (no `_run_one_turn`).
 
 ## Síntoma: "Bob detecta wake word pero ignora la pregunta"
 
