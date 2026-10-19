@@ -5,7 +5,7 @@ description: Ejecutar los tests aislados del robot Bob (serial, tracker, voz) en
 
 # Tests del Robot Bob
 
-Hay 4 tests aislados en `robot_bob/tests/`. **Nunca correr `main.py` antes de validar los 3 individuales** — si algo falla en main.py es muy difícil diagnosticar cuál componente es el culpable.
+Hay 4 tests aislados en `robot_bob/tests/hardware/`. **Nunca correr `main.py` antes de validar los 3 individuales** — si algo falla en main.py es muy difícil diagnosticar cuál componente es el culpable.
 
 ## Orden estricto de ejecución
 
@@ -21,10 +21,10 @@ Hay 4 tests aislados en `robot_bob/tests/`. **Nunca correr `main.py` antes de va
 Desde `scripts/robot_bob/`:
 
 ```bash
-python tests/test_1_serial.py
-python tests/test_2b_stream_only.py   # solo si test 2 falla
-python tests/test_2_tracker.py
-python tests/test_3_voice.py
+python tests/hardware/test_1_serial.py
+python tests/hardware/test_2b_stream_only.py   # solo si test 2 falla
+python tests/hardware/test_2_tracker.py
+python tests/hardware/test_3_voice.py
 ```
 
 ## Reglas de oro

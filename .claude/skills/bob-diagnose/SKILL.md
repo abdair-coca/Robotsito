@@ -59,7 +59,7 @@ En PowerShell:
 Get-WmiObject Win32_SerialPort | Select-Object Name, DeviceID
 ```
 
-Si el ESP32 aparece como `COM4` o `COM5`, cambiar `PUERTO_SERIAL` en `main.py` y `tests/*.py`.
+Si el ESP32 aparece como `COM4` o `COM5`, cambiar `PUERTO_SERIAL` en `main.py` y `tests/hardware/*.py`.
 
 ## Síntoma: "No detecta el wake word 'Bob'"
 
