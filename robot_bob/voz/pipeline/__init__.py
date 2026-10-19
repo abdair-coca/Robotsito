@@ -1,5 +1,5 @@
 """
-voice_pipeline.py — Pipeline de voz del robot Bob.
+voz/pipeline — Pipeline de voz del robot Bob.
 
 Adapta chat.py para integrarse con StateMachine:
   - run() corre en su propio hilo, respeta ev_escuchando para saber cuándo grabar
@@ -66,11 +66,6 @@ from config import (
     P_SOLILOQUIO, SOLILOQUIO_COOLDOWN_S, SOLILOQUIO_SETTLE_MS, BANCO_SOLILOQUIO,
     SOLILOQUIO_MAX_CARNADAS,
 )
-# Prosodia por emoción (config local, gitignoreado). Fallback neutro si falta.
-try:
-    from config import TTS_RATE_BASE, TTS_PITCH_BASE, TTS_EMO_PROSODY
-except Exception:
-    TTS_RATE_BASE, TTS_PITCH_BASE, TTS_EMO_PROSODY = "+0%", "+0Hz", {}
 
 # Gate de energía del wake monitor (silencio → no transcribir).
 try:
@@ -195,14 +190,6 @@ try:
     from config import NIVEL_MIN_CHARLA
 except Exception:
     NIVEL_MIN_CHARLA = 0.2
-# Fase R4: interacción. Guardado por si un config viejo no lo define.
-#   TTS_PCM_ENABLED       Piper → WAV en memoria (sin mp3 ni archivo temporal)
-#   TONO_ESCUCHA_ENABLED  "tic" corto y suave cuando Bob empieza a escuchar tu respuesta
-#   RELLENO_ENABLED       si la respuesta tarda más de RELLENO_S, Bob dice "Mmm, a ver…"
-try:
-    from config import TTS_PCM_ENABLED
-except Exception:
-    TTS_PCM_ENABLED = True
 try:
     from config import TONO_ESCUCHA_ENABLED
 except Exception:
@@ -211,7 +198,6 @@ try:
     from config import RELLENO_ENABLED, RELLENO_S
 except Exception:
     RELLENO_ENABLED, RELLENO_S = True, 1.4
-RELLENOS = ['Mmm, a ver...', 'Déjame pensar...', 'Mmm...', 'A ver, a ver...', 'Buena pregunta...']
 
 # Fase R3: dictado largo en modo ingeniero (audio_engine.Microfono.dictar).
 #   DICTADO_ENABLED       en modo ingeniero, pausas largas, hasta DICTADO_MAX_S y
@@ -278,351 +264,43 @@ from nucleo.expression_engine import (
     PULSE_FAST,
 )
 
-# ── Tags de emoción del LLM (InteractiveGoal Fase A) ───────────────────────────
-# El LLM prefija cada frase con [EMO:X]. Lo extraemos para el OLED y lo
-# quitamos del texto antes del TTS (no debe leerse en voz alta).
-# Acepta también "¡EMO:FELIZ!" sin corchetes: el LLM a veces lo escribe así y,
-# si no se quita, el TTS lo lee en voz alta.
-_EMO_TAG_RE = re.compile(r'¡?\[?EMO:([A-ZÁÉÍÓÚÜÑ_]+)\]?!?', re.IGNORECASE)
-# Debe coincidir con los estados que el firmware (oled_ojos.py ESTADOS) sabe
-# dibujar. Si un tag no está aquí, _extract_emo_tag lo descarta y el OLED cae al
-# fallback por keyword (la emoción no se muestra).
-_VALID_EMOS = {'FELIZ', 'MUY_FELIZ', 'EMOCIONADO', 'CURIOSO', 'TRAVIESO',
-               'PENSANDO', 'SORPRENDIDO', 'ASUSTADO', 'CONFUNDIDO', 'AVERGONZADO',
-               'TRISTE', 'MUY_TRISTE', 'ENOJADO', 'SOSPECHANDO', 'ORGULLOSO',
-               'AMOR', 'HABLANDO'}
+# Reexporta lo movido: tests y calibrar_mic usan vp.<nombre>
+from voz.pipeline.emocion import (
+    _EMO_TAG_RE, _VALID_EMOS, _extract_emo_tag, _marcar_emo, TTS_RATE_BASE, TTS_PITCH_BASE,
+    TTS_EMO_PROSODY, _prosody_for_emo,
+)
+from voz.pipeline.reglas_turno import (
+    _RE_HERRAMIENTA, _VERBO_HERRAMIENTA, _RE_ACCION_PROPIA, _RE_NEGACION, _promete_accion,
+    _sin_promesas, _GIRO_DER_KW, _GIRO_IZQ_KW, _GIRO_BUSCAR_KW, _GIRO_JEV, _intent_giro,
+    _giro_turno, _RE_NOMBRE, _NO_NOMBRE, _extraer_nombre, _RE_APRENDER_VOZ, _pide_aprender_voz,
+    _is_exit, _is_goodbye, _es_alucinacion,
+)
+from voz.pipeline.consola import console
+from voz.pipeline.frases import (
+    RELLENOS, FRASE_SIN_ACCION, FRASE_CORTE, REGLA_CHARLA, DESPEDIDAS_JEV, WAKE_GREETINGS,
+    AUTO_OPENERS, PREGUNTAS_VOZ, NEXT_TURN_TIMEOUT_VOZ,
+)
+from voz.pipeline.audio import (
+    _LAP_SAMPLE_RATE, _segundos_wav, _mic_device, _VOICE_BANDPASS, _rms_uint8,
+    _uint8_to_int16_bytes, _uint8_to_wav,
+)
+from voz.pipeline.tts import (
+    FFMPEG, _SALIDA_SR, _PIPER, _PIPER_LOCK, _piper_audio, _pcm_a_wav, TTS_PCM_ENABLED,
+    _edge_tts_bytes, _sintetizar,
+)
+from voz.pipeline.contexto import (_contexto_asistente_turno, _extra_groq)
+from voz.pipeline.texto import (_SENT_RE, _split_sentence)
+from voz.pipeline.prefetch import (_Prefetch)
 
 
-def _extract_emo_tag(text: str) -> tuple:
-    """
-    Devuelve (emo | None, texto_limpio).
-    Usa el primer tag válido encontrado; borra TODOS los tags del texto.
-    """
-    emo = None
-    for m in _EMO_TAG_RE.finditer(text):
-        cand = m.group(1).upper()
-        if emo is None and cand in _VALID_EMOS:
-            emo = cand
-    clean = _EMO_TAG_RE.sub('', text).strip()
-    return emo, clean
-
-
-def _marcar_emo(sent: str, emo: str) -> str:
-    """
-    J3: la emoción la decide JEV, no el LLM. Quita los tags que el LLM escriba
-    y antepone el de JEV, para que el OLED y el TTS lo lean como antes.
-    """
-    return f'[EMO:{emo}] ' + _EMO_TAG_RE.sub('', sent).strip()
-
-# ── E-C: lo que el LLM de la charla no puede afirmar ───────────────────────────
-# En la charla no hay herramientas: si Bob dice "voy a crear una carpeta", nadie la crea.
-_RE_HERRAMIENTA = re.compile(
-    r'\b(carpeta|archivo|spotify|playlist|canci[oó]n|m[uú]sica|modo ingenier\w*|firmware|'
-    r'servos?|navegador|correo|mensaje|contrase\w+|descarg\w*)\b', re.IGNORECASE)
-_VERBO_HERRAMIENTA = (r'(?:crear|abrir|poner|reproducir|enviar|borrar|descargar|guardar|buscar|'
-                      r'instalar|cambiar|encender|apagar|configurar|recalibrar|afinar)')
-_RE_ACCION_PROPIA = re.compile(
-    rf"\b(?:(?:voy|vamos) a {_VERBO_HERRAMIENTA}|acabo de \w+|a punto de \w+|"
-    r"puedo (?:reproducir|poner|abrir|crear|enviar|borrar|descargar)|"
-    r"pongo|abro|reproduzco|puse|abr[ií]|recalibr\w*|afin\w*|"
-    r"estoy (?:creando|abriendo|poniendo|reproduciendo|buscando|enviando|recalibrando|afinando))\b",
-    re.IGNORECASE)
-_RE_NEGACION = re.compile(r'\bno (?:lo |la |te )?(?:puedo|voy|pude|podr\w*)\b', re.IGNORECASE)
-FRASE_SIN_ACCION = 'Eso todavía no lo puedo hacer desde la charla.'
-FRASE_CORTE = 'Perdón, se me cortó la idea. ¿Me lo repites?'
-REGLA_CHARLA = (' En esta charla no tienes herramientas: solo hablas. Nunca digas que creaste, '
-                'abriste, pusiste, enviaste, reproduces o cambiaste algo; si te piden algo que no '
-                'puedes hacer, dilo sin rodeos. No repitas literalmente tu respuesta anterior. '
-                'Copia los nombres propios tal como vienen en el mensaje.')
-
-
-def _promete_accion(frase: str) -> bool:
-    """¿La frase afirma una acción de herramienta? Una negación ("no puedo reproducir")
-    no cuenta: es justo lo que debe decir Bob."""
-    if _RE_NEGACION.search(frase):
-        return False
-    return bool(_RE_HERRAMIENTA.search(frase) and _RE_ACCION_PROPIA.search(frase))
-
-
-def _sin_promesas(frase: str) -> str:
-    if _promete_accion(frase):
-        console.print(f'[red][guard] acción no hecha, frase cambiada: "{frase}"[/]')
-        return FRASE_SIN_ACCION
-    return frase
-
-
-FFMPEG  = imageio_ffmpeg.get_ffmpeg_exe()
-console = Console()
-
-# ── Constantes locales ─────────────────────────────────────────────────────────
-_LAP_SAMPLE_RATE = 16000  # sounddevice graba a 16 kHz
-
-
-def _segundos_wav(wav: Optional[bytes]) -> float:
-    """Duración de un WAV en segundos (0 si no hay audio o no es WAV)."""
-    if not wav:
-        return 0.0
-    try:
-        with wave.open(_io.BytesIO(wav)) as wf:
-            return wf.getnframes() / float(wf.getframerate())
-    except Exception:
-        return 0.0
-
-
-def _mic_device():
-    """Índice del mic Intel por DirectSound. El default de Windows (MME) en la
-    laptop captó casi nada; DirectSound a 16 kHz sí captura la voz.
-    None = dispositivo default del sistema (si no encuentra el Intel)."""
-    try:
-        for i, d in enumerate(sd.query_devices()):
-            api = sd.query_hostapis(d['hostapi'])['name']
-            if (d['max_input_channels'] > 0 and 'Intel' in d['name']
-                    and api == 'Windows DirectSound'):
-                return i
-    except Exception:
-        pass
-    return None
 _SILENCE_FRAMES  = SILENCE_END_MS // FRAME_MS
-
-# Respuestas cortas cuando JEV decide que Bob debe irse ("vete", "adiós Bob")
-DESPEDIDAS_JEV = [
-    'Ok, aquí ando si me necesitas.',
-    '¡Nos vemos!',
-    'Ya me callo, cuídate.',
-]
-
-# Saludos rápidos cuando el usuario gatilla wake word ("Bob ...")
-WAKE_GREETINGS = [
-    '¡Hola bola!',
-    '¿Qué pasa calabaza?',
-    '¡Aquí estoy!',
-    '¡Dime, dime!',
-    '¡Sí dime!',
-    '¿Qué tranza compadre?',
-    '¡Te escucho!',
-    '¿Qué hubo qué hay?',
-    '¡A la orden!',
-    '¿Qué onda banana?',
-    '¿Qué tal lechuga?',
-    '¡Aquí Bob, reportándose!',
-]
-
-# Openers cuando Bob inicia solo (vio una cara permanente, se animó a romper hielo).
-# Preguntas abiertas para invitar a charlar — el usuario no esperaba ser hablado.
-AUTO_OPENERS = [
-    '¡Hola! Soy Bob, ¿y tú cómo te llamas?',
-    '¡Buenas! ¿De qué carrera eres?',
-    '¡Hey! ¿Qué te trae por la feria?',
-    '¡Hola! Te estaba mirando, ¿charlamos?',
-    '¡Buenas! ¿Cómo va tu día?',
-    '¡Eh, hola! ¿Te cuento un chiste?',
-    '¡Hola! ¿Vienes a ver robots o a ver robots?',
-    '¡Saludos! ¿Te puedo preguntar algo?',
-    '¡Hola! Me aburría, ¿hablamos un rato?',
-    '¡Buenas! ¿Sabías que llevo aquí horas? Cuéntame algo.',
-    '¡Hola! ¿Eres de Potosí o de visita?',
-    '¡Hey! ¿Qué opinas de los robots conversacionales?',
-]
-
-# Filtro pasa-banda de voz (pre-calculado, reutilizable)
-_VOICE_BANDPASS = butter(4, [80, 3500], btype='band', fs=SAMPLE_RATE, output='sos')
 
 
 # ── Helpers de audio ───────────────────────────────────────────────────────────
 
-def _rms_uint8(buf: bytes) -> float:
-    a = np.frombuffer(buf, dtype=np.uint8).astype(np.float32)
-    if not a.size:
-        return 0.0
-    a = a - a.mean()
-    return float(np.sqrt(np.mean(a * a)))
-
-def _uint8_to_int16_bytes(buf: bytes) -> bytes:
-    a = np.frombuffer(buf, dtype=np.uint8).astype(np.float32)
-    if not a.size:
-        return b''
-    a = (a - a.mean()) * 256.0
-    return np.clip(a, -32768, 32767).astype(np.int16).tobytes()
-
-def _uint8_to_wav(uint8_audio: bytes) -> bytes:
-    arr = np.frombuffer(uint8_audio, dtype=np.uint8).astype(np.float32) - 128.0
-    arr -= arr.mean()
-    arr = sosfilt(_VOICE_BANDPASS, arr).astype(np.float32)
-    peak = np.max(np.abs(arr))
-    if peak > 1.0:
-        arr = arr / peak * 0.9 * 32767.0
-    int16 = arr.astype(np.int16)
-    buf = _io.BytesIO()
-    with wave.open(buf, 'wb') as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(SAMPLE_RATE)
-        wf.writeframes(int16.tobytes())
-    return buf.getvalue()
-
-def _es_alucinacion(texto: str) -> bool:
-    """En reposo: frases que Whisper inventa con silencio o ruido (stt.ALUCINACIONES)."""
-    t = ' '.join(stt.palabras(texto))
-    if not t:
-        return True
-    if 'amara' in t or 'subtitul' in t or 'suscrib' in t:
-        return True
-    return t in stt.ALUCINACIONES
-
-# Comandos de voz para que Bob gire buscando al que habla.
-_GIRO_DER_KW = ('a la derecha', 'tu derecha', 'a tu derecha', 'por la derecha',
-                'hacia la derecha')
-_GIRO_IZQ_KW = ('a la izquierda', 'tu izquierda', 'a tu izquierda', 'por la izquierda',
-                'hacia la izquierda')
-_GIRO_BUSCAR_KW = ('date la vuelta', 'date vuelta', 'da la vuelta', 'date media vuelta',
-                   'date la media vuelta', 'voltea', 'volteate', 'voltéate', 'gira',
-                   'girate', 'gírate', 'date la vueltita', 'estoy detras', 'estoy detrás',
-                   'detras de ti', 'detrás de ti', 'atras de ti', 'atrás de ti',
-                   'aca atras', 'acá atrás', 'aqui atras', 'aquí atrás', 'mira atras',
-                   'mira atrás', 'date la vue')
-
-# J5: ruta de JEV → valor de scan_request (lo que lee behavior.py)
-_GIRO_JEV = {'giro_derecha': 'derecha', 'giro_izquierda': 'izquierda', 'giro_buscar': 'buscar'}
-
-
-def _giro_turno(texto: str, ruta: Optional[str]):
-    """J5: el giro lo decide JEV. Si JEV no respondió (None), palabras clave de siempre.
-    Si JEV respondió otra ruta, no es un giro."""
-    if ruta is None:
-        return _intent_giro(texto)
-    return _GIRO_JEV.get(ruta)
-
-
-def _intent_giro(texto: str):
-    """Devuelve 'derecha' | 'izquierda' | 'buscar' | None según el comando de voz."""
-    t = texto.lower()
-    if any(k in t for k in _GIRO_DER_KW):
-        return 'derecha'
-    if any(k in t for k in _GIRO_IZQ_KW):
-        return 'izquierda'
-    if any(k in t for k in _GIRO_BUSCAR_KW):
-        return 'buscar'
-    return None
-
-# Extracción del nombre cuando el usuario se presenta.
-_RE_NOMBRE = re.compile(
-    r'\b(?:me llamo|mi nombre es|me dicen|soy)\s+([a-záéíóúñ]{2,20})', re.IGNORECASE)
-_NO_NOMBRE = {'de', 'un', 'una', 'el', 'la', 'muy', 'yo', 'estudiante', 'ingeniero',
-              'ingeniera', 'profe', 'profesor', 'doctor', 'el', 'tu', 'su', 'que',
-              'bien', 'mal', 'feliz', 'triste', 'de', 'del', 'para', 'medio'}
-
-def _extraer_nombre(texto: str):
-    """Devuelve un nombre si el usuario se presentó ('me llamo X'), o None."""
-    m = _RE_NOMBRE.search(texto)
-    if not m:
-        return None
-    n = m.group(1).strip()
-    if n.lower() in _NO_NOMBRE:
-        return None
-    return n.capitalize()
-
-# Enrolamiento explícito de la voz del dueño ("Bob, aprende mi voz").
-_RE_APRENDER_VOZ = re.compile(
-    r'\b(?:apr[eé]nde(?:te)?|memoriza|gu[aá]rdate|guarda)\s+(?:bien\s+)?mi\s+voz\b',
-    re.IGNORECASE)
-# Preguntas abiertas: invitan a hablar 2 s o más (EXP-1-001: con 1 s no alcanza).
-PREGUNTAS_VOZ = [
-    'Cuéntame qué hiciste hoy.',
-    '¿Qué es lo que más te gusta de programar?',
-    'Descríbeme el lugar donde estás ahora.',
-    '¿Qué música te gusta escuchar y por qué?',
-    'Cuéntame algo que quieras que haga en la feria.',
-]
-NEXT_TURN_TIMEOUT_VOZ = 8.0   # s de espera por cada respuesta al aprender la voz
-
-
-def _pide_aprender_voz(texto: str) -> bool:
-    return bool(_RE_APRENDER_VOZ.search(texto or ''))
-
-def _is_exit(text: str) -> bool:
-    return text.lower().strip(' .,!?¿¡') in EXIT_PHRASES
-
-def _is_goodbye(text: str) -> bool:
-    return text.lower().strip(' .,!?¿¡') in GOODBYE_PHRASES
-
 
 # ── TTS ────────────────────────────────────────────────────────────────────────
 
-def _prosody_for_emo(emo: Optional[str]) -> tuple:
-    """Devuelve (rate, pitch) edge-tts según la emoción; default = base."""
-    if emo:
-        p = TTS_EMO_PROSODY.get(emo.upper())
-        if p:
-            return p
-    return (TTS_RATE_BASE, TTS_PITCH_BASE)
-
-async def _edge_tts_bytes(text: str, rate: str, pitch: str) -> bytes:
-    chunks = []
-    async for c in edge_tts.Communicate(text, voice=VOICE, rate=rate, pitch=pitch).stream():
-        if c['type'] == 'audio':
-            chunks.append(c['data'])
-    return b''.join(chunks)
-
-# Piper (local, CPU): la voz se carga una vez y se sintetiza con lock, porque
-# el TTS se llama desde varios hilos (charla, soliloquio, recordatorios).
-_PIPER = None
-_PIPER_LOCK = threading.Lock()
-
-def _piper_audio(text: str) -> bytes:
-    global _PIPER
-    with _PIPER_LOCK:
-        if _PIPER is None:
-            from piper import PiperVoice
-            _PIPER = PiperVoice.load(PIPER_VOICE)
-        from piper import SynthesisConfig
-        chunks = list(_PIPER.synthesize(
-            text, syn_config=SynthesisConfig(length_scale=PIPER_LENGTH_SCALE)))
-    if not chunks:
-        return b''
-    pcm = b''.join(c.audio_int16_bytes for c in chunks)
-    sr = chunks[0].sample_rate
-    # Tono: asetrate sube pitch y velocidad; aresample+atempo devuelven la velocidad.
-    # Luego el EQ/compresor de carácter. PCM s16 → mp3 para que pygame lo reproduzca.
-    f = PIPER_PITCH_FACTOR
-    partes = []
-    if f != 1.0:
-        partes.append(f"asetrate={sr}*{f},aresample={sr},atempo={1/f:.5f}")
-    if PIPER_FFMPEG_FILTERS:
-        partes.append(PIPER_FFMPEG_FILTERS)
-    cmd = [FFMPEG, '-hide_banner', '-loglevel', 'error',
-           '-f', 's16le', '-ar', str(sr), '-ac', '1', '-i', 'pipe:0']
-    if partes:
-        cmd += ['-af', ','.join(partes)]
-    if not TTS_PCM_ENABLED:
-        cmd += ['-f', 'mp3', 'pipe:1']
-        return subprocess.run(cmd, input=pcm, capture_output=True, check=False).stdout
-    # R4: PCM a la frecuencia del mixer, en un WAV en memoria (sin codificar a mp3,
-    # sin archivo temporal): ~80 ms menos por frase, medido.
-    cmd += ['-ar', str(_SALIDA_SR), '-f', 's16le', 'pipe:1']
-    salida = subprocess.run(cmd, input=pcm, capture_output=True, check=False).stdout
-    return _pcm_a_wav(salida, _SALIDA_SR) if salida else b''
-
-
-_SALIDA_SR = 24000   # frecuencia del mixer de pygame (VoicePipeline.__init__)
-
-
-def _pcm_a_wav(pcm: bytes, sr: int) -> bytes:
-    buf = _io.BytesIO()
-    with wave.open(buf, 'wb') as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(sr)
-        wf.writeframes(pcm)
-    return buf.getvalue()
-
-def _sintetizar(text: str, emo: Optional[str] = None) -> bytes:
-    """Audio de `text`: WAV en memoria (Piper, R4) o mp3 (edge-tts)."""
-    if not text.strip():
-        return b''
-    if TTS_BACKEND == 'piper':
-        return _piper_audio(text)
-    rate, pitch = _prosody_for_emo(emo)
-    return asyncio.run(_edge_tts_bytes(text, rate, pitch))
 
 def _hay_comando(texto: str) -> bool:
     """R1: ¿las reglas de siempre ven un comando (giro, recordatorio, show, música,
@@ -637,99 +315,7 @@ def _hay_comando(texto: str) -> bool:
         return True
 
 
-def _extra_groq(modelo: str) -> Dict:
-    """Parámetros por modelo de Groq. GPT-OSS gasta max_tokens razonando: `low` deja
-    lugar al texto. Qwen3 sin razonamiento responde en ~0.6 s (medido 2026-10-17)."""
-    if modelo.startswith('openai/gpt-oss-'):
-        return {'reasoning_effort': 'low'}
-    if modelo.startswith('qwen/qwen3'):
-        return {'reasoning_effort': 'none'}
-    return {}
-
-
-def _contexto_asistente_turno(texto: str, ruta: Optional[str]) -> str:
-    """J2: datos en vivo para el LLM según la ruta de JEV.
-    None (JEV no respondió): palabras clave de siempre.
-    'asistente' sin palabra clave: hora y fecha (locales, no dependen de red).
-    Otra ruta: no se inyecta nada."""
-    if ruta not in (None, 'asistente'):
-        return ''
-    ctx = contexto_asistente(texto)
-    if ruta == 'asistente' and not ctx:
-        # Las palabras clave de assistant.py son frases: "qué hora" y "qué fecha es".
-        ctx = contexto_asistente('qué hora es y qué fecha es')
-    return ctx
-
-
 # ── Sentence splitter ──────────────────────────────────────────────────────────
-
-_SENT_RE = re.compile(r'[.!?¡¿…\n]+[\s"\')\]]*')
-
-def _split_sentence(buf: str) -> tuple[Optional[str], str]:
-    if len(buf) < SENTENCE_MIN_CHARS:
-        return None, buf
-    m = _SENT_RE.search(buf, SENTENCE_MIN_CHARS - 1)
-    if m is None:
-        return None, buf
-    return buf[:m.end()].strip(), buf[m.end():]
-
-
-class _Prefetch:
-    """R1: pedido al LLM lanzado antes de saber la ruta (JEV corre en paralelo).
-    Lee el stream en un hilo y guarda los chunks; se consume como el stream original
-    o se cancela si JEV dice que el turno era un comando."""
-
-    def __init__(self, llm, kwargs: Dict):
-        self.llm = llm
-        self.kwargs = kwargs
-        self.error: Optional[Exception] = None
-        self._q: queue.Queue = queue.Queue()
-        self._arranco = threading.Event()     # primer chunk o fin
-        self._cancelar = threading.Event()
-        self._stream = None
-        threading.Thread(target=self._leer, daemon=True, name='llm-prefetch').start()
-
-    def _leer(self) -> None:
-        try:
-            self._stream = self.llm.chat.completions.create(**self.kwargs)
-            for chunk in self._stream:
-                if self._cancelar.is_set():
-                    break
-                self._q.put(chunk)
-                self._arranco.set()
-        except Exception as e:
-            self.error = e
-        finally:
-            self._q.put(None)
-            self._arranco.set()
-            if self._cancelar.is_set():
-                self._cerrar_stream()
-
-    def _cerrar_stream(self) -> None:
-        try:
-            if self._stream is not None:
-                self._stream.close()
-        except Exception:
-            pass
-
-    def esperar_inicio(self, timeout: float) -> bool:
-        """True si llegó al menos un chunk (o terminó sin error) antes del plazo."""
-        self._arranco.wait(timeout)
-        return self._arranco.is_set() and not (self.error and self._q.qsize() <= 1)
-
-    def __iter__(self):
-        while True:
-            chunk = self._q.get()
-            if chunk is None:
-                # E-C: un error a mitad del stream se relanza; antes terminaba en silencio.
-                if self.error is not None:
-                    raise self.error
-                return
-            yield chunk
-
-    def close(self) -> None:
-        self._cancelar.set()
-        self._cerrar_stream()
 
 
 # ── VoicePipeline ──────────────────────────────────────────────────────────────
