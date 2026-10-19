@@ -51,6 +51,9 @@ try:
     from config import VOZ_UMBRAL_DUENO
 except Exception:
     VOZ_UMBRAL_DUENO = None
+# Umbral para que el modo ingeniero toque archivos y corra comandos (B-D11). Por debajo, el
+# turno va con la sesión de lectura: no escribe ni ejecuta nada.
+VOZ_UMBRAL_SHELL = 0.55
 
 CARA_ESPERA_S = 1.5     # reintentos para ver la cara de la persona presentada
 
@@ -166,6 +169,17 @@ BASH_BLOQUEADOS = [re.compile(p, re.IGNORECASE) for p in (
     r'\bpython\S*\s+-m\s+pip\s+install\b',
     r'\b(?:curl|wget)\b',
     r'\binvoke-(?:webrequest|restmethod)\b',
+)]
+# Allowlist de Bash (B-D10): cada tramo de un comando encadenado (&&, ||, ;, |, &) debe empezar
+# por uno de estos. Lo que no esté aquí se niega, aunque no caiga en BASH_BLOQUEADOS.
+_VERBOS_BASH = r'(?:dir|ls|cat|type|more|head|tail|mkdir|md|rm|cd|chdir|pushd|set-location|sl|push-location)'
+BASH_PERMITIDOS = [re.compile(p, re.IGNORECASE) for p in (
+    rf'{_VERBOS_BASH}(?:\s|$)',
+    r'git\s+(?:status|log|diff|show)(?:\s|$)',
+    r'(?:python3?|py)\s+[\w.\\/:-]+\.py(?:\s|$)',
+    r'node\s+(?:-v|--version)(?:\s|$)',
+    r'node\s+[\w.\\/:-]+\.m?js(?:\s|$)',
+    r'npm\s+(?:-v|--version|run|test|ls|list)(?:\s|$)',
 )]
 # Cambiar de carpeta: solo dentro de AppInglés (B-D3).
 _RE_CAMBIO = re.compile(r'(?:^|[;&|]\s*)(cd|chdir|pushd|set-location|sl|push-location)\b([^;&|]*)',
@@ -399,9 +413,13 @@ def _cambia_fuera(comando: str) -> bool:
 
 
 def es_bash_bloqueado(comando: str) -> bool:
-    """True si el comando cae en un bloqueo de B-D3 o intenta salir de AppInglés."""
+    """True si el comando cae en un bloqueo de B-D3, intenta salir de AppInglés o no está
+    en la allowlist de B-D10 (cada tramo debe empezar por un comando permitido)."""
     texto = comando or ''
-    return any(p.search(texto) for p in BASH_BLOQUEADOS) or _cambia_fuera(texto)
+    if any(p.search(texto) for p in BASH_BLOQUEADOS) or _cambia_fuera(texto):
+        return True
+    tramos = [t.strip() for t in re.split(r'&&|\|\||[;&|]', texto) if t.strip()]
+    return not tramos or not all(any(p.match(t) for p in BASH_PERMITIDOS) for t in tramos)
 
 
 def _aprobar_escritura():
@@ -584,7 +602,10 @@ def _responder_con_fuentes(vp, texto: str, consultas, sesion):
             console.print(f'  [bold cyan]Bob:[/] {escape(frase)}')
             yield frase
         if dichas:
-            vp._contexto_web = ' '.join(dichas)     # el turno siguiente de Claude lo sabe
+            # el turno siguiente de Claude lo sabe: lo dicho y las fuentes, para poder explicarlas
+            lista = '; '.join(f'[{i}] {f["titulo"]} ({f["dominio"]}): {f["url"]}'
+                              for i, f in enumerate(fuentes, 1))
+            vp._contexto_web = f'{" ".join(dichas)} Fuentes de esa búsqueda: {lista}'
             return
         nota = 'No pude armar la respuesta con las fuentes: dilo y responde con lo que sabes.'
     console.print(f'[yellow][dueño] búsqueda sin respuesta: {nota}[/]')
@@ -612,7 +633,9 @@ def responder_ingeniero(vp, texto: str, sesion):
     else:
         con_busqueda, consultas = False, []
     con_web = con_busqueda or bool(getattr(vp, '_contexto_web', None))
-    sesion_turno = _sesion_sin_escritura(vp, sesion) if con_web else sesion
+    voz = getattr(vp, '_voz_turno', None)
+    sin_voz_firme = voz is None or voz < VOZ_UMBRAL_SHELL     # B-D11: sin voz del dueño, sin shell
+    sesion_turno = _sesion_sin_escritura(vp, sesion) if (con_web or sin_voz_firme) else sesion
     if sesion is not None and sesion_turno is None:    # solo había escritura: Groq responde
         return
     if con_busqueda:

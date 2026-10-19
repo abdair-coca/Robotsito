@@ -258,6 +258,18 @@ def e_c() -> None:
     check('E-C: la charla dice la frase honesta, no la promesa',
           salida == [vp.FRASE_SIN_ACCION] and 'carpeta' not in ' '.join(salida), f'-> {salida}')
 
+    # 3b) En modo ingeniero, Claude Code sí tiene herramientas: su frase real no se cambia
+    import modo_dueno as md_ing
+    ing_antes, resp_antes = md_ing.ajustes_ingeniero, md_ing.responder_ingeniero
+    real = 'Ya abrí en tu navegador la documentación de Vite, Abdair.'
+    md_ing.ajustes_ingeniero = lambda vp_, motor=None: {'sesion': object()}
+    md_ing.responder_ingeniero = lambda vp_, texto, sesion: iter([real])
+    try:
+        salida = _texto_hablado(construir(), _Stream([]), 'abre el navegador')
+    finally:
+        md_ing.ajustes_ingeniero, md_ing.responder_ingeniero = ing_antes, resp_antes
+    check('E-C: en modo ingeniero la frase real no se cambia', salida == [real], f'-> {salida}')
+
     # 4) Stream que se corta a mitad: lo ya dicho queda y Bob lo avisa
     v = construir()
     salida = _texto_hablado(v, _Stream(['Hola, qué tal bien. ', 'Estoy pensando en'], falla=True))

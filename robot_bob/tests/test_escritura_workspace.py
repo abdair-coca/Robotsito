@@ -127,11 +127,12 @@ try:
     modo_dueno._responder_con_fuentes = con_fuentes
     modo_dueno.responder_claude = claude_falso
 
-    def responder(plan, contexto_web=None, sesion_escritura=True):
+    def responder(plan, contexto_web=None, sesion_escritura=True, voz=0.9):
         modo_dueno.busqueda.descomponer = lambda texto: plan
         vp = VPFalso()
         vp._sesion_ing = lectura
         vp._contexto_web = contexto_web
+        vp._voz_turno = voz
         escritura = modo_dueno._sesion_escritura(vp) if sesion_escritura else None
         usadas.clear()
         list(modo_dueno.responder_ingeniero(vp, 'pregunta', escritura))
@@ -143,6 +144,10 @@ try:
           responder({'buscar': False, 'consultas': []}, contexto_web='dato') == [('claude', 'ingeniero')])
     check("turno sin internet: va a escritura",
           responder({'buscar': False, 'consultas': []}) == [('claude', 'escritura')])
+    check("voz bajo 0.55: va a lectura (B-D11)",
+          responder({'buscar': False, 'consultas': []}, voz=0.50) == [('claude', 'ingeniero')])
+    check("sin voz verificada: va a lectura (B-D11)",
+          responder({'buscar': False, 'consultas': []}, voz=None) == [('claude', 'ingeniero')])
     usadas.clear()
     modo_dueno.busqueda.descomponer = lambda texto: {'buscar': True, 'consultas': ['x']}
     vp = VPFalso()

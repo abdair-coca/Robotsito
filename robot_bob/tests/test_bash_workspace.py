@@ -70,7 +70,8 @@ try:
     # 1) Tabla de comandos
     permitidos = ['dir', 'ls', 'git status', 'git log --oneline', 'cat nota.txt', 'type nota.txt',
                   'python script.py', 'rm nota.txt', 'cd subcarpeta', 'cd .',
-                  'Set-Location subcarpeta', 'dir && git status']
+                  'Set-Location subcarpeta', 'dir && git status',
+                  'npm run dev', 'npm test', 'node server.js', 'git diff', 'mkdir proyecto']
     bloqueados = ['git push origin main', 'git reset --hard HEAD', 'git clean -fd',
                   'git branch -D viejo', 'git branch -d viejo', 'type .env', 'copy .env copia.txt',
                   'cat C:\\x\\.env', 'rm -rf carpeta', 'rm -r carpeta', 'rm -fr carpeta',
@@ -78,7 +79,11 @@ try:
                   'pip install requests', 'python -m pip install x', 'curl http://x', 'wget x',
                   'powershell Invoke-WebRequest x', 'cd C:\\Windows', 'cd ..', 'cd',
                   'cd %USERPROFILE%', 'cd ~', 'dir & cd C:\\', 'Set-Location C:\\Users',
-                  'pushd C:\\']
+                  'pushd C:\\',
+                  # B-D10: fuera de la allowlist, aunque no caigan en BASH_BLOQUEADOS
+                  'cmd /c start https://vite.dev', 'cmd.exe /c start "" "https://vite.dev"',
+                  'npm install react', 'npm i vite', 'npx create-vite app', 'powershell -c dir',
+                  'node -e "1"', 'python -c "import os"', 'start https://vite.dev', 'dir | cmd']
     for c in permitidos:
         check(f"permitido: {c}", not modo_dueno.es_bash_bloqueado(c))
     for c in bloqueados:

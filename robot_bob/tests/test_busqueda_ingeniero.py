@@ -125,8 +125,8 @@ def probar_flujo() -> None:
     check('actualidad: busca con las consultas y responde con fuentes',
           frases == ['Dato [1].'] and reg['buscar'] == [(('q1', 'q2'), True)]
           and reg['fuentes'] == 1 and not reg['claude'])
-    check('actualidad: guarda lo dicho como contexto del turno siguiente',
-          reg['contexto'] == 'Dato [1].')
+    check('actualidad: guarda lo dicho y las fuentes como contexto del turno siguiente',
+          reg['contexto'] == 'Dato [1]. Fuentes de esa búsqueda: [1] Nota (a.bo): https://a.bo/1')
 
     frases, reg = correr('¿Cuál es el dólar?', plan={'buscar': True, 'consultas': ['q1']},
                          buscar=lambda noticias: None)

@@ -229,7 +229,8 @@ SISTEMA_FUENTES = (
     'las fuentes numeradas que te doy. Cita cada dato con su número entre corchetes, por '
     'ejemplo [2]. Cada frase repite SOLO lo que dice la fuente que cita: si la fuente dice '
     '"en análisis" o "propuesta", no digas "aprobó"; si no lo dice, no lo agregues. No '
-    'inventes datos, cifras ni nombres. Si las fuentes no alcanzan, dilo en una frase. '
+    'inventes datos, cifras ni nombres. Si las fuentes no responden exactamente, di qué sí '
+    'traen y cita los dos o tres titulares más recientes con su número. '
     'Máximo 3 frases cortas, sin listas, sin markdown, sin URLs ni nombres de fuentes largos.')
 _RE_CITA = re.compile(r'\[\s*(\d+(?:\s*,\s*\d+)*)\s*\]')
 _RE_URL_VOZ = re.compile(r'https?://\S+')
