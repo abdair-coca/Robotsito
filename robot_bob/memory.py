@@ -16,13 +16,14 @@ muestras de esa persona (verificación de UNA persona, no búsqueda entre todas)
 Thread-safe (lock + check_same_thread=False) porque lo usa el hilo de voz.
 """
 
-import os
 import sqlite3
 import threading
 import numpy as np
 from datetime import datetime
 
-_DB_DEFAULT = os.path.join(os.path.dirname(__file__), 'memory.db')
+import rutas
+
+_DB_DEFAULT = rutas.DB_MEMORIA
 
 # Umbral de similitud coseno para considerar "misma persona" (ArcFace: misma
 # cara ~0.45-0.7, distinta <0.3). Tuneable en config.MEMORIA_SIM_THRESHOLD.

@@ -18,7 +18,9 @@ import os
 import sqlite3
 import sys
 
-_DB = os.path.join(os.path.dirname(__file__), 'memory.db')
+import rutas
+
+_DB = rutas.DB_MEMORIA
 _CAMPOS = {'edad', 'gustos', 'temas', 'relacion'}
 
 

@@ -30,9 +30,10 @@ import wave
 import numpy as np
 
 import config
+import rutas
 import voice_pipeline as vp
 
-RUTA_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
+RUTA_CONFIG = rutas.CONFIG_PY
 VENTANA_S = config.WAKE_WINDOW_S
 SILENCIO_VENTANAS = 4      # 4 ventanas de silencio (~10 s) para el ruido
 INTENTOS = 5

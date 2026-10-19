@@ -40,10 +40,12 @@ from typing import Callable, Optional
 
 import numpy as np
 
+import rutas
+
 SR = 16000
 BLOQUE = 512                      # muestras por bloque: lo que Silero pide a 16 kHz
 MS_BLOQUE = BLOQUE * 1000 / SR    # 32 ms
-MODELO_DEFAULT = os.path.join(os.path.dirname(__file__), 'models', 'silero_vad_v6.2.onnx')
+MODELO_DEFAULT = os.path.join(rutas.MODELOS_DIR, 'silero_vad_v6.2.onnx')
 
 UMBRAL_VOZ = 0.5          # prob. de Silero para empezar a contar voz
 UMBRAL_SILENCIO = 0.35    # por debajo, silencio (histéresis recomendada por Silero)

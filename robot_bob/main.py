@@ -53,6 +53,7 @@ COLOR_STATE = {
 }
 
 # ── Imports de módulos robot_bob ───────────────────────────────────────────────
+import rutas
 from serial_manager import SerialManager
 from state_machine  import StateMachine, RobotState
 from facial_tracker import FacialTracker, PAN_HOME, TILT_HOME, ZONA_MUERTA_X, ZONA_MUERTA_Y
@@ -121,8 +122,7 @@ def main() -> None:
     if USE_ROBOT_MIC or USE_ROBOT_SPEAKER:
         try:
             # Cargar AudioIO desde shared/voicechatLap
-            sys.path.append(os.path.abspath(
-                os.path.join(os.path.dirname(__file__), '..', 'shared', 'voicechatLap')))
+            sys.path.append(rutas.VOICECHAT_DIR)
             from audio_io import AudioIO
             print(f'[audio] Conectando al ESP32 audio TCP...')
             audio_io = AudioIO()

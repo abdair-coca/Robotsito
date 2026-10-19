@@ -19,7 +19,9 @@ import wave
 
 import numpy as np
 
-_MODELO_DEFAULT = os.path.join(os.path.dirname(__file__), 'models', 'voxceleb_resnet34_LM.onnx')
+import rutas
+
+_MODELO_DEFAULT = os.path.join(rutas.MODELOS_DIR, 'voxceleb_resnet34_LM.onnx')
 try:
     from config import VOICE_ID_MODEL as _MODELO
 except Exception:

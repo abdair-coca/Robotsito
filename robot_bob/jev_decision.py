@@ -27,10 +27,12 @@ from typesafe_sdk import Choice, RetryPolicy, TypeSafeClient
 
 from config import JEV_MODEL, JEV_TIMEOUT_S, TYPESAFE_API_KEY
 
+import rutas
+
 EMOCION_RESPALDO = "CURIOSO"
 
 # J4: una línea JSON por decisión. Las pruebas la cambian a un archivo temporal.
-LOG_DECISIONES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "decisiones.jsonl")
+LOG_DECISIONES = os.path.join(rutas.LOGS_DIR, "decisiones.jsonl")
 _registro_lock = threading.Lock()
 
 RUTAS = {

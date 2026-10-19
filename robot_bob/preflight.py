@@ -15,6 +15,7 @@ import time
 import urllib.request
 
 import config   # al importar aplica discovery.devices.json a las IPs
+import rutas
 
 TIMEOUT = 3.0
 SERIE_LISTADO = config.PUERTO_SERIAL
@@ -39,7 +40,7 @@ def ip_local_hacia(ip: str) -> str:
 
 def check_red() -> None:
     try:
-        with open(os.path.join(os.path.dirname(__file__), "devices.json"), encoding="utf-8") as f:
+        with open(rutas.DEVICES_JSON, encoding="utf-8") as f:
             subred = json.load(f)["subnet"]
         local = ip_local_hacia(config.IP_ESPCAM)
         ok = local.startswith(subred + ".")

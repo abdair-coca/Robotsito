@@ -41,6 +41,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Optional, Set
 
+import rutas
+
 # La consola de Windows suele venir en cp1252; forzamos UTF-8 para que →/—/í no
 # salgan como '?'. Mismo truco que main.py. Silencioso si la consola no deja.
 try:
@@ -91,7 +93,7 @@ ESPRESSIF_OUI: Set[str] = {
     "F4:CF:A2", "F8:B3:B7", "FC:F5:C4",
 }
 
-CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "devices.json")
+CACHE_PATH = rutas.DEVICES_JSON
 
 # Roles que esperamos resolver y a qué clave de config mapean.
 ROLE_CONFIG_KEY = {

@@ -38,11 +38,13 @@ from scipy.signal import butter, sosfilt
 from groq import Groq
 from rich.console import Console
 
+import rutas
+
 # voicechatLap se appendea (no se inserta al frente) para que robot_bob/config.py
 # tenga prioridad sobre voicechatLap/config.py al hacer `from config import ...`.
 # Esto deja que Abdair edite robot_bob/config.py como la única fuente de verdad
 # y que wake_word.py y audio_io.py sigan siendo importables.
-_VOICECHAT_DIR = os.path.join(os.path.dirname(__file__), '..', 'shared', 'voicechatLap')
+_VOICECHAT_DIR = rutas.VOICECHAT_DIR
 if _VOICECHAT_DIR not in sys.path:
     sys.path.append(os.path.abspath(_VOICECHAT_DIR))
 
