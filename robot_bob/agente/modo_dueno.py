@@ -40,7 +40,7 @@ import re
 import time
 from typing import Optional, Tuple
 
-import busqueda
+from asistente import busqueda
 from rich.markup import escape
 
 try:
@@ -282,7 +282,7 @@ def detectar(texto: str) -> Optional[Tuple[str, dict]]:
         return 'ingeniero', {}
     m = _RE_PRESENTAR.search(texto or '')
     if m:
-        from voice_pipeline import _NO_NOMBRE
+        from voz.pipeline import _NO_NOMBRE
         nombre = m.group(1)
         if nombre.lower() not in _NO_NOMBRE | _NO_NOMBRE_PRESENTAR:
             return 'presentar', {'nombre': nombre.capitalize()}
@@ -301,7 +301,7 @@ RECHAZOS = [
 
 def verificar(vp, analisis) -> str:
     """'si' | 'no' | 'corta' | 'sin_perfil' según la voz del turno."""
-    from voice_pipeline import DUENO_ID, VOZ_ID_MIN_S, VOZ_MIN_MUESTRAS, VOZ_UMBRAL
+    from voz.pipeline import DUENO_ID, VOZ_ID_MIN_S, VOZ_MIN_MUESTRAS, VOZ_UMBRAL
     emb, seg = analisis if analisis else (None, 0.0)
     if emb is None or seg < VOZ_ID_MIN_S:
         return 'corta'
@@ -319,7 +319,7 @@ def _decir(vp, texto: str, emo: str) -> None:
 
 
 def _nombre_dueno(vp) -> str:
-    from voice_pipeline import DUENO_ID
+    from voz.pipeline import DUENO_ID
     p = vp._memoria.persona(DUENO_ID)
     return p[1] if p and p[1] else 'mi creador'
 
@@ -333,7 +333,7 @@ def atender(vp, texto: str, analisis) -> bool:
     if cmd is None:
         return False
     nombre_cmd, args = cmd
-    from voice_pipeline import console
+    from voz.pipeline import console
     if nombre_cmd == 'salir_ingeniero':      # bajar de modo no necesita la voz del dueño
         salir_ingeniero(vp, avisar=True)
         return True
@@ -378,7 +378,7 @@ NOTA_VOZ = ('\n\nLo que te dice Abdair llega por reconocimiento de voz y puede t
 
 
 def _prompt_ingeniero(vp) -> str:
-    from voice_pipeline import DUENO_ID
+    from voz.pipeline import DUENO_ID
     contexto = vp._memoria.contexto(DUENO_ID) if vp._memoria is not None else ''
     return MODO_INGENIERO_PROMPT + NOTA_VOZ + (f'\n\n═══ LO QUE SABES DE ABDAIR ═══\n{contexto}'
                                                if contexto else '')
@@ -388,7 +388,7 @@ def _crear_sesion_ingeniero(vp):
     """Sesión de Claude Code del modo ingeniero. Buscar en internet lo hace el pipeline
     de busqueda.py (fase S). Con APPINGLES_DIR, lee esa carpeta (fase B1); sin ella no
     tiene herramientas. Escribir y ejecutar irán en la sesión de escritura (fase B3)."""
-    import claude_code
+    from agente import claude_code
     if not APPINGLES_DIR:
         return claude_code.SesionClaude(_prompt_ingeniero(vp) + _REGLAS_FIJAS,
                                         modelo=CLAUDE_MODELO, nombre='ingeniero')
@@ -428,7 +428,7 @@ def _aprobar_escritura():
     """Decisor de los permisos de la sesión de escritura (B3, B4). Sin voz: Edit y Write
     dentro de AppInglés se permiten; Bash se permite salvo que caiga en un bloqueo de B-D3
     (B-D9). Cualquier otra herramienta se niega. Queda en la terminal."""
-    from voice_pipeline import console
+    from voz.pipeline import console
 
     def aprobar(herramienta: str, entrada: dict) -> bool:
         if herramienta in ACCION_ESCRITURA:
@@ -449,8 +449,8 @@ def _sesion_escritura(vp):
     """Sesión de escritura (B3): Read, Glob, Grep, Edit y Write con cwd en AppInglés. Existe
     mientras dura el modo ingeniero, que el dueño activó por voz. Los turnos con contenido
     de internet no la usan (ver responder_ingeniero)."""
-    import claude_code
-    from voice_pipeline import console
+    from agente import claude_code
+    from voz.pipeline import console
     sesion = getattr(vp, '_sesion_esc', None)
     if sesion is None:
         sesion = claude_code.SesionClaude(
@@ -466,14 +466,14 @@ def _sesion_escritura(vp):
 
 def _puede_escribir(vp) -> bool:
     """Carpeta existente y Claude Code disponible. El dueño ya fue verificado al activar."""
-    import claude_code
+    from agente import claude_code
     return bool(APPINGLES_DIR and os.path.isdir(APPINGLES_DIR)
                 and MOTOR_INGENIERO == 'claude' and claude_code.disponible())
 
 
 def entrar_ingeniero(vp) -> None:
-    from voice_pipeline import console
-    import claude_code
+    from voz.pipeline import console
+    from agente import claude_code
     if getattr(vp, '_modo_ingeniero', False):
         _decir(vp, 'Ya estamos en modo ingeniero. ¿En qué seguimos?', 'CURIOSO')
         return
@@ -488,7 +488,7 @@ def entrar_ingeniero(vp) -> None:
 
 
 def salir_ingeniero(vp, avisar: bool = False) -> None:
-    from voice_pipeline import console
+    from voz.pipeline import console
     if not getattr(vp, '_modo_ingeniero', False):
         if avisar:
             _decir(vp, 'No estaba en modo ingeniero.', 'CONFUNDIDO')
@@ -516,7 +516,7 @@ def ajustes_ingeniero(vp, motor: Optional[str] = None):
     sesion = getattr(vp, '_sesion_ing', None)
     if sesion is not None and motor != 'groq':
         return {'sesion': sesion, 'max_frases': ING_MAX_FRASES}
-    from voice_pipeline import GROQ_LLM_MODEL
+    from voz.pipeline import GROQ_LLM_MODEL
     extra = {'reasoning_effort': 'low'} if GROQ_LLM_MODEL.startswith('openai/gpt-oss-') else {}
     return {'llm': vp._client, 'modelo': GROQ_LLM_MODEL, 'extra': extra,
             'max_tokens': ING_MAX_TOKENS, 'max_frases': ING_MAX_FRASES,
@@ -548,7 +548,7 @@ def responder_claude(vp, texto: str, sesion, nota: str = ''):
     """Un turno del modo ingeniero con Claude Code, sin herramientas. Devuelve las frases a
     decir, o None si Claude Code no respondió (el turno sigue con Groq). `nota` es una
     instrucción para este turno, p. ej. que no pudo buscar."""
-    from voice_pipeline import _contexto_asistente_turno, console
+    from voz.pipeline import _contexto_asistente_turno, console
     notas = [n for n in (
         (getattr(vp, '_marca_voz', '') or '').strip(' \n[]'),
         _contexto_asistente_turno(texto, getattr(vp, '_ruta_turno', None)).strip(),
@@ -578,7 +578,7 @@ def _buscar_para(consultas):
 
 def _mostrar_fuentes(consultas, fuentes) -> None:
     """Terminal: las consultas y cada fuente con su enlace, para ver de dónde sale la respuesta."""
-    from voice_pipeline import console
+    from voz.pipeline import console
     console.print(f'[bold cyan][búsqueda][/] consultas: {escape(" | ".join(consultas))}')
     for i, f in enumerate(fuentes, 1):
         fecha = f' · {f["fecha"]}' if f.get('fecha') else ''
@@ -590,7 +590,7 @@ def _mostrar_fuentes(consultas, fuentes) -> None:
 def _responder_con_fuentes(vp, texto: str, consultas, sesion):
     """Generador de frases: busca, rankea y responde citando [n], en streaming. Si no hay
     fuentes o algo falla, lo dice Claude (sin herramientas) con esa nota."""
-    from voice_pipeline import console
+    from voz.pipeline import console
     fuentes = _buscar_para(consultas)
     if fuentes is None:
         nota = 'No pude buscar en internet ahora: dilo y responde con lo que sabes.'
@@ -650,8 +650,8 @@ def responder_ingeniero(vp, texto: str, sesion):
 
 
 def _sesion_web(vp):
-    import claude_code
-    from voice_pipeline import console
+    from agente import claude_code
+    from voz.pipeline import console
     sesion = getattr(vp, '_sesion_web', None)
     if sesion is None:
         args = ['-y', PLAYWRIGHT_MCP, '--isolated',
@@ -671,8 +671,8 @@ def web(vp, tarea: str) -> None:
     """Tarea en el navegador (Playwright), sin pedir confirmación: la voz del dueño ya se
     verificó en el comando. El navegador queda abierto hasta salir del modo ingeniero; el
     resultado se dice, se muestra en la terminal y queda de contexto."""
-    import claude_code
-    from voice_pipeline import console
+    from agente import claude_code
+    from voz.pipeline import console
     if not AGENTE_WEB_ENABLED:
         _decir(vp, 'Todavía no tengo activado el navegador.', 'CONFUNDIDO')
         return
@@ -726,7 +726,7 @@ _RE_VINETA = re.compile(r'^\s*(?:[-*•·]+|\d+[.)-])\s*')
 
 def _resumir_noticias(vp, titulares):
     """Líneas para decir, redactadas por el modelo de la nube, o None si falla."""
-    from voice_pipeline import GROQ_LLM_MODEL, console
+    from voz.pipeline import GROQ_LLM_MODEL, console
     lista = '\n'.join(f'{i}. {t}' for i, t in enumerate(titulares, 1))
     extra = {'reasoning_effort': 'low'} if GROQ_LLM_MODEL.startswith('openai/gpt-oss-') else {}
     try:
@@ -754,8 +754,8 @@ def _leer_titulares(titulares):
 
 
 def noticias_tech(vp) -> None:
-    from assistant import obtener_noticias
-    from voice_pipeline import console
+    from asistente.assistant import obtener_noticias
+    from voz.pipeline import console
     _decir(vp, 'Déjame revisar qué pasó hoy en el mundo de la tecnología...', 'PENSANDO')
     titulares = obtener_noticias(NOTICIAS_TECH_MAX, url=NOTICIAS_TECH_RSS_URL)
     if not titulares:
@@ -795,7 +795,7 @@ def _cara_delante(vp):
 def presentar(vp, nombre: str) -> None:
     """Guarda (o reconoce) a la persona que está frente a la cámara con ese
     nombre y la saluda. La charla sigue con esa persona."""
-    from voice_pipeline import DUENO_ID, console
+    from voz.pipeline import DUENO_ID, console
     mem = vp._memoria
     emb, edad = _cara_delante(vp)
     if emb is None:

@@ -28,7 +28,7 @@ cv2.setNumThreads(1)
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from facial_tracker import LectorStream
+from vision.facial_tracker import LectorStream
 
 from config import URL_STREAM   # IP de la CAM desde devices.json (discovery), no fija
 

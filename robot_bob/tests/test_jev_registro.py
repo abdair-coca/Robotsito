@@ -16,8 +16,8 @@ import threading
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import jev_decision as jd   # noqa: E402
-from jev_decision import Decision   # noqa: E402
+from voz import jev_decision as jd   # noqa: E402
+from voz.jev_decision import Decision   # noqa: E402
 
 fallos = 0
 

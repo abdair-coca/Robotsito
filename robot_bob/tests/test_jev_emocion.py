@@ -14,8 +14,8 @@ import types
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import voice_pipeline as vp   # noqa: E402
-from jev_decision import Decision, EMOCION_RESPALDO   # noqa: E402
+from voz import pipeline as vp   # noqa: E402
+from voz.jev_decision import Decision, EMOCION_RESPALDO   # noqa: E402
 
 fallos = 0
 

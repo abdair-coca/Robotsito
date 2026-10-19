@@ -24,8 +24,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import audio_engine as ae   # noqa: E402
-import stt                  # noqa: E402
+from voz import audio_engine as ae   # noqa: E402
+from voz import stt                  # noqa: E402
 
 fallos = 0
 SR = ae.SR
@@ -170,8 +170,8 @@ def main() -> None:
     check('unir: sin vacíos ni palabra de fin', stt.unir_dictado(['Hola.', '', 'Mundo.', 'Listo.']) == 'Hola. Mundo.')
 
     # 7) VoicePipeline: dictado en modo ingeniero, texto unido sin pedirlo otra vez
-    import voice_pipeline as vp
-    import modo_dueno as md
+    from voz import pipeline as vp
+    from agente import modo_dueno as md
 
     class FakeSM:
         mood = 0.0

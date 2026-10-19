@@ -21,7 +21,7 @@ run_show(vp) recibe el VoicePipeline en curso y usa sus piezas
 import re
 import time
 
-from assistant import hora_actual, obtener_clima
+from asistente.assistant import hora_actual, obtener_clima
 from config import MUSICA_ENABLED
 
 # Canción del cierre (query de búsqueda en Spotify). Editable en config.py.
@@ -184,7 +184,7 @@ def _cierre_musical(vp, hablar, ojos) -> bool:
         hablar('Hoy vine sin mi Spotify... pero decime «Bob» y charlamos '
                'igual. ¡Gracias!', 'FELIZ')
         return False
-    from music import MusicIntent, ejecutar
+    from asistente.music import MusicIntent, ejecutar
     ack = ejecutar(MusicIntent(accion='play', query=SHOW_CANCION))
     if 'Poniendo' in ack:        # frase de éxito de music.ejecutar
         ojos('MUY_FELIZ')

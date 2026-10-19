@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import llm_router as lr   # noqa: E402
+from llm import llm_router as lr   # noqa: E402
 
 fallos = 0
 

@@ -23,9 +23,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 cv2.setNumThreads(1)
 
 from config import URL_STREAM
-from facial_tracker import LectorStream
-from face_id import FaceID
-from memory import Memoria
+from vision.facial_tracker import LectorStream
+from vision.face_id import FaceID
+from memoria.memory import Memoria
 
 
 def main() -> None:

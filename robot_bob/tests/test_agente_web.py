@@ -17,9 +17,9 @@ import numpy as np
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import voice_pipeline as vp   # noqa: E402
-import modo_dueno as md       # noqa: E402
-import claude_code            # noqa: E402
+from voz import pipeline as vp   # noqa: E402
+from agente import modo_dueno as md       # noqa: E402
+from agente import claude_code            # noqa: E402
 
 fallos = 0
 

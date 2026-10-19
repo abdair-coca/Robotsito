@@ -20,7 +20,7 @@ import time
 # Agregar el directorio padre al path para importar robot_bob
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from serial_manager import SerialManager
+from hardware.serial_manager import SerialManager
 
 PUERTO = 'COM3'
 BAUD   = 115200

@@ -16,7 +16,7 @@ import tempfile
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import claude_code   # noqa: E402
+from agente import claude_code   # noqa: E402
 
 fallos = 0
 

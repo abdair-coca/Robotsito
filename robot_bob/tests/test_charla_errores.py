@@ -15,8 +15,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import stt                # noqa: E402
-import voice_pipeline as vp   # noqa: E402
+from voz import stt                # noqa: E402
+from voz import pipeline as vp   # noqa: E402
 
 fallos = 0
 
@@ -129,9 +129,9 @@ def e_a() -> None:
 
 
 def e_b() -> None:
-    import music
-    import modo_dueno as md
-    from jev_decision import Decision
+    from asistente import music
+    from agente import modo_dueno as md
+    from voz.jev_decision import Decision
     print('\n== E-B: comandos de música y modo ingeniero ==')
     music.MUSICA_ENABLED = True
     vp.MUSICA_ENABLED = True
@@ -259,7 +259,7 @@ def e_c() -> None:
           salida == [vp.FRASE_SIN_ACCION] and 'carpeta' not in ' '.join(salida), f'-> {salida}')
 
     # 3b) En modo ingeniero, Claude Code sí tiene herramientas: su frase real no se cambia
-    import modo_dueno as md_ing
+    from agente import modo_dueno as md_ing
     ing_antes, resp_antes = md_ing.ajustes_ingeniero, md_ing.responder_ingeniero
     real = 'Ya abrí en tu navegador la documentación de Vite, Abdair.'
     md_ing.ajustes_ingeniero = lambda vp_, motor=None: {'sesion': object()}

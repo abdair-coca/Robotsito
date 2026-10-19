@@ -18,8 +18,8 @@ import numpy as np
 _BOB = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, _BOB)
 
-import voice_pipeline as vp   # noqa: E402
-import modo_dueno as md       # noqa: E402
+from voz import pipeline as vp   # noqa: E402
+from agente import modo_dueno as md       # noqa: E402
 md.APPINGLES_DIR = ''         # estas pruebas miden el flujo de Claude sin sesión de escritura (B3)
 
 fallos = 0
@@ -129,7 +129,7 @@ class FakeSesion:
 
 def probar_claude() -> None:
     """Modo ingeniero con Claude Code (Pro): sesión, limpieza, contexto y respaldo."""
-    import claude_code
+    from agente import claude_code
     original_sesion, original_disp = claude_code.SesionClaude, claude_code.disponible
     creadas = []
 

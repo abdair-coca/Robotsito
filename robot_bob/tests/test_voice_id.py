@@ -18,7 +18,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from voice_id import VoiceID, SR   # noqa: E402
+from voz.voice_id import VoiceID, SR   # noqa: E402
 
 DIR_WAV  = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'exp_voz'))
 OBJETIVO = 'abdair'

@@ -24,9 +24,9 @@ import time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from serial_manager import SerialManager
-from state_machine  import StateMachine, RobotState
-from voice_pipeline import VoicePipeline
+from hardware.serial_manager import SerialManager
+from nucleo.state_machine  import StateMachine, RobotState
+from voz.pipeline import VoicePipeline
 
 PUERTO = 'COM3'
 BAUD   = 115200

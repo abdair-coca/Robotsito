@@ -52,7 +52,7 @@ def check_red() -> None:
 def check_placas() -> None:
     """Escaneo completo con discovery.py (guarda devices.json) y aplica las IPs
     a config con la misma función que usa el arranque del robot."""
-    import discovery
+    from hardware import discovery
     antes = {"IP_ESPCAM": config.IP_ESPCAM, "CONTROL_IP": config.CONTROL_IP}
     print("[placas] escaneando la red (puede tardar unos segundos)...", flush=True)
     try:
@@ -100,7 +100,7 @@ def check_com3() -> None:
 def check_microfono() -> None:
     import numpy as np
     import sounddevice as sd
-    from voice_pipeline import _mic_device, _LAP_SAMPLE_RATE
+    from voz.pipeline import _mic_device, _LAP_SAMPLE_RATE
     try:
         dispositivo = _mic_device()
         bloques = []

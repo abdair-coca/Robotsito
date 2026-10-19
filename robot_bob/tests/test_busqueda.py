@@ -16,7 +16,7 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import busqueda  # noqa: E402
+from asistente import busqueda  # noqa: E402
 
 fallos = 0
 

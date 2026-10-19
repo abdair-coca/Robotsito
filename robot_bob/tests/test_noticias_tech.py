@@ -20,9 +20,9 @@ import numpy as np
 _BOB = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, _BOB)
 
-import assistant              # noqa: E402
-import voice_pipeline as vp   # noqa: E402
-import modo_dueno as md       # noqa: E402
+from asistente import assistant              # noqa: E402
+from voz import pipeline as vp   # noqa: E402
+from agente import modo_dueno as md       # noqa: E402
 
 fallos = 0
 TITULARES = ['Tesla presenta el nuevo Roadster', 'China toma ventaja en robots humanoides',

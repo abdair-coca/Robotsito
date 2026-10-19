@@ -16,7 +16,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import music as M
+from asistente import music as M
 
 # Forzar la feature ON para testear el parser aunque no haya credenciales en .env.
 M.MUSICA_ENABLED = True

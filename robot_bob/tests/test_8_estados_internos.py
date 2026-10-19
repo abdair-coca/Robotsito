@@ -17,7 +17,7 @@ import time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from state_machine import StateMachine, RobotState
+from nucleo.state_machine import StateMachine, RobotState
 
 
 class DummySerial:

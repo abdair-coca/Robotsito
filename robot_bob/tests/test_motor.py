@@ -21,7 +21,7 @@ import time
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from config import PUERTO_SERIAL, BAUD_RATE
-from serial_manager import SerialManager
+from hardware.serial_manager import SerialManager
 
 try:
     import msvcrt   # lectura de teclas no bloqueante (Windows)

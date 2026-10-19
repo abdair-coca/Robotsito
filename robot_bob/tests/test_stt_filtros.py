@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import stt   # noqa: E402
+from voz import stt   # noqa: E402
 
 fallos = 0
 
@@ -122,7 +122,7 @@ def main() -> None:
     check('prompt sin contexto', stt.armar_prompt('Base.', '', '') == 'Base.')
 
     # 9) Integración en VoicePipeline._transcribir (cliente falso)
-    import voice_pipeline as vp
+    from voz import pipeline as vp
 
     class FakeSM:
         mood = 0.0

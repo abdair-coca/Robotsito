@@ -54,11 +54,11 @@ COLOR_STATE = {
 
 # ── Imports de módulos robot_bob ───────────────────────────────────────────────
 import rutas
-from serial_manager import SerialManager
-from state_machine  import StateMachine, RobotState
-from facial_tracker import FacialTracker, PAN_HOME, TILT_HOME, ZONA_MUERTA_X, ZONA_MUERTA_Y
-from voice_pipeline import VoicePipeline
-from behavior       import BehaviorEngine
+from hardware.serial_manager import SerialManager
+from nucleo.state_machine  import StateMachine, RobotState
+from vision.facial_tracker import FacialTracker, PAN_HOME, TILT_HOME, ZONA_MUERTA_X, ZONA_MUERTA_Y
+from voz.pipeline import VoicePipeline
+from nucleo.behavior       import BehaviorEngine
 try:
     from config import MEMORIA_ENABLED
 except Exception:
@@ -137,8 +137,8 @@ def main() -> None:
     face_id = memoria = None
     if MEMORIA_ENABLED:
         try:
-            from face_id import FaceID
-            from memory import Memoria
+            from vision.face_id import FaceID
+            from memoria.memory import Memoria
             face_id = FaceID()                  # carga InsightFace en hilo de fondo
             memoria = Memoria()
             print(f'[memoria] activa. Personas en la base: {memoria.total_personas()}')
@@ -148,10 +148,10 @@ def main() -> None:
 
     # ── Voz del dueño (Fase V): solo si está activada y hay memoria ───────────
     voice_id = None
-    from voice_pipeline import VOZ_ID_ENABLED
+    from voz.pipeline import VOZ_ID_ENABLED
     if VOZ_ID_ENABLED and memoria is not None:
         try:
-            from voice_id import VoiceID
+            from voz.voice_id import VoiceID
             voice_id = VoiceID()                # carga el modelo en hilo de fondo
         except Exception as e:
             print(f'[voz] desactivada (no se pudo iniciar): {e}')

@@ -21,8 +21,8 @@ import numpy as np
 _BOB = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, _BOB)
 
-import voice_pipeline as vp   # noqa: E402
-from memory import Memoria    # noqa: E402
+from voz import pipeline as vp   # noqa: E402
+from memoria.memory import Memoria    # noqa: E402
 
 DIR_WAV = os.path.join(_BOB, 'exp_voz')
 fallos = 0
@@ -164,7 +164,7 @@ def main() -> None:
         abd = [r for r in rutas if os.path.basename(r).startswith('abdair_')]
         ajenas = [r for r in rutas if r not in abd]
         if len(abd) > 5 and ajenas:
-            from voice_id import VoiceID
+            from voz.voice_id import VoiceID
             mem4 = Memoria(os.path.join(tmp, 'm4.db'))
             d4 = mem4.registrar('Abdair', None)
             v = construir(mem4, VoiceID(en_fondo=False), d4, 0.8)

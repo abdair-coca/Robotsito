@@ -37,12 +37,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(_AQUI, '..')))                  
 
 # Forzar parlante del ESP32 ANTES de usar el pipeline (la bandera se lee como
 # global del módulo en _reproducir_mp3). Así no hay que editar config.py.
-import voice_pipeline
+from voz import pipeline as voice_pipeline
 voice_pipeline.USE_ROBOT_SPEAKER = True
 
-from serial_manager import SerialManager
-from state_machine  import StateMachine, RobotState
-from voice_pipeline import VoicePipeline
+from hardware.serial_manager import SerialManager
+from nucleo.state_machine  import StateMachine, RobotState
+from voz.pipeline import VoicePipeline
 from audio_io       import AudioIO
 from config         import ESP32_IP, PORT_MIC, PORT_SPK
 

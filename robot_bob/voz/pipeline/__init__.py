@@ -252,25 +252,25 @@ try:
 except Exception:
     RECORDATORIOS_ENABLED = True
 from wake_word import WakeWordDetector
-from assistant import contexto_asistente   # P9: hora/fecha/clima por inyección
+from asistente.assistant import contexto_asistente   # P9: hora/fecha/clima por inyección
 try:
     from config import MUSICA_ENABLED
 except Exception:
     MUSICA_ENABLED = False
-from music import (parse_music_command, ejecutar as ejecutar_musica,  # P6: Spotify
+from asistente.music import (parse_music_command, ejecutar as ejecutar_musica,  # P6: Spotify
                    esta_sonando as sonando_musica,                    # baile
                    intent_desde_jev,                                  # J4: acción por JEV
                    MusicIntent, tema_de)                              # E-B: "¿qué canción?"
 # E-B: respuesta de "no" a "¿qué canción quieres que ponga?"
 _RE_NO_MUSICA = re.compile(r'\b(?:no|cancela|cancelalo|olvidalo|olvídalo|mejor no)\b', re.IGNORECASE)
-from show import es_comando_show, run_show     # modo presentación ("presentate")
-import modo_dueno                               # V5: comandos solo para la voz del dueño
-import stt                                      # R1: filtros de alucinación de Whisper
-from llm_router import RouterLLM, Backend       # R1: rotación de LLM por cupo
-import audio_engine                             # R2: micrófono continuo + Silero VAD
-from reminders import parse_recordatorio, ReminderStore   # P9: recordatorios
-from jev_decision import decidir, EMOCION_RESPALDO   # J2: ruta del turno; J3: emoción
-from expression_engine import (
+from nucleo.show import es_comando_show, run_show     # modo presentación ("presentate")
+from agente import modo_dueno                               # V5: comandos solo para la voz del dueño
+from voz import stt                                      # R1: filtros de alucinación de Whisper
+from llm.llm_router import RouterLLM, Backend       # R1: rotación de LLM por cupo
+from voz import audio_engine                             # R2: micrófono continuo + Silero VAD
+from asistente.reminders import parse_recordatorio, ReminderStore   # P9: recordatorios
+from voz.jev_decision import decidir, EMOCION_RESPALDO   # J2: ruta del turno; J3: emoción
+from nucleo.expression_engine import (
     pulse_emotion, react_to_user_text,
     mood_delta_for_user_text, is_love,
     EMO_WAKE_DETECTED, EMO_GREETING_PLAYED, EMO_AUTO_OPENER,
@@ -2523,7 +2523,7 @@ class VoicePipeline:
                 self.decir_soliloquio(frase)
 
     def _soliloquio_loop(self) -> None:
-        from state_machine import RobotState
+        from nucleo.state_machine import RobotState
         t_ultimo = 0.0
         cooldown = SOLILOQUIO_COOLDOWN_S
         carnadas = 0                      # frases-carnada disparadas en esta presencia
@@ -2613,7 +2613,7 @@ class VoicePipeline:
 
     def _restaurar_oled(self) -> None:
         """Devuelve el OLED al look del estado actual tras un soliloquio."""
-        from state_machine import RobotState, _OLED_STATE
+        from nucleo.state_machine import RobotState, _OLED_STATE
         est = self._sm.estado
         # En PRESENCE el FacialTracker manda SIGUIENDO; no lo pisamos.
         if est == RobotState.PRESENCE:
@@ -2623,7 +2623,7 @@ class VoicePipeline:
             self._serial.cmd_estado(cmd)
 
     def _wake_monitor_loop(self) -> None:
-        from state_machine import RobotState
+        from nucleo.state_machine import RobotState
         # J3: sin "Bob", cada frase oída en reposo va a JEV, que decide si le habla.
         escucha_libre = JEV_SIN_WAKE and JEV_ROUTING_ENABLED
         while not self._detener.is_set():

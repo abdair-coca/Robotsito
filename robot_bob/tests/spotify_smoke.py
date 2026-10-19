@@ -18,7 +18,7 @@ import time
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import config           # noqa: F401
-import music
+from asistente import music
 
 
 def paso(intent: 'music.MusicIntent', espera: float) -> None:

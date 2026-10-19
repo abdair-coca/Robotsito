@@ -14,10 +14,10 @@ from contextlib import contextmanager
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import voice_pipeline  # noqa: E402,F401  (carga los módulos del pipeline igual que en producción)
-import claude_code     # noqa: E402
-import busqueda        # noqa: E402
-import modo_dueno as md  # noqa: E402
+from voz import pipeline as voice_pipeline  # noqa: E402,F401  (carga los módulos del pipeline igual que en producción)
+from agente import claude_code     # noqa: E402
+from asistente import busqueda        # noqa: E402
+from agente import modo_dueno as md  # noqa: E402
 md.APPINGLES_DIR = ''   # estas pruebas cubren búsqueda sin herramientas de archivo (B1 tiene su prueba)
 
 fallos = 0

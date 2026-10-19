@@ -17,7 +17,7 @@ import tempfile
 ROBOT_BOB = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, ROBOT_BOB)
 
-import modo_dueno   # noqa: E402
+from agente import modo_dueno   # noqa: E402
 
 fallos = 0
 

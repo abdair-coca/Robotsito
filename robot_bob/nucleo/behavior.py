@@ -25,9 +25,9 @@ import math
 import random
 import threading
 import time
-from state_machine import RobotState
-from expression_engine import random_mueca
-from facial_tracker import (
+from nucleo.state_machine import RobotState
+from nucleo.expression_engine import random_mueca
+from vision.facial_tracker import (
     PAN_MIN as _PAN_MIN, PAN_MAX as _PAN_MAX,
     TILT_MIN as _TILT_MIN, TILT_MAX as _TILT_MAX,
     GANANCIA_PAN, GANANCIA_TILT, SIGNO_PAN, SIGNO_TILT,

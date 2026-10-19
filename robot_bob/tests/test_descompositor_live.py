@@ -14,7 +14,7 @@ import time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import busqueda  # noqa: E402
+from asistente import busqueda  # noqa: E402
 
 CASOS = [
     ('¿Cuál es la noticia de tecnología más importante de hoy?', True),

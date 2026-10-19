@@ -31,7 +31,7 @@ import numpy as np
 
 import config
 import rutas
-import voice_pipeline as vp
+from voz import pipeline as vp
 
 RUTA_CONFIG = rutas.CONFIG_PY
 VENTANA_S = config.WAKE_WINDOW_S

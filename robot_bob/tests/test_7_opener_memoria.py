@@ -23,8 +23,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from openai import OpenAI
 from config import LLM_BACKEND, OLLAMA_BASE_URL, OLLAMA_MODEL, GROQ_LLM_MODEL, GROQ_API_KEY
-from memory import Memoria
-from voice_pipeline import VoicePipeline
+from memoria.memory import Memoria
+from voz.pipeline import VoicePipeline
 
 
 def _llm_de_config():

@@ -75,7 +75,7 @@ CONECTORES = {
 
 def frase_completa(texto: str) -> bool:
     """¿El texto adelantado parece una frase terminada?"""
-    from stt import palabras     # import tardío: stt no depende de este módulo
+    from voz.stt import palabras     # import tardío: stt no depende de este módulo
     t = (texto or '').strip()
     if not t:
         return True               # ruido: no hay nada que esperar
@@ -391,7 +391,7 @@ class Microfono:
 
     def _seguir_dictado(self, inicio: int, n: int, transcribir, max_s, pausa_fin_ms,
                         puede_tramo, contexto, cancelar) -> Optional[Frase]:
-        from stt import es_fin_dictado, unir_dictado
+        from voz.stt import es_fin_dictado, unir_dictado
         partes = []
         for k in range(inicio, n):
             b = self._bloque(k, cancelar)

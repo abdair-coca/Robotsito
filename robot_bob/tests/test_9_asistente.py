@@ -19,7 +19,7 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import assistant as A
+from asistente import assistant as A
 
 
 def main() -> None:
@@ -99,7 +99,7 @@ def main() -> None:
         print('  → None (sin red / no disponible — no es fallo)')
 
     # 5. Recordatorios (parse + store)
-    import reminders as R
+    from asistente import reminders as R
     import time as _t
     print('\n  --- recordatorios ---')
     base = datetime(2026, 6, 26, 14, 0, 0)   # 14:00 fijo

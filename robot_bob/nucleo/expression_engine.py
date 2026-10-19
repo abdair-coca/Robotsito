@@ -22,7 +22,7 @@ import threading
 import time
 from typing import Optional
 
-from state_machine import RobotState
+from nucleo.state_machine import RobotState
 
 # ── Mapeo: estado de la StateMachine → comando OLED por defecto ─────────────
 # Coincide con _OLED_STATE de state_machine.py — duplicado a propósito acá

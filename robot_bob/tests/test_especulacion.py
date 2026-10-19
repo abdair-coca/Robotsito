@@ -17,8 +17,8 @@ from types import SimpleNamespace as NS
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import voice_pipeline as vp          # noqa: E402
-from jev_decision import Decision    # noqa: E402
+from voz import pipeline as vp          # noqa: E402
+from voz.jev_decision import Decision    # noqa: E402
 
 fallos = 0
 JEV_S = 0.4

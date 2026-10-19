@@ -28,9 +28,9 @@ cv2.setNumThreads(1)
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from serial_manager import SerialManager
-from state_machine  import StateMachine, RobotState
-from facial_tracker import FacialTracker, PAN_HOME, TILT_HOME, ZONA_MUERTA_X, ZONA_MUERTA_Y
+from hardware.serial_manager import SerialManager
+from nucleo.state_machine  import StateMachine, RobotState
+from vision.facial_tracker import FacialTracker, PAN_HOME, TILT_HOME, ZONA_MUERTA_X, ZONA_MUERTA_Y
 
 PUERTO     = 'COM3'
 BAUD       = 115200

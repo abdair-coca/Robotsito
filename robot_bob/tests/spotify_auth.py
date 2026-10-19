@@ -20,7 +20,7 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import config           # noqa: F401  (carga el .env)
-import music
+from asistente import music
 
 
 def main() -> None:

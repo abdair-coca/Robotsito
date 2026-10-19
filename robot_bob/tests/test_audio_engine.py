@@ -23,8 +23,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import audio_engine as ae   # noqa: E402
-import stt                  # noqa: E402
+from voz import audio_engine as ae   # noqa: E402
+from voz import stt                  # noqa: E402
 
 fallos = 0
 SR = ae.SR
@@ -212,7 +212,7 @@ def main() -> None:
     check('cupo: se libera al pasar el minuto', cupo.usados() == 0)
 
     # 13) VoicePipeline: usa la transcripción adelantada (sin pedirla otra vez)
-    import voice_pipeline as vp
+    from voz import pipeline as vp
 
     class FakeSM:
         mood = 0.0

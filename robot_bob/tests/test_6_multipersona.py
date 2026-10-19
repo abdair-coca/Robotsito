@@ -28,10 +28,10 @@ import threading
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from serial_manager import SerialManager
-from state_machine  import StateMachine, RobotState
-from behavior       import BehaviorEngine
-from facial_tracker import (
+from hardware.serial_manager import SerialManager
+from nucleo.state_machine  import StateMachine, RobotState
+from nucleo.behavior       import BehaviorEngine
+from vision.facial_tracker import (
     PAN_MIN, PAN_MAX, TILT_MIN, TILT_MAX, PAN_HOME, TILT_HOME,
     SIGNO_PAN, SIGNO_TILT, GANANCIA_PAN, GANANCIA_TILT,
     ZONA_MUERTA_X, ZONA_MUERTA_Y,
