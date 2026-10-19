@@ -188,7 +188,7 @@ class SesionClaude:
             if permitido:
                 resp = {'behavior': 'allow', 'updatedInput': req.get('input') or {}}
             else:
-                resp = {'behavior': 'deny', 'message': 'El dueño no confirmó'}
+                resp = {'behavior': 'deny', 'message': 'Bob no permitió esta acción'}
         salida = {'type': 'control_response',
                   'response': {'subtype': 'success', 'request_id': ev.get('request_id'),
                                'response': resp}}

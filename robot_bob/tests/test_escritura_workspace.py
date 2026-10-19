@@ -77,7 +77,8 @@ try:
     decidir = modo_dueno._aprobar_escritura()
     check("decisor: Write se permite sin voz", decidir('Write', {'file_path': 'nota.txt'}) is True)
     check("decisor: Edit se permite sin voz", decidir('Edit', {'file_path': 'nota.txt'}) is True)
-    check("decisor: Bash se niega", decidir('Bash', {'command': 'dir'}) is False)
+    check("decisor: Bash corre sin pedir nada (B4; los bloqueos van en test_bash_workspace)",
+          decidir('Bash', {'command': 'dir'}) is True)
     check("decisor: WebSearch se niega", decidir('WebSearch', {'query': 'x'}) is False)
 
     # 2) Comando de la sesión de escritura
@@ -88,9 +89,9 @@ try:
     check("escritura: pide permiso al host (stdio, default)",
           valor(cmd, '--permission-prompt-tool') == 'stdio' and valor(cmd, '--permission-mode') == 'default')
     check("escritura: herramientas Read, Glob, Grep, Edit, Write",
-          valor(cmd, '--tools') == 'Read,Glob,Grep,Edit,Write', f"-> {valor(cmd, '--tools')}")
-    check("escritura: sin Bash ni WebSearch",
-          not {'Bash', 'WebSearch'} & set(valor(cmd, '--tools').split(',') + valor(cmd, '--allowedTools').split()))
+          valor(cmd, '--tools') == 'Read,Glob,Grep,Edit,Write,Bash', f"-> {valor(cmd, '--tools')}")
+    check("escritura: sin WebSearch",
+          'WebSearch' not in set(valor(cmd, '--tools').split(',') + valor(cmd, '--allowedTools').split()))
     check("escritura: solo lectura se aprueba sola", valor(cmd, '--allowedTools') == 'Read Glob Grep')
     check("escritura: .env bloqueado también para Edit y Write",
           {'Edit(**/.env)', 'Write(**/.env)'} <= set(valor(cmd, '--disallowedTools').split()))

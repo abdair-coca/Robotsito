@@ -118,16 +118,50 @@ LECTURA_PROHIBIDAS = ['Read(**/.env)', 'Read(**/.env.*)']
 LECTURA_PROMPT = (' Tienes Read, Glob y Grep sobre la carpeta de trabajo de AppInglés: '
                   'úsalas para contestar sobre sus archivos. Nunca leas ni cites .env ni claves.')
 
-# Escritura del modo ingeniero (fase B3, ajustada): la voz del dueño se verifica al activar
-# el modo; durante el modo, Edit y Write se permiten dentro de AppInglés sin preguntar.
-# Sin Bash: eso es B4. Los turnos con contenido de internet no usan esta sesión.
-ESCRITURA_HERRAMIENTAS = 'Read,Glob,Grep,Edit,Write'
+# Escritura y Bash del modo ingeniero (fases B3 y B4, B-D8 y B-D9): la voz del dueño se
+# verifica al activar el modo; durante el modo, Edit, Write y Bash se permiten dentro de
+# AppInglés sin preguntar, salvo los bloqueos de B-D3. Los turnos con contenido de internet
+# no usan esta sesión.
+ESCRITURA_HERRAMIENTAS = 'Read,Glob,Grep,Edit,Write,Bash'
 ESCRITURA_PERMITIDAS = ['Read', 'Glob', 'Grep']
-ESCRITURA_PROHIBIDAS = LECTURA_PROHIBIDAS + ['Edit(**/.env)', 'Edit(**/.env.*)',
-                                             'Write(**/.env)', 'Write(**/.env.*)']
-ESCRITURA_PROMPT = (' Puedes leer, crear y editar archivos de la carpeta de trabajo de AppInglés. '
-                    'Nunca leas ni escribas .env ni claves.')
+# Comandos de lectura que Claude Code aprueba sin preguntar: no pasan por el host, así que
+# los bloqueos de B-D3 para ellos van como reglas del CLI (--disallowedTools). Lo que sí se
+# pregunta lo ve el host (_aprobar_escritura).
+_VERBOS_LECTURA_ENV = ['cat', 'type', 'more', 'less', 'head', 'tail', 'gc', 'Get-Content', 'sed',
+                       'awk', 'grep', 'Select-String', 'findstr', 'copy', 'cp', 'xcopy', 'Copy-Item',
+                       'move', 'mv']
+BASH_PROHIBIDAS_CLI = ([f'Bash({v} *.env*)' for v in _VERBOS_LECTURA_ENV] + [
+    'Bash(git push)', 'Bash(git push *)', 'Bash(git reset --hard)', 'Bash(git reset --hard *)',
+    'Bash(git clean)', 'Bash(git clean *)', 'Bash(git branch -D *)', 'Bash(git branch -d *)',
+    'Bash(pip install *)', 'Bash(pip3 install *)', 'Bash(curl)', 'Bash(curl *)',
+    'Bash(wget)', 'Bash(wget *)'])
+ESCRITURA_PROHIBIDAS = (LECTURA_PROHIBIDAS + ['Edit(**/.env)', 'Edit(**/.env.*)',
+                                              'Write(**/.env)', 'Write(**/.env.*)']
+                        + BASH_PROHIBIDAS_CLI)
+ESCRITURA_PROMPT = (' Puedes leer, crear y editar archivos y ejecutar comandos de shell dentro de la '
+                    'carpeta de trabajo de AppInglés. No hagas git push, no instales paquetes, no '
+                    'descargues nada, no cambies de carpeta y no leas ni escribas .env ni claves. '
+                    'Si un comando no se permite, dilo en una frase.')
 ACCION_ESCRITURA = {'Write': 'crear o reemplazar', 'Edit': 'editar'}
+# Bloqueos de B-D3 para Bash. Son por texto: un comando puede esconderlos. Se aplican en el
+# pedido de permiso de cada comando (Bash no está en --allowedTools).
+BASH_BLOQUEADOS = [re.compile(p, re.IGNORECASE) for p in (
+    r'\bgit\s+push\b',
+    r'\bgit\s+reset\s+--hard\b',
+    r'\bgit\s+clean\b',
+    r'\bgit\s+branch\s+-d\b',                      # -D y -d: se bloquean los dos
+    r'\.env\b',                                    # leer o copiar .env
+    r'\brm\b[^;&|]*\s-\w*r',                       # rm -rf, rm -r, rm -fr
+    r'\bremove-item\b.*-recurse',
+    r'\b(?:rmdir|rd|del)\b[^;&|]*\s/s\b',
+    r'\bpip3?\s+install\b',
+    r'\bpython\S*\s+-m\s+pip\s+install\b',
+    r'\b(?:curl|wget)\b',
+    r'\binvoke-(?:webrequest|restmethod)\b',
+)]
+# Cambiar de carpeta: solo dentro de AppInglés (B-D3).
+_RE_CAMBIO = re.compile(r'(?:^|[;&|]\s*)(cd|chdir|pushd|set-location|sl|push-location)\b([^;&|]*)',
+                        re.IGNORECASE)
 
 # Agente web (Playwright MCP). Versión fija: probada en la laptop el 2026-10-17.
 try:
@@ -343,17 +377,42 @@ def _crear_sesion_ingeniero(vp):
                                     cwd=os.path.join(claude_code.CWD_DEFAULT, 'lectura'))
 
 
+def _cambia_fuera(comando: str) -> bool:
+    """True si el comando cambia de carpeta fuera de AppInglés, o sin destino claro."""
+    base = os.path.normcase(os.path.abspath(APPINGLES_DIR)) if APPINGLES_DIR else None
+    for m in _RE_CAMBIO.finditer(comando):
+        destino = m.group(2).strip().strip('"\'')
+        if not destino or base is None or destino.startswith('~') or any(c in destino for c in '%$'):
+            return True                          # cd sin argumento, a la casa o por variable
+        ruta = os.path.normcase(os.path.abspath(os.path.join(APPINGLES_DIR, destino)))
+        if ruta != base and not ruta.startswith(base + os.sep):
+            return True
+    return False
+
+
+def es_bash_bloqueado(comando: str) -> bool:
+    """True si el comando cae en un bloqueo de B-D3 o intenta salir de AppInglés."""
+    texto = comando or ''
+    return any(p.search(texto) for p in BASH_BLOQUEADOS) or _cambia_fuera(texto)
+
+
 def _aprobar_escritura():
-    """Decisor de los permisos de escritura (B3, ajustado). La voz del dueño se verificó al
-    activar el modo ingeniero; después no se pregunta ni se verifica otra vez. Se permiten
-    Edit y Write dentro de AppInglés; cualquier otra herramienta se niega. Queda en la
-    terminal, no en la voz."""
+    """Decisor de los permisos de la sesión de escritura (B3, B4). Sin voz: Edit y Write
+    dentro de AppInglés se permiten; Bash se permite salvo que caiga en un bloqueo de B-D3
+    (B-D9). Cualquier otra herramienta se niega. Queda en la terminal."""
     from voice_pipeline import console
 
     def aprobar(herramienta: str, entrada: dict) -> bool:
-        permitido = herramienta in ACCION_ESCRITURA
-        nombre = os.path.basename(str(entrada.get('file_path') or '')) or '-'
-        console.print(f'[dueño] {herramienta} {nombre}: {"sí" if permitido else "no"}')
+        if herramienta in ACCION_ESCRITURA:
+            permitido = True
+            detalle = os.path.basename(str(entrada.get('file_path') or '')) or '-'
+        elif herramienta == 'Bash':
+            comando = str(entrada.get('command') or '')
+            permitido = not es_bash_bloqueado(comando)
+            detalle = comando[:100]
+        else:
+            permitido, detalle = False, ''
+        console.print(f'[dueño] {herramienta} {escape(detalle)}: {"sí" if permitido else "no"}')
         return permitido
     return aprobar
 
