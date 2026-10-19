@@ -328,7 +328,12 @@ def discover(subnet: Optional[str] = None, timeout: float = 0.3,
             if verbose:
                 print(f"[discovery] {host} -> {ip} (mDNS)")
 
-    save_cache(roles, subnet)
+    # Sin placas encontradas no se reemplaza el cache: las IPs anteriores siguen
+    # siendo la única pista si las placas vuelven a encenderse.
+    if roles:
+        save_cache(roles, subnet)
+    elif verbose:
+        print("[discovery] AVISO: ninguna placa respondió; devices.json no se modificó.")
     if verbose:
         print(f"[discovery] listo en {time.time()-t0:.1f}s — "
               f"{len(roles)}/3 roles resueltos. Cache: {CACHE_PATH}")
