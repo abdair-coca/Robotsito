@@ -120,7 +120,9 @@ def main() -> None:
         # 1) Detección: el navegador solo si se pide explícitamente; buscar va al pipeline
         for t in ('Bob, en el navegador busca el precio del ESP32-CAM',
                   'abre la página de wikipedia', 'entra a wikipedia.org',
-                  'haz clic en el primer resultado', 'navega a wikipedia.org'):
+                  'haz clic en el primer resultado', 'navega a wikipedia.org',
+                  'Quiero que abras el navegador y busques inspiración para la aplicación',
+                  'abre el navegador y busca ideas'):
             d = md.detectar(t)
             check(f'web: "{t}"', d is not None and d[0] == 'web', f'-> {d}')
         for t in ('Bob, busca en internet el precio del ESP32-CAM',

@@ -14,7 +14,8 @@ Comandos:
   "busca en internet …"    (dentro del modo ingeniero) búsqueda con Serper y respuesta
                            citada (busqueda.py). No abre el navegador.
   "en el navegador …"      (dentro del modo ingeniero) agente web: Claude Code con
-  / "abre la página de …"  Playwright MCP y navegador visible, solo si se pide
+  / "abre el navegador …"  Playwright MCP y navegador visible, solo si se pide
+  / "abre la página de …"
   / "entra a …"            explícitamente. Bob confirma en voz antes de empezar; lista
                            blanca de herramientas y tope de pasos. Apagado aparte:
                            AGENTE_WEB_ENABLED.
@@ -255,6 +256,7 @@ def _es_orden_sola(texto: str, orden: str) -> bool:
 # navegador …", "abre la página de …", "entra a wikipedia.org", "navega a …", "haz clic …".
 _RE_WEB = re.compile(
     r'\ben\s+(?:el\s+)?navegador\b'
+    r'|\babr\w*\s+(?:el\s+|un\s+|tu\s+|mi\s+)?navegador\b'
     r'|\b(?:navega(?:r|s)?\s+(?:a|hasta|por)|haz\s+clic|clic(?:k)?ea)\b'
     r'|\b(?:abre|abr[ií]me|entra\s+a)\s+'
     r'(?:la\s+(?:p[aá]gina|web)\s+(?:de\s+)?\w+|\S+\.(?:com|org|net|bo|es|io|dev|ai|edu)\b)',
