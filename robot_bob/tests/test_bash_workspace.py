@@ -102,6 +102,9 @@ try:
           'Bash(cat *.env*)' in reglas and 'Bash(type *.env*)' in reglas, f"-> {reglas[:120]}")
     check("sesión: reglas CLI para git push, pip install, curl",
           all(r in reglas for r in ('Bash(git push *)', 'Bash(pip install *)', 'Bash(curl *)')))
+    check("sesión: reglas CLI para lectura ampliada (xxd, base64, robocopy, Format-Hex, bat)",
+          all(r in reglas for r in ('Bash(xxd *.env*)', 'Bash(base64 *.env*)', 'Bash(robocopy *.env*)',
+                                    'Bash(Format-Hex *.env*)', 'Bash(bat *.env*)')))
 
     # 4) Protocolo: el host decide cada comando
     def correr(comando_bash):

@@ -127,9 +127,17 @@ ESCRITURA_PERMITIDAS = ['Read', 'Glob', 'Grep']
 # Comandos de lectura que Claude Code aprueba sin preguntar: no pasan por el host, así que
 # los bloqueos de B-D3 para ellos van como reglas del CLI (--disallowedTools). Lo que sí se
 # pregunta lo ve el host (_aprobar_escritura).
-_VERBOS_LECTURA_ENV = ['cat', 'type', 'more', 'less', 'head', 'tail', 'gc', 'Get-Content', 'sed',
-                       'awk', 'grep', 'Select-String', 'findstr', 'copy', 'cp', 'xcopy', 'Copy-Item',
-                       'move', 'mv']
+_VERBOS_LECTURA_ENV = [
+    # texto
+    'cat', 'type', 'more', 'less', 'head', 'tail', 'gc', 'Get-Content', 'nl', 'tac', 'rev', 'sort',
+    'uniq', 'cut', 'tr', 'column', 'wc', 'sed', 'awk', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'sls',
+    'Select-String', 'findstr', 'diff', 'comm', 'jq', 'bat', 'batcat', 'view', 'vi', 'vim', 'nano',
+    'code',
+    # binario y hexadecimal
+    'xxd', 'od', 'hexdump', 'hd', 'strings', 'base64', 'certutil', 'Format-Hex', 'file', 'stat', 'dd',
+    # copia y movimiento
+    'copy', 'cp', 'xcopy', 'robocopy', 'Copy-Item', 'move', 'mv', 'Move-Item',
+]
 BASH_PROHIBIDAS_CLI = ([f'Bash({v} *.env*)' for v in _VERBOS_LECTURA_ENV] + [
     'Bash(git push)', 'Bash(git push *)', 'Bash(git reset --hard)', 'Bash(git reset --hard *)',
     'Bash(git clean)', 'Bash(git clean *)', 'Bash(git branch -D *)', 'Bash(git branch -d *)',
