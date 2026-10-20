@@ -153,7 +153,11 @@ ESCRITURA_PROHIBIDAS = (LECTURA_PROHIBIDAS + ['Edit(**/.env)', 'Edit(**/.env.*)'
 ESCRITURA_PROMPT = (' Puedes leer, crear y editar archivos y ejecutar comandos de shell dentro de la '
                     'carpeta de trabajo de AppInglés. No hagas git push, no instales paquetes, no '
                     'descargues nada, no cambies de carpeta y no leas ni escribas .env ni claves. '
-                    'Si un comando no se permite, dilo en una frase.')
+                    'Para correr un script usa su ruta relativa a la carpeta de trabajo, con '
+                    'barras / (el shell es bash: la barra invertida se pierde) y sin opciones, '
+                    'por ejemplo: python src/app.py. '
+                    'Si un comando no se permite, dilo en una frase. Si un comando devuelve mucha '
+                    'salida, resúmela en una o dos frases; nunca la copies ni la leas completa.')
 ACCION_ESCRITURA = {'Write': 'crear o reemplazar', 'Edit': 'editar'}
 # Bloqueos de B-D3 para Bash. Son por texto: un comando puede esconderlos. Se aplican en el
 # pedido de permiso de cada comando (Bash no está en --allowedTools).
@@ -174,12 +178,16 @@ BASH_BLOQUEADOS = [re.compile(p, re.IGNORECASE) for p in (
 # Allowlist de Bash (B-D10): cada tramo de un comando encadenado (&&, ||, ;, |, &) debe empezar
 # por uno de estos. Lo que no esté aquí se niega, aunque no caiga en BASH_BLOQUEADOS.
 _VERBOS_BASH = r'(?:dir|ls|cat|type|more|head|tail|mkdir|md|rm|cd|chdir|pushd|set-location|sl|push-location)'
+# Ruta de un script, sin o con comillas (Claude usa la ruta absoluta entre comillas). Con comillas
+# se excluyen los caracteres que el shell expande o encadena.
+_RUTA_SCRIPT = r'''(?:[\w.\\/:-]+{ext}|"[^"$`%;&|<>]+{ext}"|'[^'$`%;&|<>]+{ext}')'''
 BASH_PERMITIDOS = [re.compile(p, re.IGNORECASE) for p in (
     rf'{_VERBOS_BASH}(?:\s|$)',
     r'git\s+(?:status|log|diff|show)(?:\s|$)',
-    r'(?:python3?|py)\s+[\w.\\/:-]+\.py(?:\s|$)',
+    # opciones sueltas que no ejecutan código (-I, -u...); -c y -m quedan fuera
+    r'(?:python3?|py)\s+(?:-[BEISsu]\s+)*' + _RUTA_SCRIPT.format(ext=r'\.py') + r'(?:\s|$)',
     r'node\s+(?:-v|--version)(?:\s|$)',
-    r'node\s+[\w.\\/:-]+\.m?js(?:\s|$)',
+    r'node\s+' + _RUTA_SCRIPT.format(ext=r'\.m?js') + r'(?:\s|$)',
     r'npm\s+(?:-v|--version|run|test|ls|list)(?:\s|$)',
 )]
 # Cambiar de carpeta: solo dentro de AppInglés (B-D3).
@@ -532,16 +540,26 @@ _RE_LINK_MD = re.compile(r'\[([^\]]*)\]\([^)]*\)')
 _RE_URL = re.compile(r'\(?https?://\S+\)?')
 _RE_MARKDOWN = re.compile(r'[*#`_>]+')
 _RE_FRASE = re.compile(r'(?<=[.!?…])\s+')
+# B5: una "frase" más larga es salida de un comando copiada tal cual (sin puntos, así que el
+# corte por puntuación no la parte). Nunca se lee entera.
+FRASE_MAX_CHARS = 240
+
+
+def _acortar(frase: str) -> str:
+    if len(frase) <= FRASE_MAX_CHARS:
+        return frase
+    return frase[:FRASE_MAX_CHARS].rsplit(' ', 1)[0].rstrip(' ,;:-') + '.'
 
 
 def frases_para_decir(texto: str, maximo: int):
-    """Texto de Claude → frases limpias para la voz, a lo sumo `maximo`."""
+    """Texto de Claude → frases limpias para la voz, a lo sumo `maximo` y de a lo sumo
+    FRASE_MAX_CHARS caracteres cada una."""
     texto = _RE_FUENTES.sub('', texto or '')
     texto = _RE_URL.sub('', _RE_LINK_MD.sub(r'\1', texto))
     texto = _RE_EMAIL.sub('ese dato', texto)
     texto = _RE_MARKDOWN.sub('', _RE_EMOJI.sub('', texto))
     frases = [f.strip() for f in _RE_FRASE.split(' '.join(texto.split())) if f.strip()]
-    return frases[:maximo]
+    return [_acortar(f) for f in frases[:maximo]]
 
 
 def responder_claude(vp, texto: str, sesion, nota: str = ''):

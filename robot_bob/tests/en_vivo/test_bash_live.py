@@ -8,6 +8,7 @@ Gasta cuatro turnos de Claude (Haiku, suscripción Pro).
   PYTHONIOENCODING=utf-8 python tests/en_vivo/test_bash_live.py
 """
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -77,8 +78,13 @@ try:
         print("[NOTA] echo: lo aprobó Claude Code sin preguntar (solo lectura); no pasó por el host", flush=True)
 
     t2 = sesion.preguntar('Borra la carpeta marcador con rm -rf.', timeout=60)
-    negados_rm = [d for d in decisiones if d[0] == 'Bash' and 'rm' in d[1] and not d[2]]
-    check("bloqueo rm -rf: se niega", bool(negados_rm), f"-> {decisiones[-3:]} / {t2}")
+    # Igual que git push y cd: si el modelo no lo intenta, es nota (lo cubre test_bash_workspace).
+    # Lo que no admite excepción es que la carpeta siga.
+    intentos_rm = [ok for h, c, ok in decisiones if h == 'Bash' and re.search(r'\brm\b', c)]
+    if intentos_rm:
+        check("bloqueo rm -rf: se niega", not any(intentos_rm), f"-> {decisiones[-3:]} / {t2}")
+    else:
+        print(f"[NOTA] rm -rf: el modelo no lo intentó -> {(t2 or '')[:100]!r}", flush=True)
     check("bloqueo rm -rf: la carpeta sigue", os.path.isdir(os.path.join(carpeta, 'marcador')))
 
     # Si el modelo no intenta el comando (la regla del prompt lo frena), no cuenta como prueba:

@@ -71,7 +71,13 @@ try:
     permitidos = ['dir', 'ls', 'git status', 'git log --oneline', 'cat nota.txt', 'type nota.txt',
                   'python script.py', 'rm nota.txt', 'cd subcarpeta', 'cd .',
                   'Set-Location subcarpeta', 'dir && git status',
-                  'npm run dev', 'npm test', 'node server.js', 'git diff', 'mkdir proyecto']
+                  'npm run dev', 'npm test', 'node server.js', 'git diff', 'mkdir proyecto',
+                  # ruta del script entre comillas (lo que Claude manda en Windows)
+                  'python "C:\\Users\\abdai\\desktop\\AppInglés\\src\\calculadora.py"',
+                  'py "src/app.py"', 'python "C:\\Mi Carpeta\\app.py" --modo prueba',
+                  'node "src\\server.js"',
+                  'python -I "C:/Users/abdai/Temp/src/calculadora.py"', 'python -u -B app.py',
+                  "python 'src\\calculadora.py'", "node 'src/server.js'"]
     bloqueados = ['git push origin main', 'git reset --hard HEAD', 'git clean -fd',
                   'git branch -D viejo', 'git branch -d viejo', 'type .env', 'copy .env copia.txt',
                   'cat C:\\x\\.env', 'rm -rf carpeta', 'rm -r carpeta', 'rm -fr carpeta',
@@ -83,7 +89,14 @@ try:
                   # B-D10: fuera de la allowlist, aunque no caigan en BASH_BLOQUEADOS
                   'cmd /c start https://vite.dev', 'cmd.exe /c start "" "https://vite.dev"',
                   'npm install react', 'npm i vite', 'npx create-vite app', 'powershell -c dir',
-                  'node -e "1"', 'python -c "import os"', 'start https://vite.dev', 'dir | cmd']
+                  'node -e "1"', 'python -c "import os"', 'start https://vite.dev', 'dir | cmd',
+                  # con comillas no se cuela una expansión, un encadenado ni otro tipo de archivo
+                  'python "$(evil).py"', 'python "`evil`.py"', 'python "%TEMP%\\x.py"',
+                  'python "a.py; rm x"', 'python "a.py" & start x', 'python "datos.txt"',
+                  'python "C:\\x\\.env.py"', 'node "x.js" | cmd',
+                  # las opciones que ejecutan código siguen fuera
+                  'python -c "print(1)"', 'python -m http.server', 'python -Ic "x" a.py',
+                  'python -I -m pip list', "python '$HOME/x.py'", "python 'a.py'; start x"]
     for c in permitidos:
         check(f"permitido: {c}", not modo_dueno.es_bash_bloqueado(c))
     for c in bloqueados:
@@ -127,6 +140,25 @@ try:
 finally:
     modo_dueno.APPINGLES_DIR = original_apdir
     shutil.rmtree(carpeta, ignore_errors=True)
+
+# 5) B5: la salida de un comando no se lee entera, aunque Claude la copie sin puntuación
+salida = '\n'.join(f'-a---  {i:03d}  archivo_{i}.txt  {i * 137} bytes' for i in range(200))
+tope = modo_dueno.ING_MAX_FRASES * modo_dueno.FRASE_MAX_CHARS
+for nombre, texto in (('200 líneas sin puntos', salida),
+                      ('intro + 200 líneas', 'Listé la carpeta:\n' + salida),
+                      ('200 líneas con puntos', salida.replace(' bytes', ' bytes.'))):
+    dichas = modo_dueno.frases_para_decir(texto, modo_dueno.ING_MAX_FRASES)
+    check(f"B5: {nombre} → hasta {modo_dueno.ING_MAX_FRASES} frases",
+          0 < len(dichas) <= modo_dueno.ING_MAX_FRASES, f"-> {len(dichas)}")
+    check(f"B5: {nombre} → no más de {tope} caracteres en total",
+          sum(len(f) for f in dichas) <= tope, f"-> {sum(len(f) for f in dichas)}")
+resumen = 'Hay 200 archivos en la carpeta. El más pesado es informe.txt.'
+check("B5: un resumen normal queda intacto",
+      modo_dueno.frases_para_decir(resumen, 4) ==
+      ['Hay 200 archivos en la carpeta.', 'El más pesado es informe.txt.'])
+check("B5: lo acortado termina en punto y en palabra completa",
+      all(f.endswith('.') and not f.endswith(' .')
+          for f in modo_dueno.frases_para_decir(salida, 4)))
 
 print(f"\nRESULTADO: {'TODO OK' if fallos == 0 else f'{fallos} FALLA(S)'}", flush=True)
 sys.exit(0 if fallos == 0 else 1)
