@@ -5,7 +5,7 @@ Resuelve el problema histórico de **IPs DHCP que cambian** al mover de WiFi.
 
 ---
 
-## 1. Auto-discovery de IPs — `robot_bob/discovery.py`
+## 1. Auto-discovery de IPs — `robot_bob/hardware/discovery.py`
 
 Las 3 placas toman IP por DHCP; hardcodearlas rompía la conexión cada vez que
 cambiaba la red. `hardware/discovery.py` las localiza solas:

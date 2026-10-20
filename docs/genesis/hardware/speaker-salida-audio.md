@@ -25,7 +25,7 @@ edge-tts (laptop) → ffmpeg (EQ + dither) → uint8 8-bit @ 8 kHz
 | DAC | **Interno del ESP32**, `machine.DAC` en **GPIO25** (DAC1). 8 bits (256 niveles). |
 | Transporte | TCP `PORT_SPK = 5006` (laptop → ESP32). Header 4 bytes BE de longitud + body. Solo activo si `USE_ROBOT_SPEAKER = True`. |
 | Firmware | `firmware/Esp32/main.py` — hilo `hilo_audio`, función `play_mode` (reproduce muestra a muestra con timing absoluto por busy-wait). |
-| Laptop | `robot_bob/voice_pipeline.py` (`_synthesize_mp3`, `_mp3_a_u8`, `_reproducir_mp3_robot`) + `shared/voicechatLap/audio_io.py` (transporte). |
+| Laptop | `robot_bob/voz/pipeline/` (`_sintetizar` en `tts.py`; `_audio_a_u8` y `_reproducir_robot` en `__init__.py`) + `shared/voicechatLap/audio_io.py` (transporte). |
 
 ## Notas técnicas
 

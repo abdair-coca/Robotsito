@@ -49,7 +49,7 @@ NO abrir los pines desde la laptop — todo va por el firmware.
    tabla de verdad, comando `M:<izq>,<der>` en `aplicar_cmd`, **watchdog** que para si no
    llega comando en ~400 ms (evita que Bob se escape si se corta la conexión), parar al
    boot y en cualquier error.
-2. **`robot_bob/serial_manager.py`:** `cmd_motor(izq,der)` con prioridad alta en la cola +
+2. **`robot_bob/hardware/serial_manager.py`:** `cmd_motor(izq,der)` con prioridad alta en la cola +
    throttle. Mismo patrón que `cmd_servo`/`cmd_estado`.
 3. **Control en `nucleo/behavior.py`:** decide cuándo girar (cara lejana, deambular en IDLE).
 4. **`config.py`:** `MOTORES_ENABLED`, velocidades, watchdog timeout.
