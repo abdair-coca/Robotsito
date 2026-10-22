@@ -1633,6 +1633,9 @@ class VoicePipeline:
             self._convo.append({'role': 'user', 'content': texto})
             frases = []
             for frase in modo_dueno.responder_ingeniero(self, texto, ing['sesion']):   # S4
+                if isinstance(frase, modo_dueno.Aviso):   # "estoy leyendo…": no es la respuesta
+                    yield _marcar_emo(frase, 'PENSANDO')
+                    continue
                 frases.append(frase)              # sin _sin_promesas: esta sesión sí tiene herramientas
                 yield _marcar_emo(frase, self._emocion_turno)
             if frases:

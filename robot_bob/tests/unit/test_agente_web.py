@@ -11,6 +11,7 @@ guardado como contexto del turno siguiente, y la configuración de la sesión
 import os
 import sys
 import threading
+import time
 import types
 
 import numpy as np
@@ -69,13 +70,17 @@ class FakeMem:
 
 
 class FakeSesion:
+    nombre, turnos, arranques = 'web', 0, 1
+
     def __init__(self, resultado):
         self.resultado = resultado
         self.tareas = []
         self.kwargs_preguntar = None
         self.cerrada = False
+        self.vivo = False                  # como el proceso real: vive desde el primer turno
 
     def preguntar(self, texto, **k):
+        self.vivo = True
         self.tareas.append(texto)
         self.kwargs_preguntar = k
         if k.get('al_usar'):
@@ -159,11 +164,16 @@ def main() -> None:
 
         # 3) El siguiente turno del modo ingeniero recibe el resultado, una sola vez
         ing = FakeSesion('Con 8 dólares entra en el presupuesto.')
+        ing.nombre = 'ingeniero'
         v._sesion_ing = ing
-        md.responder_claude(v, '¿y eso nos conviene?', ing)
+        list(md.responder_claude(v, '¿y eso nos conviene?', ing))
         check('contexto web en el turno siguiente', 'Resultado de la última tarea web' in ing.tareas[-1])
-        md.responder_claude(v, 'otra cosa', ing)
+        check('memoria: la sesión del modo ve el pedido web',
+              '[Antes en esta charla:' in ing.tareas[-1] and 'precio del ESP32-CAM' in ing.tareas[-1])
+        list(md.responder_claude(v, 'otra cosa', ing))
         check('contexto web solo una vez', 'Resultado de la última tarea web' not in ing.tareas[-1])
+        check('memoria: lo ya visto no se repite', '[Antes en esta charla:' not in ing.tareas[-1],
+              f'-> {ing.tareas[-1][:80]}')
 
         # 4) La voz del dueño da la orden → abre el navegador directo, sin preguntar otra vez
         v = construir()
@@ -182,7 +192,10 @@ def main() -> None:
         # 7) Falla la tarea → lo dice
         v = construir(resultado=None)
         md.atender(v, 'en el navegador busca algo', VOZ)
-        check('tarea fallida: lo dice', any('No pude terminar' in d for d in v.dichas))
+        check('tarea fallida: lo dice',
+              any('No pude terminar' in d or 'No alcancé a terminar' in d for d in v.dichas))
+        check('tarea fallida: el navegador abierto sigue', v._sesion_web.vivo
+              and any('sigue abierto' in d for d in v.dichas))
 
         # 8) Fuera del modo ingeniero / flag apagado / sin Claude Code
         v = construir(en_modo=False)
@@ -212,6 +225,59 @@ def main() -> None:
         check('buscar fuera del modo ingeniero: lo indica y no abre el navegador',
               any('modo ingeniero' in d for d in v.dichas) and not v._sesion_web.tareas)
 
+        # 9c) Navegador abierto: lo que se pide sobre la página sigue en el agente web
+        tenis = 'quiero que abras el tenis adidas que está a 200bs'
+        d = md.detectar(tenis, navegador=True)
+        check('seguir: "abras el tenis…" con navegador abierto → web',
+              d is not None and d[0] == 'web' and d[1]['tarea'] == tenis, f'-> {d}')
+        check('seguir: sin navegador abierto no es web', md.detectar(tenis) is None)
+        for t in ('ábrelo', 'baja un poco', 'vuelve atrás', 'en esta página busca zapatillas',
+                  'elige el más barato', 'haz clic en comprar'):
+            d = md.detectar(t, navegador=True)
+            check(f'seguir: "{t}" → web', d is not None and d[0] == 'web', f'-> {d}')
+        for t in ('abre el archivo app.py', 'entre los dos lo hacemos', 'agrega una función al código',
+                  'sal del modo ingeniero', '¿qué opinas del precio?'):
+            d = md.detectar(t, navegador=True)
+            check(f'seguir: "{t}" no va al navegador', d is None or d[0] != 'web', f'-> {d}')
+        v = construir(resultado='Abrí la página de tenis.')
+        md.atender(v, 'abre el navegador en una tienda de tenis', VOZ)
+        v._sesion_web.resultado = 'Abrí el Adidas de 200 Bs.'
+        check('seguir: atender lo manda al mismo navegador',
+              md.atender(v, tenis, VOZ) is True and v._sesion_web.tareas[-1].endswith(tenis)
+              and len(v._sesion_web.tareas) == 2)
+        check('seguir: la web no recibe otra vez lo que ya vio', v._sesion_web.tareas[-1] == tenis,
+              f'-> {v._sesion_web.tareas[-1][:90]}')
+        check('seguir: no anuncia abrir otra vez', v.dichas.count('Abro el navegador.') == 1
+              and 'Dale, lo hago en el navegador.' in v.dichas)
+        check('seguir: avisa lo que hace', 'Estoy abriendo la página.' in v.dichas, f'-> {v.dichas}')
+
+        # 9d) Avisos: uno por herramienta, "aún sigo…" si tarda, sin repetir la misma
+        class Lenta(FakeSesion):
+            def preguntar(self, texto, **k):
+                k['al_usar']('Read', {'file_path': 'C:/x/src/app.py'})
+                time.sleep(0.5)
+                k['al_usar']('Read', {'file_path': 'C:/x/src/app.py'})
+                time.sleep(0.1)
+                k['al_usar']('Bash', {'command': 'python src/app.py'})
+                time.sleep(0.3)
+                return 'listo'
+        md.AVISO_MIN_S, md.AVISO_SIGUE_S = 0.05, 0.2
+        g = md._preguntar_narrando(Lenta(None), 'x', 5)
+        avisos = []
+        try:
+            while True:
+                avisos.append(next(g))
+        except StopIteration as fin:
+            final = fin.value
+        md.AVISO_MIN_S, md.AVISO_SIGUE_S = 3.5, 7.0
+        check('avisos: dice qué archivo lee, sin la ruta',
+              avisos[:1] == ['Estoy leyendo el archivo app.py.'], f'-> {avisos}')
+        check('avisos: si tarda, "aún sigo…"', 'Aún sigo leyéndolo.' in avisos, f'-> {avisos}')
+        check('avisos: la misma herramienta no se repite', avisos.count('Estoy leyendo el archivo app.py.') == 1)
+        check('avisos: herramienta nueva → aviso nuevo', 'Estoy ejecutando un comando.' in avisos)
+        check('avisos: son Aviso y la respuesta llega al final',
+              all(isinstance(a, md.Aviso) for a in avisos) and final == 'listo')
+
         # 10) Limpieza para la voz: respuesta real de WebSearch (2026-10-17)
         real = ('El ESP32-CAM cuesta unos 7 a 11 € en tiendas europeas, y más en Latinoamérica. '
                 'El servo MG996R da unos 9 a 11 kg·cm de par (ver https://servodatabase.com/x).\n\n'
@@ -239,6 +305,7 @@ def main() -> None:
         check('sesión: ninguna permitida es peligrosa', not (set(s.permitidas) & set(s.prohibidas)))
         check('sesión: prompt con reglas fijas', md._REGLAS_FIJAS in s.system_prompt)
         check('sesión: se reutiliza', md._sesion_web(v) is s)
+        check('sesión: un turno cortado no cierra el navegador', s.conservar is True)
         md.salir_ingeniero(v)
         check('salir del modo ingeniero cierra el navegador', v._sesion_web is None)
     finally:

@@ -32,6 +32,7 @@ CWD_DEFAULT = os.path.join(tempfile.gettempdir(), 'bob_claude')
 # Variables que no deben llegar al hijo: CLAUDECODE haría que se niegue a correr
 # dentro de otra sesión de Claude Code; ANTHROPIC_API_KEY lo cobraría como API.
 _ENV_FUERA = ('CLAUDECODE', 'ANTHROPIC_API_KEY')
+CORTE_S = 10.0      # espera del fin de un turno interrumpido antes de cerrar el proceso
 
 
 def disponible() -> bool:
@@ -45,7 +46,7 @@ class SesionClaude:
                  cwd: str = CWD_DEFAULT, nombre: str = 'claude', herramientas: str = '',
                  comando: Optional[list] = None, add_dirs: Sequence[str] = (),
                  aprobar: Optional[Callable[[str, dict], bool]] = None,
-                 restringido: bool = False):
+                 restringido: bool = False, conservar: bool = False):
         """mcp: {'nombre': {'command': ..., 'args': [...]}} (formato mcpServers).
         herramientas: herramientas propias de Claude Code habilitadas ('' = ninguna;
         p. ej. 'WebSearch', que busca del lado de Anthropic y no toca la laptop).
@@ -55,6 +56,8 @@ class SesionClaude:
         aprobar, Claude pide permiso al host (B2) en vez de denegar solo; sin decisor
         o si falla, se deniega.
         restringido: --restricted aunque no haya add_dirs (archivos solo en cwd).
+        conservar: si el turno se pasa de tiempo o de herramientas, se interrumpe y el
+        proceso sigue (el navegador del MCP queda abierto); sin esto se cierra.
         comando: reemplaza el comando completo (solo para tests)."""
         self.system_prompt = system_prompt
         self.modelo, self.effort = modelo, effort
@@ -66,6 +69,9 @@ class SesionClaude:
         self.add_dirs = list(add_dirs)
         self.aprobar = aprobar
         self.restringido = restringido
+        self.conservar = conservar
+        self.arranques = 0                   # procesos lanzados: uno nuevo no sabe nada de la charla
+        self.turnos = 0                      # turnos respondidos por el proceso actual
         self._comando_fijo = comando
         self._proc: Optional[subprocess.Popen] = None
         self._eventos: queue.Queue = queue.Queue()
@@ -136,6 +142,8 @@ class SesionClaude:
                 print(f'[claude] {self.nombre}: no arrancó ({e})')
                 self._proc = None
                 return False
+            self.arranques += 1
+            self.turnos = 0
             threading.Thread(target=self._leer, args=(self._proc, self._eventos),
                              daemon=True, name=f'claude-{self.nombre}').start()
             return True
@@ -198,16 +206,49 @@ class SesionClaude:
         except Exception as e:
             print(f'[claude] {self.nombre}: no se pudo responder el permiso ({e})')
 
+    def _cortar(self, eventos) -> None:
+        """Turno pasado de tiempo o de herramientas. Con `conservar`, lo interrumpe y espera
+        su fin (el proceso y su memoria siguen); si no, o si no responde, cierra el proceso:
+        el siguiente turno lo vuelve a arrancar."""
+        if self.conservar and self.vivo:
+            try:
+                self._proc.stdin.write(json.dumps(
+                    {'type': 'control_request', 'request_id': f'corte-{time.monotonic_ns()}',
+                     'request': {'subtype': 'interrupt'}}) + '\n')
+                self._proc.stdin.flush()
+                limite = time.monotonic() + CORTE_S
+                while time.monotonic() < limite:
+                    try:
+                        ev = eventos.get(timeout=max(0.05, limite - time.monotonic()))
+                    except queue.Empty:
+                        break
+                    if ev is None:
+                        break
+                    if ev.get('type') == 'control_request':
+                        self._responder_permiso(self._proc, ev)
+                    elif ev.get('type') == 'result':
+                        return
+            except Exception as e:
+                print(f'[claude] {self.nombre}: no se pudo interrumpir ({e})')
+        self.cerrar()
+
     def preguntar(self, texto: str, timeout: float = 30.0,
                   al_usar: Optional[Callable[[str, dict], None]] = None,
                   max_herramientas: Optional[int] = None) -> Optional[str]:
         """Manda un mensaje y espera el resultado del turno. Devuelve el texto
         final, o None si falla, se pasa de tiempo o de herramientas (en esos dos
-        casos cierra el proceso: el siguiente turno lo vuelve a arrancar)."""
+        casos corta el turno, ver _cortar)."""
         with self._turno:
             if not self.iniciar():
                 return None
             eventos = self._eventos
+            while True:                      # restos de un turno interrumpido (_cortar)
+                try:
+                    if eventos.get_nowait() is None:
+                        eventos.put(None)    # el proceso terminó: lo ve el bucle de abajo
+                        break
+                except queue.Empty:
+                    break
             try:
                 self._proc.stdin.write(json.dumps(
                     {'type': 'user', 'message': {'role': 'user', 'content': texto}},
@@ -223,7 +264,7 @@ class SesionClaude:
                 restante = limite - time.monotonic()
                 if restante <= 0:
                     print(f'[claude] {self.nombre}: sin respuesta en {timeout:.0f} s')
-                    self.cerrar()
+                    self._cortar(eventos)
                     return None
                 try:
                     ev = eventos.get(timeout=restante)
@@ -245,7 +286,7 @@ class SesionClaude:
                             if max_herramientas is not None and usos > max_herramientas:
                                 print(f'[claude] {self.nombre}: más de {max_herramientas} '
                                       'herramientas, se corta')
-                                self.cerrar()
+                                self._cortar(eventos)
                                 return None
                 elif tipo == 'control_request':
                     self._responder_permiso(self._proc, ev)
@@ -253,5 +294,6 @@ class SesionClaude:
                     if ev.get('is_error'):
                         print(f'[claude] {self.nombre}: error ({ev.get("subtype")})')
                         return None
+                    self.turnos += 1
                     texto_final = (ev.get('result') or ''.join(partes)).strip()
                     return texto_final or None

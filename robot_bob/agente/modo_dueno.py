@@ -35,8 +35,10 @@ Apagado por defecto: MODO_DUENO_ENABLED en config.py.
 """
 
 import os
+import queue
 import random
 import re
+import threading
 import time
 from typing import Optional, Tuple
 
@@ -88,6 +90,17 @@ except Exception:
 ING_MAX_FRASES = 4
 ING_MAX_TOKENS = 600     # gpt-oss gasta parte en razonar: 160 no alcanza para 4 frases
 ING_TIMEOUT_S = 25.0     # sin respuesta de Claude Code en este tiempo → Groq ese turno
+# Memoria de la charla, compartida por las sesiones de Claude (lectura, escritura, web): cada
+# sesión recibe, en una línea, solo lo que pasó desde su último turno. Una sesión nueva (otro
+# modelo, reinicio o corte) recibe los últimos MEMORIA_MAX_MSGS mensajes, recortados.
+MEMORIA_MAX_MSGS = 8
+MEMORIA_MAX_CHARS = 160
+# Charla larga: tras estos turnos, la sesión de lectura o escritura se reinicia y sigue con la
+# memoria corta, para no reenviar todo el historial en cada turno. La web no (cerraría el navegador).
+ING_TURNOS_MAX = 10
+# Avisos de lo que Bob hace mientras Claude usa herramientas.
+AVISO_MIN_S = 3.5        # entre dos avisos distintos
+AVISO_SIGUE_S = 7.0      # sin novedades en este tiempo: "aún sigo…" (menos que el corte de 10 s de la voz)
 
 # Motor del modo ingeniero y del agente web: 'claude' (Claude Code con el login Pro
 # del dueño) o 'groq'. Si Claude Code no está o falla, el modo ingeniero cae a Groq.
@@ -216,6 +229,9 @@ WEB_PROHIBIDAS = [_WEB + h for h in (
 WEB_PROMPT = (
     'Eres el agente web de Bob, un robot. Controlas un navegador con herramientas para '
     'cumplir la tarea que te pide su creador; el público ve el navegador. Usa pocos pasos. '
+    'El navegador sigue abierto entre pedidos: si el pedido habla de algo que ya está en '
+    'pantalla (por ejemplo "abre el de 200 Bs"), trabaja sobre la página actual: léela con '
+    'browser_snapshot, busca ese elemento y haz clic en él; no vuelvas a buscar desde cero. '
     'Para buscar información usa WebSearch (los buscadores en el navegador piden captcha o '
     'no muestran resultados) y después abre en el navegador la mejor fuente para que se '
     'vea. Para abrir una página concreta o interactuar con ella, usa el navegador y léela '
@@ -276,16 +292,29 @@ _RE_BUSCAR = re.compile(
     r'|\ben\s+(?:la\s+)?(?:web|internet|google)\s*,?\s*(?:b[uú]sca(?:me)?|investiga|averigua)\b',
     re.IGNORECASE)
 _RE_BOB_INICIO = re.compile(r'^\s*bob\s*[,.:]?\s*', re.IGNORECASE)
+# Con el navegador ya abierto, también va al agente web lo que se pide sobre la página en
+# pantalla ("ábrelo", "abras el tenis de 200 Bs", "baja", "vuelve atrás", "en esta página…"),
+# salvo que hable de archivos o código (eso es de AppInglés).
+_RE_WEB_SEGUIR = re.compile(
+    r'\b(?:[aá]br[eaií]\w*|entr(?:a|es|ar|ame|alo|ala)|clic\w*|cliqu\w*|pincha\w*|presiona\w*'
+    r'|selecciona\w*|el[ií]g\w*|escog\w*|baj[ae]\w*|desplaz\w*|scroll\w*|regres\w*|atr[aá]s'
+    r'|agreg\w*|añad\w*|compara\w*)\b'
+    r'|\b(?:la|esa|esta)\s+(?:p[aá]gina|web|pesta[ñn]a|tienda)\b', re.IGNORECASE)
+_RE_NO_WEB = re.compile(r'\b(?:archivo|fichero|carpeta|c[oó]digo|script|comando|terminal'
+                        r'|funci[oó]n|modo)\b', re.IGNORECASE)
 
 
-def detectar(texto: str) -> Optional[Tuple[str, dict]]:
-    """(comando, argumentos) si el texto es un comando de dueño, o None."""
+def detectar(texto: str, navegador: bool = False) -> Optional[Tuple[str, dict]]:
+    """(comando, argumentos) si el texto es un comando de dueño, o None.
+    navegador: el agente web ya tiene el navegador abierto (ver _RE_WEB_SEGUIR)."""
     if _RE_ING_SALIR.search(texto or ''):
         return 'salir_ingeniero', {}
     if _RE_WEB.search(texto or ''):
         return 'web', {'tarea': _RE_BOB_INICIO.sub('', texto).strip()}
     if _RE_BUSCAR.search(texto or ''):
         return 'buscar_web', {}
+    if navegador and _RE_WEB_SEGUIR.search(texto or '') and not _RE_NO_WEB.search(texto or ''):
+        return 'web', {'tarea': _RE_BOB_INICIO.sub('', texto).strip()}
     if _RE_ING_ENTRAR.search(texto or '') or _es_orden_sola(texto, 'modo ingeniero'):
         return 'ingeniero', {}
     m = _RE_PRESENTAR.search(texto or '')
@@ -337,7 +366,7 @@ def atender(vp, texto: str, analisis) -> bool:
     ejecuta si corresponde. Devuelve True si era un comando (aunque se rechace)."""
     if not MODO_DUENO_ENABLED:
         return False
-    cmd = detectar(texto)
+    cmd = detectar(texto, navegador=_navegador_abierto(vp))
     if cmd is None:
         return False
     nombre_cmd, args = cmd
@@ -487,6 +516,7 @@ def entrar_ingeniero(vp) -> None:
         return
     vp._modo_ingeniero = True
     vp._sesion_ing = None
+    vp._ing_visto, vp._ing_web = {}, set()
     if MOTOR_INGENIERO == 'claude' and claude_code.disponible():
         vp._sesion_ing = _crear_sesion_ingeniero(vp)
         vp._sesion_ing.iniciar_en_fondo()      # arranca mientras Bob habla
@@ -508,6 +538,7 @@ def salir_ingeniero(vp, avisar: bool = False) -> None:
             sesion.cerrar()
         setattr(vp, atributo, None)
     vp._contexto_web = None
+    vp._ing_visto, vp._ing_web = {}, set()
     console.print('[bold magenta][dueño][/] modo ingeniero OFF')
     if avisar:
         _decir(vp, 'Modo ingeniero desactivado. Vuelvo a ser el Bob de siempre.', 'FELIZ')
@@ -562,11 +593,128 @@ def frases_para_decir(texto: str, maximo: int):
     return [_acortar(f) for f in frases[:maximo]]
 
 
+def _corto(texto: str, maximo: int) -> str:
+    texto = ' '.join((texto or '').split())
+    return texto if len(texto) <= maximo else texto[:maximo].rsplit(' ', 1)[0] + '…'
+
+
+def _memoria_pendiente(vp, sesion, sin_web: bool = False):
+    """(línea con lo que `sesion` no vio de la charla, clave, fin). La clave es el proceso
+    de la sesión: uno nuevo (otro modelo, reinicio o corte) no vio nada y recibe los últimos
+    MEMORIA_MAX_MSGS. sin_web: deja fuera las respuestas con contenido de internet (B-D1:
+    no llegan a la sesión de escritura). El mensaje del turno en curso no entra."""
+    convo = getattr(vp, '_convo', None) or []
+    fin = len(convo) - (1 if convo and convo[-1].get('role') == 'user' else 0)
+    clave = (sesion.nombre, sesion.arranques + (0 if sesion.vivo else 1))
+    visto = getattr(vp, '_ing_visto', {}).get(clave)
+    web = getattr(vp, '_ing_web', set())
+    lineas = [f'{"Bob" if convo[i].get("role") == "assistant" else "Persona"}: '
+              f'{_corto(convo[i].get("content", ""), MEMORIA_MAX_CHARS)}'
+              for i in range(max(visto or 0, fin - MEMORIA_MAX_MSGS), fin)
+              if not (sin_web and i in web)]
+    return ' | '.join(lineas), clave, fin
+
+
+def _marcar_visto(vp, sesion, hasta: int) -> None:
+    if not hasattr(vp, '_ing_visto'):
+        vp._ing_visto = {}
+    vp._ing_visto[(sesion.nombre, sesion.arranques)] = hasta
+
+
+class Aviso(str):
+    """Frase de lo que Bob está haciendo mientras Claude usa herramientas: se dice, pero no
+    es la respuesta del turno (no va al historial)."""
+
+
+# Herramienta → (al empezar, si tarda). {archivo} es solo el nombre, sin ruta (_REGLAS_FIJAS).
+_AVISOS = {
+    'Read': ('Estoy leyendo el archivo {archivo}.', 'Aún sigo leyéndolo.'),
+    'Glob': ('Estoy buscando archivos.', 'Sigo buscando los archivos.'),
+    'Grep': ('Estoy buscando en el código.', 'Sigo buscando en el código.'),
+    'Edit': ('Estoy editando el archivo {archivo}.', 'Aún sigo editándolo.'),
+    'Write': ('Estoy escribiendo el archivo {archivo}.', 'Aún sigo escribiéndolo.'),
+    'Bash': ('Estoy ejecutando un comando.', 'El comando sigue corriendo.'),
+    'WebSearch': ('Estoy buscando en internet.', 'Sigo buscando en internet.'),
+    _WEB + 'navigate': ('Estoy abriendo la página.', 'La página sigue cargando.'),
+    _WEB + 'navigate_back': ('Vuelvo a la página anterior.', 'La página sigue cargando.'),
+    _WEB + 'snapshot': ('Estoy mirando la página.', 'Sigo revisando la página.'),
+    _WEB + 'find': ('Estoy buscando en la página.', 'Sigo buscando en la página.'),
+    _WEB + 'click': ('Estoy haciendo clic.', 'Sigo esperando a la página.'),
+    _WEB + 'type': ('Estoy escribiendo en la página.', 'Sigo escribiendo.'),
+    _WEB + 'wait_for': ('Estoy esperando a que cargue.', 'Todavía está cargando.'),
+}
+_AVISO_GENERICO = ('Estoy trabajando en eso.', 'Sigo en eso, ya casi.')
+_AVISO_EXTRA = ['Un momento más.', 'Ya casi termino.']    # tras el primer "aún sigo…"
+
+
+def _aviso(herramienta: str, entrada: dict) -> Tuple[str, str]:
+    ahora, sigue = _AVISOS.get(herramienta, _AVISO_GENERICO)
+    archivo = os.path.basename(str(entrada.get('file_path') or '')).strip()
+    return ahora.format(archivo=archivo).replace(' el archivo .', ' un archivo.'), sigue
+
+
+def _preguntar_narrando(sesion, mensaje: str, timeout: float, max_herramientas=None,
+                        al_usar=None):
+    """Generador: corre el turno de Claude en un hilo y, mientras, da un Aviso por cada
+    herramienta nueva (como mucho uno cada AVISO_MIN_S; si llegan varias, la última) y un
+    "aún sigo…" cada AVISO_SIGUE_S sin novedades. Devuelve (return) la respuesta o None.
+    al_usar: además, recibe cada herramienta (p. ej. para la terminal)."""
+    usos: queue.Queue = queue.Queue()
+    hecho = {}
+
+    def uso(nombre, entrada):
+        if al_usar:
+            al_usar(nombre, entrada)
+        usos.put((nombre, entrada))
+
+    def correr():
+        try:
+            hecho['r'] = sesion.preguntar(mensaje, timeout=timeout, al_usar=uso,
+                                          max_herramientas=max_herramientas)
+        finally:
+            usos.put(None)
+    threading.Thread(target=correr, daemon=True, name=f'narrar-{sesion.nombre}').start()
+    actual, pendiente, t_dicho, veces = None, None, 0.0, 0
+    while True:
+        ahora = time.monotonic()
+        if pendiente and ahora - t_dicho >= AVISO_MIN_S:
+            actual, pendiente, t_dicho, veces = pendiente, None, ahora, 0
+            yield Aviso(actual[0])
+            continue
+        if pendiente is None and actual and ahora - t_dicho >= AVISO_SIGUE_S:
+            t_dicho = ahora
+            yield Aviso(actual[1] if veces == 0 else _AVISO_EXTRA[(veces - 1) % len(_AVISO_EXTRA)])
+            veces += 1
+            continue
+        espera = (t_dicho + (AVISO_MIN_S if pendiente else AVISO_SIGUE_S) - ahora
+                  if (pendiente or actual) else AVISO_SIGUE_S)
+        try:
+            ev = usos.get(timeout=max(0.05, espera))
+        except queue.Empty:
+            continue
+        if ev is None:
+            return hecho.get('r')
+        nuevo = _aviso(*ev)
+        if actual is None or nuevo[0] != actual[0]:
+            pendiente = nuevo
+
+
+def _navegador_abierto(vp) -> bool:
+    sesion = getattr(vp, '_sesion_web', None)
+    return bool(getattr(vp, '_modo_ingeniero', False) and sesion is not None and sesion.vivo)
+
+
 def responder_claude(vp, texto: str, sesion, nota: str = ''):
-    """Un turno del modo ingeniero con Claude Code, sin herramientas. Devuelve las frases a
-    decir, o None si Claude Code no respondió (el turno sigue con Groq). `nota` es una
-    instrucción para este turno, p. ej. que no pudo buscar."""
+    """Generador de un turno del modo ingeniero con Claude Code: Avisos mientras usa
+    herramientas y luego las frases a decir. Si Claude Code no respondió no da frases (el
+    turno sigue con Groq). `nota` es una instrucción para este turno, p. ej. que no pudo
+    buscar."""
     from voz.pipeline import _contexto_asistente_turno, console
+    if sesion.vivo and sesion.turnos >= ING_TURNOS_MAX:     # charla larga: proceso nuevo
+        console.print(f'[dim][dueño] {sesion.nombre}: {sesion.turnos} turnos, sigue con la '
+                      'memoria corta[/]')
+        sesion.cerrar()
+    memoria, _, fin = _memoria_pendiente(vp, sesion, sin_web=sesion.nombre == 'escritura')
     notas = [n for n in (
         (getattr(vp, '_marca_voz', '') or '').strip(' \n[]'),
         _contexto_asistente_turno(texto, getattr(vp, '_ruta_turno', None)).strip(),
@@ -574,14 +722,16 @@ def responder_claude(vp, texto: str, sesion, nota: str = ''):
         if getattr(vp, '_contexto_web', None) else '',
         nota) if n]
     vp._contexto_web = None
-    mensaje = (f'[Contexto de este turno: {" ".join(notas)}]\n{texto}' if notas else texto)
+    mensaje = ((f'[Antes en esta charla: {memoria}]\n' if memoria else '')
+               + (f'[Contexto de este turno: {" ".join(notas)}]\n' if notas else '') + texto)
     t0 = time.monotonic()
-    respuesta = sesion.preguntar(mensaje, timeout=ING_TIMEOUT_S)
+    respuesta = yield from _preguntar_narrando(sesion, mensaje, ING_TIMEOUT_S)
     if not respuesta:
         console.print('[yellow][dueño] Claude Code no respondió: este turno va con Groq[/]')
-        return None
+        return
     console.print(f'[dim][dueño] Claude Code respondió en {time.monotonic() - t0:.1f} s[/]')
-    return frases_para_decir(respuesta, ING_MAX_FRASES) or None
+    _marcar_visto(vp, sesion, fin + 2)            # este turno y su respuesta ya los sabe
+    yield from frases_para_decir(respuesta, ING_MAX_FRASES)
 
 
 # ── Búsqueda en internet del modo ingeniero (fase S4) ─────────────────────────────
@@ -629,7 +779,7 @@ def _responder_con_fuentes(vp, texto: str, consultas, sesion):
             return
         nota = 'No pude armar la respuesta con las fuentes: dilo y responde con lo que sabes.'
     console.print(f'[yellow][dueño] búsqueda sin respuesta: {nota}[/]')
-    yield from (responder_claude(vp, texto, sesion, nota=nota) or [])
+    yield from responder_claude(vp, texto, sesion, nota=nota)
 
 
 def _sesion_sin_escritura(vp, sesion):
@@ -658,10 +808,13 @@ def responder_ingeniero(vp, texto: str, sesion):
     sesion_turno = _sesion_sin_escritura(vp, sesion) if (con_web or sin_voz_firme) else sesion
     if sesion is not None and sesion_turno is None:    # solo había escritura: Groq responde
         return
+    if con_web:          # la respuesta (va en _convo después del pedido) no llega a la escritura
+        vp._ing_web = getattr(vp, '_ing_web', set())
+        vp._ing_web.add(len(getattr(vp, '_convo', [])))
     if con_busqueda:
         yield from _responder_con_fuentes(vp, texto, consultas, sesion_turno)
         return
-    yield from (responder_claude(vp, texto, sesion_turno) or [])
+    yield from responder_claude(vp, texto, sesion_turno)
 
 
 # ── Agente web (dentro del modo ingeniero) ──────────────────────────────────────
@@ -679,7 +832,8 @@ def _sesion_web(vp):
         sesion = claude_code.SesionClaude(
             WEB_PROMPT, modelo=CLAUDE_MODELO, nombre='web', herramientas='WebSearch',
             mcp={'playwright': {'command': 'npx', 'args': args}},
-            permitidas=['WebSearch'] + WEB_PERMITIDAS, prohibidas=WEB_PROHIBIDAS)
+            permitidas=['WebSearch'] + WEB_PERMITIDAS, prohibidas=WEB_PROHIBIDAS,
+            conservar=True)                  # un turno cortado no cierra el navegador
         vp._sesion_web = sesion
         console.print('[dim][dueño] agente web: sesión nueva (Playwright MCP)[/]')
     return sesion
@@ -701,7 +855,12 @@ def web(vp, tarea: str) -> None:
         _decir(vp, 'No encuentro Claude Code en esta laptop, así que no puedo usar el navegador.',
                'TRISTE')
         return
-    _decir(vp, 'Abro el navegador.', 'PENSANDO')
+    _decir(vp, 'Dale, lo hago en el navegador.' if _navegador_abierto(vp) else 'Abro el navegador.',
+           'PENSANDO')
+    sesion = _sesion_web(vp)
+    memoria, _, fin = _memoria_pendiente(vp, sesion)
+    vp._convo.append({'role': 'user', 'content': tarea})
+    mensaje = (f'[Antes en esta charla: {memoria}]\n' if memoria else '') + tarea
     pasos = []
 
     def al_usar(nombre, entrada):
@@ -709,19 +868,31 @@ def web(vp, tarea: str) -> None:
         console.print(f'[dim][web] {pasos[-1]} '
                       f'{str(entrada.get("url") or entrada.get("query") or entrada.get("text") or "")[:80]}[/]')
     t0 = time.monotonic()
-    resultado = _sesion_web(vp).preguntar(tarea, timeout=WEB_TIMEOUT_S, al_usar=al_usar,
-                                          max_herramientas=WEB_MAX_HERRAMIENTAS)
+    narrar = _preguntar_narrando(sesion, mensaje, WEB_TIMEOUT_S,
+                                 max_herramientas=WEB_MAX_HERRAMIENTAS, al_usar=al_usar)
+    try:
+        while True:
+            _decir(vp, next(narrar), 'PENSANDO')
+    except StopIteration as fin_turno:
+        resultado = fin_turno.value
     console.print(f'[bold magenta][dueño][/] web: {len(pasos)} pasos en '
                   f'{time.monotonic() - t0:.1f} s ({"ok" if resultado else "falló"})')
     if not resultado:
-        _decir(vp, 'No pude terminar la tarea en la web. ¿Probamos de otra forma?', 'TRISTE')
+        aviso = ('No alcancé a terminar, pero el navegador sigue abierto. ¿Sigo desde ahí?'
+                 if _navegador_abierto(vp) else
+                 'No pude terminar la tarea en la web. ¿Probamos de otra forma?')
+        _decir(vp, aviso, 'TRISTE')
+        vp._convo.append({'role': 'assistant', 'content': aviso})
         return
+    _marcar_visto(vp, sesion, fin + 2)
     console.print('[bold cyan][web] resultado:[/]')
     console.print(f'  {escape(resultado)}')
     frases = frases_para_decir(resultado, 3)
     for frase in frases:
         _decir(vp, frase, 'ORGULLOSO')
     vp._contexto_web = ' '.join(frases)
+    vp._ing_web = getattr(vp, '_ing_web', set())
+    vp._ing_web.add(len(vp._convo))               # contenido de internet: no va a la escritura
     vp._convo.append({'role': 'assistant', 'content': ' '.join(frases)})
 
 

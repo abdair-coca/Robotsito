@@ -110,6 +110,8 @@ def construir(sim=0.8):
 
 class FakeSesion:
     """Imita claude_code.SesionClaude: devuelve las respuestas en orden."""
+    nombre, vivo, turnos, arranques = 'ingeniero', True, 0, 1
+
     def __init__(self, respuestas=()):
         self.respuestas = list(respuestas)
         self.mensajes = []
@@ -125,6 +127,7 @@ class FakeSesion:
 
     def cerrar(self):
         self.cerrada = True
+        self.vivo = False                    # como el real: el próximo turno es otro proceso
 
 
 def probar_claude() -> None:
@@ -173,6 +176,36 @@ def probar_claude() -> None:
         # Salir cierra la sesión
         md.atender(v, 'sal del modo ingeniero', (None, 0.0))
         check('claude: salir cierra la sesión', s is not None and s.cerrada and v._sesion_ing is None)
+
+        # Memoria corta compartida: cada sesión recibe lo que no vio, recortado
+        v4 = construir()
+        v4._modo_ingeniero, v4._ing_visto, v4._ing_web = True, {}, {1}
+        v4._convo = [{'role': 'user', 'content': 'abre la tienda'},
+                     {'role': 'assistant', 'content': 'Abrí los tenis a 200 Bs. ' * 20},
+                     {'role': 'user', 'content': '¿cuál conviene?'}]
+        esc, lec = FakeSesion(), FakeSesion()
+        esc.nombre = 'escritura'
+        m_esc, _, fin = md._memoria_pendiente(v4, esc, sin_web=True)
+        m_lec, _, _ = md._memoria_pendiente(v4, lec)
+        check('memoria: la escritura no recibe contenido de internet (B-D1)',
+              'tenis' not in m_esc and 'abre la tienda' in m_esc, f'-> {m_esc}')
+        check('memoria: la de lectura sí, recortado', 'tenis' in m_lec and len(m_lec) < 250,
+              f'-> {len(m_lec)}')
+        check('memoria: el pedido en curso no entra', '¿cuál conviene?' not in m_lec and fin == 2)
+        lec.respuestas = ['Conviene el de 200.']
+        list(md.responder_claude(v4, '¿cuál conviene?', lec))
+        v4._convo += [{'role': 'assistant', 'content': 'Conviene el de 200.'},
+                      {'role': 'user', 'content': '¿y el envío?'}]
+        check('memoria: tras su turno no se le repite nada', md._memoria_pendiente(v4, lec)[0] == '')
+        nueva_proc = FakeSesion()
+        nueva_proc.arranques = 2                  # el mismo nombre, otro proceso (reinicio o corte)
+        check('memoria: un proceso nuevo recibe la memoria corta',
+              'abre la tienda' in md._memoria_pendiente(v4, nueva_proc)[0])
+        larga = FakeSesion(['Va.'])
+        larga.turnos = md.ING_TURNOS_MAX
+        list(md.responder_claude(v4, '¿y el envío?', larga))
+        check('charla larga: reinicia la sesión y le pasa la memoria corta',
+              larga.cerrada and '[Antes en esta charla:' in larga.mensajes[-1])
 
         # Sin Claude Code instalado → Groq desde el principio
         claude_code.disponible = lambda: False

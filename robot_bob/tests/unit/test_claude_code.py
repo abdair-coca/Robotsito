@@ -24,8 +24,13 @@ fallos = 0
 FALSO = r'''
 import json, os, sys, time
 for linea in sys.stdin:
-    msg = json.loads(linea)['message']['content']
+    ev = json.loads(linea)
     out = lambda e: (sys.stdout.write(json.dumps(e) + "\n"), sys.stdout.flush())
+    if ev.get('type') == 'control_request':      # interrupt: sin turno en curso, solo responde
+        out({"type": "control_response", "response": {"subtype": "success",
+                                                       "request_id": ev.get("request_id")}})
+        continue
+    msg = ev['message']['content']
     if msg == 'muere':
         sys.exit(3)
     if msg == 'lento':
@@ -97,6 +102,29 @@ def main() -> None:
                                                    max_herramientas=5) is None)
         check('pasado el tope: proceso cerrado', not s.vivo)
         s.cerrar()
+
+        # 6b) Contadores: procesos lanzados y turnos del proceso actual
+        c = claude_code.SesionClaude('prompt', nombre='t3', **base)
+        c.preguntar('uno', timeout=10)
+        c.preguntar('dos', timeout=10)
+        check('contadores: 1 proceso, 2 turnos', c.arranques == 1 and c.turnos == 2,
+              f'-> {c.arranques}, {c.turnos}')
+        c.preguntar('muere', timeout=10)
+        c.preguntar('tres', timeout=10)
+        check('contadores: proceso nuevo, turnos desde 0', c.arranques == 2 and c.turnos == 1,
+              f'-> {c.arranques}, {c.turnos}')
+        c.cerrar()
+
+        # 6c) conservar: pasado el tope interrumpe sin cerrar (el navegador del MCP sigue)
+        k = claude_code.SesionClaude('prompt', nombre='t4', conservar=True, **base)
+        k.preguntar('hola', timeout=10)
+        pid = k._proc.pid
+        check('conservar: pasado el tope → None', k.preguntar('herramientas 8', timeout=10,
+                                                             max_herramientas=5) is None)
+        check('conservar: mismo proceso vivo', k.vivo and k._proc.pid == pid)
+        check('conservar: el turno siguiente responde lo suyo', k.preguntar('sigue', timeout=10)
+              == 'eco: sigue')
+        k.cerrar()
 
         # 7) Comando real (sin ejecutarlo): aislamiento, modelo, MCP y listas
         real = claude_code.SesionClaude('SYS', modelo='claude-haiku-5-5', cwd=tmp, nombre='w',
