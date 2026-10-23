@@ -432,6 +432,9 @@ class VoicePipeline:
 
         self._mic = None                       # R2: micrófono continuo (perezoso)
         self._mic_silenciado = False           # tecla S en la ventana de video
+        self._corte = threading.Event()        # teclas D/J: cortar lo que Bob está diciendo
+        self._corte_escuchar = False           # D: tras el corte escucha ya; J: fin de charla
+        self._audio_q = None                   # frases listas de la respuesta en curso
         self._mic_lock = threading.Lock()
         self._cupo_stt = stt.CupoSTT()         # R2: transcripciones del último minuto
         self._stt_listo = None                 # R2: (wav, Future) de la transcripción adelantada
@@ -529,6 +532,29 @@ class VoicePipeline:
     @property
     def microfono_activo(self) -> bool:
         return not getattr(self, '_mic_silenciado', False)
+
+    def cortar_respuesta(self, escuchar: bool) -> None:
+        """Teclas D (escuchar=True) y J en la ventana de video: cortan lo que Bob está
+        diciendo. D lo pone a escuchar enseguida; J termina la charla. Si Bob no está
+        respondiendo ni hablando solo, no hacen nada."""
+        from nucleo.state_machine import RobotState
+        if not (self._muted.is_set()
+                or self._sm.estado in (RobotState.THINKING, RobotState.SPEAKING)):
+            return
+        self._corte_escuchar = escuchar
+        self._corte.set()
+        q = getattr(self, '_audio_q', None)
+        if q is not None:
+            try:
+                q.put_nowait(None)       # despierta a _stream_and_speak si espera frase
+            except queue.Full:
+                pass                     # está reproduciendo: el corte lo para igual
+        console.print('[bold yellow][corte] Bob se calla y te escucha (D)[/]' if escuchar
+                      else '[bold yellow][corte] Bob se calla (J)[/]')
+
+    def _cortado(self) -> bool:
+        corte = getattr(self, '_corte', None)
+        return corte is not None and corte.is_set()
 
     def _esperar_microfono(self) -> None:
         """Sin micrófono continuo (ESP32 o grabación de antes): silenciado, no se graba."""
@@ -914,6 +940,12 @@ class VoicePipeline:
 
         while not self._detener.is_set():
             self._cerrar_especulacion()   # R1: lo adelantado del turno anterior, si quedó
+            # Corte por tecla: D sigue al turno siguiente (escuchar ya); J cierra la charla.
+            if self._cortado():
+                self._corte.clear()
+                if not self._corte_escuchar:
+                    console.print('[dim][corte] fin de conversación[/]')
+                    break
             # ── 1. Obtener input del turno ─────────────────────────────────────
             texto: str = ''
             audio_turno: Optional[bytes] = None   # audio de la frase (Fase V)
@@ -1237,6 +1269,12 @@ class VoicePipeline:
         except Exception as e:
             console.print(f'[dim][memoria] cierre falló: {e}[/]')
         modo_dueno.fin_charla(self)  # V5c: el modo ingeniero dura la charla
+        # D sobre la frase que cerraba la charla ("Hasta luego", "Poniendo…"): escuchar ya.
+        if self._cortado():
+            self._corte.clear()
+            if self._corte_escuchar:
+                self._sm.iniciar_escuchando()
+                return
         self._sm.fin_turno()
 
     # ── R1: respuesta adelantada (JEV en paralelo) ───────────────────────────
@@ -1779,6 +1817,8 @@ class VoicePipeline:
         """Reproduce el audio de Bob (WAV de Piper o mp3 de edge-tts) por el speaker
         del ESP32 (TCP) o pygame local según flag.
         R2: avisa al micrófono continuo para que la voz de Bob no cuente como del usuario."""
+        if self._cortado():
+            return None                      # D/J: lo que quedaba por decir no se dice
         self._hablo_desde_escucha = True     # R4: el próximo turno arranca con el tono
         mic = getattr(self, '_mic', None)
         if mic is not None:
@@ -1844,7 +1884,7 @@ class VoicePipeline:
             self._pygame.mixer.music.play()
             while self._pygame.mixer.music.get_busy():
                 time.sleep(0.05)
-                if self._detener.is_set():
+                if self._detener.is_set() or self._cortado():
                     self._pygame.mixer.music.stop()
                     break
         finally:
@@ -1914,16 +1954,20 @@ class VoicePipeline:
             return False
         while canal is not None and canal.get_busy():
             time.sleep(0.02)
-            if self._detener.is_set():
+            if self._detener.is_set() or self._cortado():
                 canal.stop()
                 break
         return True
 
     def _stream_and_speak(self, texto: str) -> Optional[bytes]:
         """LLM streaming + TTS en paralelo, reproducción en cuanto llega cada frase."""
+        if self._cortado():
+            return None                  # D/J mientras pensaba: no responde
         sent_q:  queue.Queue = queue.Queue()
         audio_q: queue.Queue = queue.Queue(maxsize=8)
+        self._audio_q = audio_q          # cortar_respuesta la despierta
         captured = [None]
+        terminado = threading.Event()    # corte: el TTS deja de preparar frases
 
         def llm_worker():
             # finally: el None de cierre DEBE llegar aunque el LLM explote,
@@ -1956,6 +2000,8 @@ class VoicePipeline:
                 # espacios) — edge-tts lanza NoAudioReceived con esos.
                 if not any(ch.isalnum() for ch in clean):
                     continue
+                if terminado.is_set():
+                    return
                 try:
                     mp3 = _sintetizar(clean, emo)
                 except Exception as e:
@@ -1963,7 +2009,13 @@ class VoicePipeline:
                     errores.aviso('VOZ', f'No pude decir "{clean[:40]}"; sigo con la frase '
                                   'siguiente.', e)
                     continue
-                audio_q.put((clean, mp3, emo))
+                # Con la cola llena y la respuesta cortada nadie la vacía: no colgarse.
+                while not terminado.is_set():
+                    try:
+                        audio_q.put((clean, mp3, emo), timeout=0.5)
+                        break
+                    except queue.Full:
+                        continue
 
         self._sm.iniciar_hablando()
 
@@ -1993,7 +2045,7 @@ class VoicePipeline:
                         self._decir_relleno()
                     continue
                 break
-            if item is None:
+            if item is None or self._cortado():
                 break
             sent_text, mp3, emo = item
             if not mp3:
@@ -2021,6 +2073,10 @@ class VoicePipeline:
                 captured[0] = c
                 break
 
+        self._audio_q = None
+        terminado.set()
+        if self._cortado():
+            return None                  # cortada: no esperar a que el LLM termine
         llm_t.join(timeout=2.0)
         tts_t.join(timeout=2.0)
         return captured[0]
@@ -2234,6 +2290,10 @@ class VoicePipeline:
             self._restaurar_oled()
             time.sleep(SOLILOQUIO_SETTLE_MS / 1000.0)
             self._muted.clear()
+            if self._cortado():          # D/J sobre una frase suelta
+                self._corte.clear()
+                if self._corte_escuchar:
+                    self._sm.iniciar_escuchando()
 
     def _restaurar_oled(self) -> None:
         """Devuelve el OLED al look del estado actual tras un soliloquio."""

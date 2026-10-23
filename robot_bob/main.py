@@ -287,6 +287,10 @@ def main() -> None:
                 break
             elif tecla in (ord('s'), ord('S')):
                 voice.alternar_microfono()       # Bob sigue con todo; solo deja de escuchar
+            elif tecla in (ord('d'), ord('D')):
+                voice.cortar_respuesta(escuchar=True)    # se calla y te escucha ya
+            elif tecla in (ord('j'), ord('J')):
+                voice.cortar_respuesta(escuchar=False)   # se calla y termina la charla
             elif tecla == ord('e') and memoria is not None and face_id is not None:
                 # Enrolado manual (tecla E) en hilo: el video sigue corriendo
                 # mientras se escribe el nombre. Frame LIMPIO del tracker (el
