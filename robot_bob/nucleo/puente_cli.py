@@ -120,6 +120,21 @@ def _avisar(texto: str) -> None:
 
 
 def _leer_comandos(entrada) -> None:
+    _despachar(entrada)
+    # stdin cerrado: el CLI ya no está (se cerró o se cayó). Bob no debe quedar
+    # corriendo sin que nadie lo vea y con COM3 tomado: cierra como con "salir" o,
+    # si no hay quien lo atienda, como con Ctrl+C (corre el finally de main).
+    # raise_signal y no _thread.interrupt_main: en Windows solo la señal despierta
+    # un time.sleep largo del hilo principal.
+    salir = _comandos.get('salir')
+    if salir is not None:
+        salir({'cmd': 'salir'})
+    else:
+        import signal
+        signal.raise_signal(signal.SIGINT)
+
+
+def _despachar(entrada) -> None:
     for linea in entrada:
         linea = linea.strip()
         if not linea:

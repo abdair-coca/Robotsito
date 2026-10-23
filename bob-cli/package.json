@@ -1,0 +1,26 @@
+{
+  "name": "bob-cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CLI de Bob: muestra todo lo que Bob escribe, al estilo de Claude Code.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "tsx src/index.tsx",
+    "falso": "tsx src/index.tsx --falso",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test src/protocolo.test.ts"
+  },
+  "dependencies": {
+    "ink": "5.2.1",
+    "react": "18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "@types/react": "18.3.31",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3"
+  }
+}

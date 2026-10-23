@@ -35,6 +35,8 @@ sys.path.insert(0, RAIZ)
 from nucleo import puente_cli
 puente_cli.al_comando('eco', lambda c: print(f"eco {c['x']}"))
 puente_cli.al_comando('roto', lambda c: 1 / 0)
+fin = threading.Event()
+puente_cli.al_comando('salir', lambda c: fin.set())
 ACTIVAR
 from rich.console import Console
 import errores
@@ -54,18 +56,35 @@ def hilo(n):
 hs = [threading.Thread(target=hilo, args=(n,)) for n in (1, 2)]
 [h.start() for h in hs]
 [h.join() for h in hs]
-[t.join(5) for t in threading.enumerate() if t.name == 'cli-comandos']
+if puente_cli.ACTIVO:
+    print('salir llegó' if fin.wait(5) else 'salir NO llegó')
+'''.replace('RAIZ', repr(RAIZ))
+
+# Sin "salir" registrado: al cerrarse stdin, KeyboardInterrupt en el hilo principal
+# para que corra el finally de main.py (servos a casa, COM3).
+HIJO_SIN_SALIR = r'''
+import sys, time
+sys.path.insert(0, RAIZ)
+from nucleo import puente_cli
+puente_cli.activar()
+try:
+    time.sleep(30)
+except KeyboardInterrupt:
+    print('KeyboardInterrupt')
+finally:
+    print('cerrado limpio')
 '''.replace('RAIZ', repr(RAIZ))
 
 COMANDOS = '{"cmd":"eco","x":7}\nbasura\n{"cmd":"nada"}\n{"cmd":"roto"}\n'
 
 
-def correr(activar: str, con_cli: bool, entrada: str = '') -> subprocess.CompletedProcess:
+def correr(activar: str, con_cli: bool, entrada: str = '',
+           script: str = HIJO) -> subprocess.CompletedProcess:
     env = {k: v for k, v in os.environ.items() if k != 'BOB_CLI'}
     env['PYTHONIOENCODING'] = 'utf-8'
     if con_cli:
         env['BOB_CLI'] = '1'
-    return subprocess.run([sys.executable, '-c', HIJO.replace('ACTIVAR', activar)],
+    return subprocess.run([sys.executable, '-c', script.replace('ACTIVAR', activar)],
                           input=entrada.encode('utf-8'), capture_output=True,
                           env=env, cwd=RAIZ, timeout=60)
 
@@ -117,6 +136,16 @@ avisos = [e['ansi'] for e in eventos if e['nivel'] == 'aviso' and e['ansi'].star
 check('comandos: ilegible, desconocido y fallido avisan', len(avisos) == 3
       and 'ilegible' in avisos[0] and 'desconocido: nada' in avisos[1] and 'roto falló' in avisos[2],
       repr(avisos))
+check('stdin cerrado: llama a salir', buscar('salir llegó') is not None)
+
+# ── 4b. stdin cerrado sin "salir": cierre limpio por KeyboardInterrupt ─────────
+import time   # noqa: E402
+t0 = time.monotonic()
+r = correr('', con_cli=True, script=HIJO_SIN_SALIR)
+textos = [json.loads(l)['ansi'] for l in r.stdout.decode('utf-8').splitlines()]
+check('stdin cerrado sin salir: corre el finally enseguida',
+      textos == ['KeyboardInterrupt', 'cerrado limpio'] and time.monotonic() - t0 < 10,
+      f'{textos} ({time.monotonic() - t0:.1f} s)')
 
 # ── 5. Sin BOB_CLI: idéntico a no llamar a activar() ────────────────────────────
 sin_cli = correr('puente_cli.activar()', con_cli=False)

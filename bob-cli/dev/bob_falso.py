@@ -1,0 +1,80 @@
+"""
+bob_falso.py — Bob de mentira para probar bob-cli sin hardware ni red.
+
+Usa el puente real (robot_bob/nucleo/puente_cli.py), así que lo que muestra el CLI es
+lo mismo que mostraría con Bob. Lo lanza el CLI con `npm run falso [modo]`:
+  demo           (por defecto) un mensaje de cada tipo y un latido cada 2 s
+  rafaga [s]     200 líneas por segundo durante s segundos (10 por defecto) y termina
+  caida          unas líneas y una excepción sin atrapar (código 1)
+"""
+import os
+import sys
+import threading
+import time
+import traceback
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'robot_bob')))
+
+from nucleo import puente_cli   # noqa: E402
+
+fin = threading.Event()
+puente_cli.al_comando('salir', lambda c: fin.set())   # antes de activar (ver T1)
+puente_cli.activar()
+
+from rich.console import Console   # noqa: E402
+import errores                     # noqa: E402
+
+console = Console(force_terminal=True, color_system="truecolor")   # como config.console
+modo = sys.argv[1] if len(sys.argv) > 1 else 'demo'
+
+
+def demo() -> None:
+    print('═' * 60)
+    print('  Robot Bob — Sistema Integrado (falso)')
+    print('═' * 60)
+    console.print('[dim][config] perfil=normal · LLM=rotacion · TTS=piper · musica=True[/]')
+    console.print('[voice] Escuchando (8s timeout)...')
+    console.print('[bold yellow][wake] "Bob, ¿cómo estás?" → payload: "¿cómo estás?"[/]')
+    console.print('[bold green]Bob[/] [dim](FELIZ)[/]: ¡Hola! Estoy muy bien, gracias por preguntar.')
+    errores.aviso('CLAUDE', 'No respondió a tiempo: este turno lo contesta Groq.')
+    errores.error('CÁMARA', 'No llega video. Revisa que la ESP32-CAM esté encendida.', 'timed out')
+    print('[enrolar] nuevo id=3 → Abdair')
+    print('un print() a stderr', file=sys.stderr)
+    os.write(1, 'INFO: Created TensorFlow Lite XNNPACK delegate (línea cruda en stdout)\n'.encode())
+    os.write(2, 'W0000 00:00 librería nativa escribiendo directo a stderr\n'.encode())
+    try:
+        {}['falta']
+    except KeyError:
+        traceback.print_exc()
+    console.print('[dim]Una línea larga para ver el corte: ' + 'palabra ' * 40 + '[/]')
+    n = 0
+    while not fin.wait(2.0):
+        n += 1
+        console.print(f'[dim][latido] {n}[/]')
+    print('Robot Bob detenido.')
+
+
+def rafaga(segundos: float) -> None:
+    total = int(200 * segundos)
+    t0 = time.monotonic()
+    for i in range(total):
+        print(f'\x1b[2mráfaga {i:05d}\x1b[0m ' + 'x' * 60)
+        # Windows duerme de a ~15 ms: un sleep de 5 ms por línea daría 70/s, no 200.
+        espera = t0 + (i + 1) / 200 - time.monotonic()
+        if espera > 0.02:
+            time.sleep(espera)
+    print(f'FIN RÁFAGA {total} líneas en {time.monotonic() - t0:.2f} s')
+
+
+def caida() -> None:
+    console.print('[voice] Pensando...')
+    errores.error('SERIAL', 'Se perdió COM3: Bob no puede mover los servos.')
+    raise RuntimeError('cámara: timed out')
+
+
+if modo == 'rafaga':
+    rafaga(float(sys.argv[2]) if len(sys.argv) > 2 else 10.0)
+elif modo == 'caida':
+    caida()
+else:
+    demo()

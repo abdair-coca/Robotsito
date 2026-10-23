@@ -26,3 +26,6 @@ robot_bob/exp_voz/
 
 # Salida de ejecución: registro de decisiones de JEV (J4)
 robot_bob/logs/
+
+# Dependencias del CLI (bob-cli/): se instalan con npm install
+bob-cli/node_modules/
