@@ -72,6 +72,9 @@ try:
                   'python script.py', 'rm nota.txt', 'cd subcarpeta', 'cd .',
                   'Set-Location subcarpeta', 'dir && git status',
                   'npm run dev', 'npm test', 'node server.js', 'git diff', 'mkdir proyecto',
+                  # npm instala en el proyecto, desde el registro
+                  'npm install', 'npm ci', 'npm install react', 'npm i vite', 'npm add -D vitest',
+                  'npm install && npm run dev',
                   # ruta del script entre comillas (lo que Claude manda en Windows)
                   'python "C:\\Users\\abdai\\desktop\\AppInglés\\src\\calculadora.py"',
                   'py "src/app.py"', 'python "C:\\Mi Carpeta\\app.py" --modo prueba',
@@ -88,7 +91,11 @@ try:
                   'pushd C:\\',
                   # B-D10: fuera de la allowlist, aunque no caigan en BASH_BLOQUEADOS
                   'cmd /c start https://vite.dev', 'cmd.exe /c start "" "https://vite.dev"',
-                  'npm install react', 'npm i vite', 'npx create-vite app', 'powershell -c dir',
+                  'npx create-vite app', 'powershell -c dir',
+                  # npm: sin globales ni paquetes desde una URL
+                  'npm install -g vite', 'npm i --global x', 'npm install --location=global x',
+                  'npm install --prefix C:\\x react', 'npm install https://x.com/p.tgz',
+                  'npm i git+https://github.com/x/y', 'npm install github:x/y',
                   'node -e "1"', 'python -c "import os"', 'start https://vite.dev', 'dir | cmd',
                   # con comillas no se cuela una expansión, un encadenado ni otro tipo de archivo
                   'python "$(evil).py"', 'python "`evil`.py"', 'python "%TEMP%\\x.py"',
@@ -109,6 +116,27 @@ try:
     check("decisor: Edit y Write siguen permitidos",
           decidir('Edit', {'file_path': 'n.txt'}) is True and decidir('Write', {'file_path': 'n.txt'}) is True)
     check("decisor: WebSearch se niega", decidir('WebSearch', {'query': 'x'}) is False)
+    check("decisor: npm install corre sin pedir nada",
+          decidir('Bash', {'command': 'npm install'}) is True)
+    check("aviso: npm install dice que instala",
+          modo_dueno._aviso('Bash', {'command': 'npm install'})[0] == 'Estoy instalando las dependencias.')
+
+    # 2b) Tiempo del turno: instalar tarda; si Bob lo ofreció, el "sí" también tiene más tiempo
+    class S:
+        def __init__(self, nombre):
+            self.nombre = nombre
+    vp = VPFalso()
+    vp._convo = [{'role': 'assistant', 'content': 'Listo, ¿quieres que haga algo más?'}]
+    largo, corto = modo_dueno.ING_INSTALAR_TIMEOUT_S, modo_dueno.ING_TIMEOUT_S
+    check("tiempo: instalar en escritura → largo",
+          modo_dueno._timeout_turno(vp, 'instala las dependencias', S('escritura')) == largo)
+    check("tiempo: charla normal → corto",
+          modo_dueno._timeout_turno(vp, 'qué hay en App.jsx', S('escritura')) == corto)
+    check("tiempo: lectura no instala → corto",
+          modo_dueno._timeout_turno(vp, 'instala las dependencias', S('lectura')) == corto)
+    vp._convo.append({'role': 'assistant', 'content': '¿Quieres que instale las dependencias?'})
+    check("tiempo: 'sí' tras ofrecer instalar → largo",
+          modo_dueno._timeout_turno(vp, 'sí, hazlo', S('escritura')) == largo)
 
     # 3) Comando de la sesión: Bash en --tools, pero pide permiso (no está en --allowedTools)
     cmd = modo_dueno._sesion_escritura(VPFalso()).comando()

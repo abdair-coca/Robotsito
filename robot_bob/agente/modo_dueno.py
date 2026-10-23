@@ -90,6 +90,9 @@ except Exception:
 ING_MAX_FRASES = 4
 ING_MAX_TOKENS = 600     # gpt-oss gasta parte en razonar: 160 no alcanza para 4 frases
 ING_TIMEOUT_S = 25.0     # sin respuesta de Claude Code en este tiempo → Groq ese turno
+ING_INSTALAR_TIMEOUT_S = 180.0   # turno de escritura que habla de instalar: npm install tarda
+_RE_INSTALAR = re.compile(r'\binstal\w*|\bdependencias\b|\bnpm\b', re.IGNORECASE)
+_RE_NPM_INSTALAR = re.compile(r'\bnpm\s+(?:install|i|ci|add)\b', re.IGNORECASE)
 # Memoria de la charla, compartida por las sesiones de Claude (lectura, escritura, web): cada
 # sesión recibe, en una línea, solo lo que pasó desde su último turno. Una sesión nueva (otro
 # modelo, reinicio o corte) recibe los últimos MEMORIA_MAX_MSGS mensajes, recortados.
@@ -164,8 +167,10 @@ ESCRITURA_PROHIBIDAS = (LECTURA_PROHIBIDAS + ['Edit(**/.env)', 'Edit(**/.env.*)'
                                               'Write(**/.env)', 'Write(**/.env.*)']
                         + BASH_PROHIBIDAS_CLI)
 ESCRITURA_PROMPT = (' Puedes leer, crear y editar archivos y ejecutar comandos de shell dentro de la '
-                    'carpeta de trabajo de AppInglés. No hagas git push, no instales paquetes, no '
-                    'descargues nada, no cambies de carpeta y no leas ni escribas .env ni claves. '
+                    'carpeta de trabajo de AppInglés. Puedes instalar paquetes de npm en el '
+                    'proyecto (npm install, npm ci, npm install <paquete>), nunca globales (-g). '
+                    'No hagas git push, no instales con pip, no descargues nada fuera de npm, no '
+                    'cambies de carpeta y no leas ni escribas .env ni claves. '
                     'Para correr un script usa su ruta relativa a la carpeta de trabajo, con '
                     'barras / (el shell es bash: la barra invertida se pierde) y sin opciones, '
                     'por ejemplo: python src/app.py. '
@@ -187,6 +192,9 @@ BASH_BLOQUEADOS = [re.compile(p, re.IGNORECASE) for p in (
     r'\bpython\S*\s+-m\s+pip\s+install\b',
     r'\b(?:curl|wget)\b',
     r'\binvoke-(?:webrequest|restmethod)\b',
+    # npm instala solo en el proyecto y desde el registro: sin globales ni URLs
+    r'\bnpm\b[^;&|]*\s(?:-g|--global|--location|--prefix)\b',
+    r'\bnpm\b[^;&|]*\s(?:https?:|git[+:]|github:|file:)',
 )]
 # Allowlist de Bash (B-D10): cada tramo de un comando encadenado (&&, ||, ;, |, &) debe empezar
 # por uno de estos. Lo que no esté aquí se niega, aunque no caiga en BASH_BLOQUEADOS.
@@ -201,7 +209,7 @@ BASH_PERMITIDOS = [re.compile(p, re.IGNORECASE) for p in (
     r'(?:python3?|py)\s+(?:-[BEISsu]\s+)*' + _RUTA_SCRIPT.format(ext=r'\.py') + r'(?:\s|$)',
     r'node\s+(?:-v|--version)(?:\s|$)',
     r'node\s+' + _RUTA_SCRIPT.format(ext=r'\.m?js') + r'(?:\s|$)',
-    r'npm\s+(?:-v|--version|run|test|ls|list)(?:\s|$)',
+    r'npm\s+(?:-v|--version|run|test|ls|list|install|i|ci|add)(?:\s|$)',
 )]
 # Cambiar de carpeta: solo dentro de AppInglés (B-D3).
 _RE_CAMBIO = re.compile(r'(?:^|[;&|]\s*)(cd|chdir|pushd|set-location|sl|push-location)\b([^;&|]*)',
@@ -649,6 +657,8 @@ _AVISO_EXTRA = ['Un momento más.', 'Ya casi termino.']    # tras el primer "aú
 
 def _aviso(herramienta: str, entrada: dict) -> Tuple[str, str]:
     ahora, sigue = _AVISOS.get(herramienta, _AVISO_GENERICO)
+    if herramienta == 'Bash' and _RE_NPM_INSTALAR.search(str(entrada.get('command') or '')):
+        ahora, sigue = 'Estoy instalando las dependencias.', 'Sigo instalando, tarda un poco.'
     archivo = os.path.basename(str(entrada.get('file_path') or '')).strip()
     return ahora.format(archivo=archivo).replace(' el archivo .', ' un archivo.'), sigue
 
@@ -704,6 +714,17 @@ def _navegador_abierto(vp) -> bool:
     return bool(getattr(vp, '_modo_ingeniero', False) and sesion is not None and sesion.vivo)
 
 
+def _timeout_turno(vp, texto: str, sesion) -> float:
+    """Más tiempo si el turno de escritura habla de instalar, o responde a Bob que lo ofreció
+    ("¿instalo las dependencias?" → "sí")."""
+    if sesion.nombre != 'escritura':
+        return ING_TIMEOUT_S
+    previo = next((m.get('content') or '' for m in reversed(getattr(vp, '_convo', []) or [])
+                   if m.get('role') == 'assistant'), '')
+    return (ING_INSTALAR_TIMEOUT_S if _RE_INSTALAR.search(texto or '') or _RE_INSTALAR.search(previo)
+            else ING_TIMEOUT_S)
+
+
 def responder_claude(vp, texto: str, sesion, nota: str = ''):
     """Generador de un turno del modo ingeniero con Claude Code: Avisos mientras usa
     herramientas y luego las frases a decir. Si Claude Code no respondió no da frases (el
@@ -725,7 +746,7 @@ def responder_claude(vp, texto: str, sesion, nota: str = ''):
     mensaje = ((f'[Antes en esta charla: {memoria}]\n' if memoria else '')
                + (f'[Contexto de este turno: {" ".join(notas)}]\n' if notas else '') + texto)
     t0 = time.monotonic()
-    respuesta = yield from _preguntar_narrando(sesion, mensaje, ING_TIMEOUT_S)
+    respuesta = yield from _preguntar_narrando(sesion, mensaje, _timeout_turno(vp, texto, sesion))
     if not respuesta:
         console.print('[yellow][dueño] Claude Code no respondió: este turno va con Groq[/]')
         return
