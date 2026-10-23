@@ -196,6 +196,26 @@ def main() -> None:
     threading.Timer(0.2, ev.set).start()
     check('cancelar', mic.escuchar(timeout_inicial=5.0, cancelar=ev) is None)
 
+    # 11b) Tecla S: silenciado no oye nada y el plazo no corre; al activarlo, oye lo siguiente
+    mic = mic_nuevo()
+    mic.silenciado = True
+
+    def correr_silenciado():
+        for audio, mudo in ((np.concatenate([silencio(0.3), A, silencio(1.5)]), True),
+                            (np.concatenate([silencio(0.3), B, silencio(1.5)]), False)):
+            mic.silenciado = mudo
+            for i in range(0, len(audio), ae.BLOQUE):
+                mic.alimentar(audio[i:i + ae.BLOQUE])
+                time.sleep(ae.BLOQUE / SR / 4)
+    t = threading.Thread(target=correr_silenciado, daemon=True)
+    t.start()
+    f = mic.escuchar(timeout_inicial=1.0)
+    t.join()
+    mudos = [b for b in mic._bloques if b.mudo]
+    check('silenciado: entra silencio', mudos and all(not b.audio.any() for b in mudos))
+    check('silenciado: el plazo no vence y oye lo dicho después de activarlo',
+          f is not None and abs(dur(f) - len(B) / SR) < 0.8, f'-> {dur(f) if f else None}')
+
     # 12) Reglas sueltas: frase completa y cupo de STT
     check('completa: "¿cómo estás?"', ae.frase_completa('¿Cómo estás?'))
     check('incompleta: "pon música de"', not ae.frase_completa('pon música de'))

@@ -430,6 +430,7 @@ class VoicePipeline:
         self._system_prompt_actual = self._system_prompt_base
 
         self._mic = None                       # R2: micrófono continuo (perezoso)
+        self._mic_silenciado = False           # tecla S en la ventana de video
         self._mic_lock = threading.Lock()
         self._cupo_stt = stt.CupoSTT()         # R2: transcripciones del último minuto
         self._stt_listo = None                 # R2: (wav, Future) de la transcripción adelantada
@@ -502,6 +503,7 @@ class VoicePipeline:
                                                      log=console.print)
                         if not mic.abierto:
                             raise RuntimeError('stream cerrado')
+                        mic.silenciado = self._mic_silenciado
                         self._mic = mic
                         console.print('[dim][mic] micrófono continuo + Silero VAD[/]')
                     except Exception as e:
@@ -509,6 +511,27 @@ class VoicePipeline:
                         console.print(f'[yellow][mic] sin micrófono continuo ({e}); '
                                       f'se graba como antes[/]')
         return getattr(self, '_mic', None)
+
+    def alternar_microfono(self) -> bool:
+        """Tecla S: silencia o reactiva el micrófono; Bob sigue con todo lo demás (ojos,
+        cabeza, voz). Silenciado, las escuchas esperan sin cortar la charla. Devuelve True
+        si quedó activo."""
+        self._mic_silenciado = not getattr(self, '_mic_silenciado', False)
+        mic = getattr(self, '_mic', None)
+        if mic is not None:
+            mic.silenciado = self._mic_silenciado
+        console.print('[bold red][mic] SILENCIADO: Bob no escucha (S para activar)[/]'
+                      if self._mic_silenciado else '[bold green][mic] ACTIVO: Bob escucha[/]')
+        return not self._mic_silenciado
+
+    @property
+    def microfono_activo(self) -> bool:
+        return not getattr(self, '_mic_silenciado', False)
+
+    def _esperar_microfono(self) -> None:
+        """Sin micrófono continuo (ESP32 o grabación de antes): silenciado, no se graba."""
+        while getattr(self, '_mic_silenciado', False) and not self._detener.is_set():
+            time.sleep(0.1)
 
     # ── Loop principal ────────────────────────────────────────────────────────
 
@@ -1269,11 +1292,13 @@ class VoicePipeline:
         R3: dictado (modo ingeniero) tolera pausas largas y transcribe por tramos.
         """
         if USE_ROBOT_MIC and self._audio_io is not None and self._audio_io.connected:
+            self._esperar_microfono()
             return self._grabar_robot(initial_timeout)
         mic = self._mic_continuo()
         if mic is not None:
             return self._grabar_continuo(mic, initial_timeout, invitar, adelantar_stt, reposo,
                                          dictado)
+        self._esperar_microfono()
         return self._grabar_laptop(initial_timeout, invitar)
 
     def _grabar_continuo(self, mic, initial_timeout: float, invitar: bool,
@@ -2299,6 +2324,7 @@ class VoicePipeline:
     def _grabar_wake(self) -> Optional[bytes]:
         """Versión corta para wake monitor: ~3 s, despacha a robot o laptop."""
         if USE_ROBOT_MIC and self._audio_io is not None and self._audio_io.connected:
+            self._esperar_microfono()
             return self._grabar_wake_robot()
         mic = self._mic_continuo()
         if mic is not None:     # R2: misma ventana corta, desde el micrófono continuo
@@ -2306,6 +2332,7 @@ class VoicePipeline:
                                  silencio_fin_ms=WAKE_SILENCE_CUT_S * 1000,
                                  nivel_min=WAKE_MIN_LEVEL, cancelar=self._detener)
             return frase.wav() if frase is not None else None
+        self._esperar_microfono()
         return self._grabar_wake_laptop()
 
     def _grabar_wake_robot(self) -> Optional[bytes]:

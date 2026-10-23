@@ -179,7 +179,7 @@ def main() -> None:
     # y procesar cada frame satura el GIL → el stream-reader no drena el socket.
     TARGET_PERIOD = 1.0 / TARGET_FPS
 
-    print('\nRobot Bob activo. Presiona Q para salir.')
+    print('\nRobot Bob activo. Presiona Q para salir, S para silenciar o activar el micrófono.')
     serial_mgr.cmd_servo(PAN_HOME, TILT_HOME)
 
     try:
@@ -248,6 +248,15 @@ def main() -> None:
                         (10, frame.shape[0] - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
                         (200, 220, 255), 1)
 
+            # Micrófono (tecla S): silenciado, borde rojo para verlo de lejos
+            if voice.microfono_activo:
+                cv2.putText(frame, 'MIC ACTIVO (S)', (10, frame.shape[0] - 36),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLOR_OK, 2)
+            else:
+                cv2.putText(frame, 'MIC SILENCIADO (S)', (10, frame.shape[0] - 36),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLOR_ERR, 2)
+                cv2.rectangle(frame, (0, 0), (frame.shape[1] - 1, frame.shape[0] - 1), COLOR_ERR, 4)
+
             if det is not None:
                 cx, cy, x, y, w, h = det
                 cv2.rectangle(frame, (x, y), (x + w, y + h), COLOR_OK, 2)
@@ -272,6 +281,8 @@ def main() -> None:
             tecla = cv2.waitKey(1) & 0xFF
             if tecla == ord('q'):
                 break
+            elif tecla in (ord('s'), ord('S')):
+                voice.alternar_microfono()       # Bob sigue con todo; solo deja de escuchar
             elif tecla == ord('e') and memoria is not None and face_id is not None:
                 # Enrolado manual (tecla E) en hilo: el video sigue corriendo
                 # mientras se escribe el nombre. Frame LIMPIO del tracker (el

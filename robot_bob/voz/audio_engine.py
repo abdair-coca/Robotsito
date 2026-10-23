@@ -115,6 +115,7 @@ class _Bloque:
     prob: float            # Silero
     nivel: float           # RMS en % del fondo de escala (misma escala que calibrar_mic)
     bob: bool              # Bob hablaba (o su eco): no es voz del usuario
+    mudo: bool = False     # micrófono silenciado (tecla S): entró silencio
 
 
 @dataclass
@@ -164,6 +165,7 @@ class Microfono:
         self._eco_hasta = 0
         self._ultimo_bob = -1
         self._ultimo_dato = time.monotonic()
+        self.silenciado = False      # tecla S: entra silencio y la espera de una frase no corre
         self._q: queue.Queue = queue.Queue()
         self._stream = None
         self._detener = threading.Event()
@@ -203,6 +205,9 @@ class Microfono:
 
     def alimentar(self, muestras: np.ndarray) -> None:
         """Agrega audio int16 al búfer, en bloques de 32 ms con su VAD y nivel."""
+        mudo = self.silenciado
+        if mudo:
+            muestras = np.zeros_like(muestras)
         x = np.concatenate([self._resto, muestras.astype(np.int16)])
         nuevos = []
         while len(x) >= BLOQUE:
@@ -217,7 +222,7 @@ class Microfono:
                 bob = self._bob_hablando or self._n < self._eco_hasta
                 if bob:
                     self._ultimo_bob = self._n
-                self._bloques.append(_Bloque(self._n, b, p, nivel, bob))
+                self._bloques.append(_Bloque(self._n, b, p, nivel, bob, mudo))
                 self._n += 1
             self._cond.notify_all()
 
@@ -317,6 +322,8 @@ class Microfono:
             b = self._bloque(n, cancelar)
             if b is None:
                 return None
+            if b.mudo:              # silenciado: la espera se pausa (la charla no se corta)
+                inicio_escucha += 1
             voz = (not b.bob) and b.prob >= UMBRAL_VOZ and b.nivel >= nivel_min
             seguidos = seguidos + 1 if voz else 0
             if seguidos >= INICIO_BLOQUES:
