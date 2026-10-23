@@ -68,9 +68,9 @@ except Exception:
 try:
     from config import (BAILE_ENABLED, BAILE_PAN_AMPL, BAILE_PAN_PERIODO,
                         BAILE_TILT_AMPL, BAILE_TILT_PERIODO, BAILE_OLED,
-                        BAILE_MOTORES, BAILE_MOTOR_VEL, BAILE_WIGGLE_S)
+                        BAILE_MOTORES, BAILE_MOTOR_VEL, BAILE_WIGGLE_S, BAILE_MAX_S)
 except Exception:
-    BAILE_ENABLED = False
+    BAILE_ENABLED, BAILE_MAX_S = False, 10.0
     BAILE_PAN_AMPL, BAILE_PAN_PERIODO = 35.0, 1.10
     BAILE_TILT_AMPL, BAILE_TILT_PERIODO = 14.0, 0.55
     BAILE_OLED = "MUY_FELIZ"
@@ -174,6 +174,7 @@ class BehaviorEngine:
 
         # Baile (mientras suena música)
         self._baile_prev       = False
+        self._baile_t0         = 0.0    # cuándo empezó el baile en curso
         self._baile_oled_last  = 0.0
         self._baile_motor_dir  = 1      # +1/-1: sentido del contoneo del cuerpo
         self._baile_motor_next = 0.0    # cuándo invertir el sentido
@@ -438,8 +439,7 @@ class BehaviorEngine:
         # ── Baile: mientras suena música, Bob se mueve al ritmo (cabeza + cuerpo) ─
         # Tiene prioridad sobre scan/tracking/idle. El wake monitor sigue activo
         # aparte, así que decir "Bob" limpia el flag (state_machine) y corta el baile.
-        if BAILE_ENABLED and self._sm.bailando.is_set():
-            self._tick_baile(ahora)
+        if BAILE_ENABLED and self._sm.bailando.is_set() and self._bailar(ahora):
             return
         if self._baile_prev:
             # Recién terminó el baile → parar el cuerpo y soltar la cabeza.
@@ -573,6 +573,18 @@ class BehaviorEngine:
         # Actualizar los objetivos internos del tracker (necesario para el cálculo de siguiente tick)
         self._tracker.pan_obj  = pan_real
         self._tracker.tilt_obj = tilt_real
+
+    def _bailar(self, ahora: float) -> bool:
+        """Baila hasta BAILE_MAX_S desde que empezó. Después suelta el flag y
+        devuelve False: Bob vuelve a lo normal, la música sigue y él sigue callado
+        (musica_sonando queda set hasta que pare la canción)."""
+        if not self._baile_prev:
+            self._baile_t0 = ahora
+        if ahora - self._baile_t0 < BAILE_MAX_S:
+            self._tick_baile(ahora)
+            return True
+        self._sm.bailando.clear()
+        return False
 
     def _tick_baile(self, ahora: float) -> None:
         """Baile al ritmo: la cabeza barre en pan (lento) y cabecea en tilt (rápido).

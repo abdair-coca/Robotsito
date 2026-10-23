@@ -28,8 +28,8 @@ def paso(intent: 'music.MusicIntent', espera: float) -> None:
 
 
 def main() -> None:
-    if not music.MUSICA_ENABLED:
-        print('✗ MUSICA_ENABLED=False — revisá .env'); sys.exit(1)
+    if not (music.SPOTIFY_CLIENT_ID and music.SPOTIFY_CLIENT_SECRET):
+        print('✗ Faltan SPOTIFY_CLIENT_ID/SECRET — revisá .env'); sys.exit(1)
 
     print('Secuencia: play → baja vol → siguiente → pausa → resume → pausa.')
     print('Escuchá tu Spotify mientras corre.\n')

@@ -39,6 +39,7 @@ class FakeSM:
         self.ev_escuchando = threading.Event()
         self.ev_pensando = threading.Event()
         self.bailando = threading.Event()
+        self.musica_sonando = threading.Event()
         self.notificados = []
         self.saludos = []
 

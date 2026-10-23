@@ -1190,11 +1190,13 @@ class VoicePipeline:
                     if mintent.accion in ('play', 'play_playlist', 'resume'):
                         self._t_baile_inicio = time.monotonic()
                         self._baile_hint = True
+                        self._sm.musica_sonando.set()
                         self._sm.bailando.set()
                         self._hablar(ack, 'MUY_FELIZ')
                         break          # fin de charla → wake monitor + baile activos
                     if mintent.accion == 'pause':
                         self._baile_hint = False
+                        self._sm.musica_sonando.clear()
                         self._sm.bailando.clear()
                     self._hablar(ack, 'FELIZ')
                     es_primer_turno = False
@@ -2077,9 +2079,9 @@ class VoicePipeline:
     # ── Baile: monitor que apaga el baile cuando la música para ────────────────
 
     def iniciar_baile_monitor(self) -> None:
-        """Hilo que, mientras Bob baila, vigila Spotify: si la música ya no suena
-        (terminó la canción, la pausaron desde el celular, etc.), limpia el flag de
-        baile para que BehaviorEngine vuelva a su comportamiento normal."""
+        """Hilo que, mientras suena música, vigila Spotify/YouTube: si ya no suena
+        (terminó la canción, la pausaron desde el celular, etc.), limpia los flags de
+        música y baile para que Bob vuelva a hablar y a su comportamiento normal."""
         if not MUSICA_ENABLED:
             return
         threading.Thread(target=self._baile_monitor_loop, daemon=True,
@@ -2106,28 +2108,26 @@ class VoicePipeline:
                 # Fail-safe: si Spotify no responde 2 veces seguidas, asumir que
                 # la música paró — Bob no debe seguir bailando a ciegas.
                 fallos += 1
-                if fallos >= 2 and self._sm.bailando.is_set():
+                if fallos >= 2 and self._sm.musica_sonando.is_set():
                     console.print('[dim][baile] Spotify no responde → paro el baile[/]')
                     self._sm.bailando.clear()
+                    self._sm.musica_sonando.clear()
                     self._baile_hint = False
                 continue
             if sonando:
-                # Música sonando y Bob libre → asegurar que esté bailando
-                # (re-arranca el baile tras una charla de "siguiente"/"volumen").
-                if not self._sm.bailando.is_set():
-                    self._t_baile_inicio = time.monotonic()
-                    self._baile_hint = True
-                    self._sm.bailando.set()
-                    console.print('[dim][baile] música sonando → a bailar[/]')
+                # Música sonando → Bob callado. No re-arranca el baile: baila
+                # BAILE_MAX_S por canción pedida (lo corta BehaviorEngine).
+                self._sm.musica_sonando.set()
             else:
                 # Gracia: Spotify tarda un instante en reportar is_playing tras
-                # start_playback; no cortar el baile en los primeros segundos.
-                if self._sm.bailando.is_set() and \
+                # start_playback; no cortar la música en los primeros segundos.
+                if self._sm.musica_sonando.is_set() and \
                         time.monotonic() - self._t_baile_inicio < 4.0:
                     continue
-                if self._sm.bailando.is_set():
+                if self._sm.musica_sonando.is_set():
                     console.print('[dim][baile] la música paró → fin del baile[/]')
                 self._sm.bailando.clear()
+                self._sm.musica_sonando.clear()
                 self._baile_hint = False     # música terminó → dejar de consultar
 
     def _recordatorio_loop(self) -> None:
@@ -2165,9 +2165,9 @@ class VoicePipeline:
             # No hablar solo si hay una charla en curso o si ya estamos hablando.
             if self._sm.en_conversacion or self._muted.is_set():
                 continue
-            # Con música sonando Bob baila callado: nada de frases/carnadas
-            # (hablarían encima de la música).
-            if self._sm.bailando.is_set():
+            # Con música sonando Bob está callado (baile o no): nada de
+            # frases/carnadas (hablarían encima de la música).
+            if self._sm.bailando.is_set() or self._sm.musica_sonando.is_set():
                 continue
             # Dormido = callado (igual que las muecas): coherencia con la pose de sueño.
             if self._sm.is_asleep():

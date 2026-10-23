@@ -57,6 +57,7 @@ class FakeSM:
         self.ev_escuchando = threading.Event()
         self.ev_pensando = threading.Event()
         self.bailando = threading.Event()
+        self.musica_sonando = threading.Event()
 
     def estado_interno_prompt(self):
         return ''

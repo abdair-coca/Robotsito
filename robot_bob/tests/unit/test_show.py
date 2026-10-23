@@ -43,6 +43,7 @@ class Serial:
 class SM:
     def __init__(self):
         self.show_activo, self.bailando = threading.Event(), threading.Event()
+        self.musica_sonando = threading.Event()
         self.oled = 0
 
     def oled_ocupar(self):

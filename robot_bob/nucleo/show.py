@@ -263,6 +263,7 @@ def _cierre_musical(vp, decir, ojos, cabeza) -> bool:
         ojos('MUY_FELIZ')
         vp._t_baile_inicio = time.monotonic()
         vp._baile_hint = True
+        vp._sm.musica_sonando.set()
         vp._sm.bailando.set()
         return True
     hablar('Mi DJ no me responde ahora... ¡otro día les bailo! '

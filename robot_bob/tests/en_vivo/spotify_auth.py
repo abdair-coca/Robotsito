@@ -28,8 +28,8 @@ def main() -> None:
     print('  Autorización Spotify (P6)')
     print('═' * 60)
 
-    if not music.MUSICA_ENABLED:
-        print('✗ MUSICA_ENABLED=False — faltan SPOTIFY_CLIENT_ID/SECRET en robot_bob/.env')
+    if not (music.SPOTIFY_CLIENT_ID and music.SPOTIFY_CLIENT_SECRET):
+        print('✗ Faltan SPOTIFY_CLIENT_ID/SECRET en robot_bob/.env')
         sys.exit(1)
 
     print('Abriendo navegador para autorizar (aceptá en la página)...')

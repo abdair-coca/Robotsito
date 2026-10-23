@@ -110,6 +110,9 @@ class StateMachine:
         # al ritmo; el wake monitor sigue activo (no es estado de conversación). Se
         # limpia al entrar en LISTENING (el usuario dijo "Bob") o cuando para la música.
         self.bailando = threading.Event()
+        # Música sonando: set mientras suena la canción, aunque Bob ya no baile
+        # (el baile dura BAILE_MAX_S). Con esto set Bob no habla por su cuenta.
+        self.musica_sonando = threading.Event()
 
         # Show de presentación ("Bob, presentate"): mientras está set, el
         # BehaviorEngine suelta los servos — la coreografía de show.py manda.
@@ -386,9 +389,9 @@ class StateMachine:
     # ── Interno ────────────────────────────────────────────────────────────────
 
     def _evaluar_inicio_conv(self, ahora: float) -> None:
-        # Con música sonando (bailando), Bob NUNCA inicia charla por su cuenta:
+        # Con música sonando (baile o no), Bob NUNCA inicia charla por su cuenta:
         # solo la wake word abre conversación (instrucciones sobre la música).
-        if self.bailando.is_set():
+        if self.bailando.is_set() or self.musica_sonando.is_set():
             return
         if self._t_cara_vista == 0.0:
             return

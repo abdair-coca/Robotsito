@@ -12,6 +12,11 @@ IMPORTANTE:
     SPOTIFY_REDIRECT_URI). spotipy maneja el OAuth: abre el navegador la PRIMERA
     vez para autorizar y cachea el token en robot_bob/.spotify_cache (gitignored).
 
+Plan B YouTube: si Spotify no puede poner un tema (sin credenciales, sin
+dispositivo, sin premium, no lo encuentra o falla la red), busca el tema en
+youtube.com y abre el primer video en el navegador de la laptop. Con YouTube solo
+hay pausa (tecla multimedia de Windows); siguiente y volumen siguen siendo Spotify.
+
 Enfoque defensivo: si la feature está apagada, sin credenciales, sin spotipy, sin
 dispositivo activo o sin premium, NO rompe la charla — devuelve None en el parser
 (cae al LLM) o una frase de error amable en ejecutar().
@@ -19,8 +24,13 @@ dispositivo activo o sin premium, NO rompe la charla — devuelve None en el par
 
 from __future__ import annotations
 
+import json
 import re
 import threading
+import time
+import urllib.parse
+import urllib.request
+import webbrowser
 from dataclasses import dataclass
 from typing import Optional
 
@@ -40,6 +50,10 @@ _VOL_STEP = 15            # cuánto sube/baja el volumen por comando (%)
 
 _sp = None                # cliente spotipy perezoso (se crea al primer uso)
 _sp_lock = threading.Lock()
+
+_YT_BUSQUEDA = "https://www.youtube.com/results?search_query="
+_YT_DUR_DEFECTO = 240.0   # s que se asume que dura un video si YouTube no da el largo
+_yt_hasta = 0.0           # time.monotonic() hasta cuando se asume que suena YouTube
 
 
 # ── Intención ─────────────────────────────────────────────────────────────────
@@ -293,8 +307,11 @@ def _dispositivo_activo(sp) -> bool:
 
 
 def esta_sonando() -> bool:
-    """True si Spotify está reproduciendo algo AHORA. Lo usa el baile para saber
-    cuándo parar. Defensivo: cualquier fallo (sin red/cliente/premium) → False."""
+    """True si Spotify está reproduciendo algo AHORA (o si se estima que sigue el
+    video de YouTube). Lo usa el baile para saber cuándo parar. Defensivo: cualquier
+    fallo (sin red/cliente/premium) → False."""
+    if _youtube_sonando():
+        return True
     sp = _cliente()
     if sp is None:
         return False
@@ -305,26 +322,103 @@ def esta_sonando() -> bool:
         return False
 
 
+# ── Plan B: YouTube en el navegador ─────────────────────────────────────────────
+def _youtube_sonando() -> bool:
+    return time.monotonic() < _yt_hasta
+
+
+def _segundos(largo: str) -> float:
+    """'4:42' o '1:02:03' → segundos."""
+    total = 0
+    for parte in largo.split(":"):
+        total = total * 60 + int(parte)
+    return float(total)
+
+
+def _buscar_youtube(query: str) -> Optional[tuple[str, str, float]]:
+    """Primer video de la búsqueda en youtube.com: (url, título, duración en s).
+    None si no hay red o la página cambió de formato."""
+    req = urllib.request.Request(_YT_BUSQUEDA + urllib.parse.quote(query),
+                                 headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "es"})
+    try:
+        html = urllib.request.urlopen(req, timeout=8).read().decode("utf-8", "ignore")
+    except Exception as e:
+        errores.aviso("YOUTUBE", "No pude buscar en YouTube. Revisa la conexión a internet.", e)
+        return None
+    m = re.search(r'"videoRenderer":\{"videoId":"([\w-]{11})"', html)
+    if not m:
+        return None
+    trozo = html[m.start():m.start() + 8000]   # el video: título y largo vienen cerca
+    t = re.search(r'"title":\{"runs":\[\{"text":"((?:[^"\\]|\\.)*)"', trozo)
+    d = re.search(r'"lengthText":\{.*?"simpleText":"([\d:]+)"', trozo)
+    try:
+        titulo = json.loads(f'"{t.group(1)}"') if t else query
+    except ValueError:
+        titulo = query
+    largo = _segundos(d.group(1)) if d else _YT_DUR_DEFECTO
+    return f"https://www.youtube.com/watch?v={m.group(1)}", titulo, largo
+
+
+def _poner_en_youtube(query: str) -> str:
+    """Abre el tema en YouTube y estima hasta cuándo suena (para el baile)."""
+    global _yt_hasta
+    hallado = _buscar_youtube(query)
+    if hallado is None:
+        # Sin el video exacto: al menos abrir la búsqueda para elegirlo a mano.
+        if webbrowser.open(_YT_BUSQUEDA + urllib.parse.quote(query)):
+            return f"No pude ponerla directo; te abrí la búsqueda de «{query}» en YouTube."
+        return "No pude abrir YouTube en el navegador."
+    url, titulo, largo = hallado
+    if not webbrowser.open(url):
+        return "Encontré la canción en YouTube pero no pude abrir el navegador."
+    _yt_hasta = time.monotonic() + largo
+    return f"¡Dale! Poniendo {titulo} en YouTube."
+
+
+def _pausar_youtube() -> str:
+    """Pausa el video con la tecla multimedia Play/Pause (el navegador la atiende)."""
+    global _yt_hasta
+    _yt_hasta = 0.0
+    try:
+        import ctypes
+        vk_play_pause, keyup = 0xB3, 0x0002
+        ctypes.windll.user32.keybd_event(vk_play_pause, 0, 0, 0)
+        ctypes.windll.user32.keybd_event(vk_play_pause, 0, keyup, 0)
+    except Exception as e:
+        errores.aviso("YOUTUBE", "No pude pausar YouTube; páusalo en el navegador.", e)
+        return "No pude pausar YouTube; páusalo en el navegador."
+    return "Listo, pausé la música."
+
+
+def _plan_b(intent: MusicIntent, motivo: str) -> str:
+    """Spotify no pudo: si el pedido trae tema, lo pone en YouTube; si no, `motivo`."""
+    if intent.accion in ("play", "play_playlist") and intent.query:
+        return _poner_en_youtube(intent.query)
+    return motivo
+
+
 # ── Ejecución ─────────────────────────────────────────────────────────────────
 def ejecutar(intent: MusicIntent) -> str:
     """Ejecuta el comando y devuelve una frase de confirmación/erro para que la diga
     Bob. Nunca lanza: cualquier fallo se traduce en una frase amable."""
+    if intent.accion == "pause" and _youtube_sonando():
+        return _pausar_youtube()
     sp = _cliente()
     if sp is None:
-        return "Mi música no está configurada todavía; falta la clave de Spotify."
+        return _plan_b(intent, "Mi música no está configurada todavía; falta la clave de Spotify.")
 
     try:
         import spotipy
         # Para play con tema no hace falta dispositivo previo si Spotify resuelve uno,
         # pero el resto de acciones sí lo necesitan. Avisamos claro si no hay.
         if intent.accion != "play" and not _dispositivo_activo(sp):
-            return "No veo Spotify abierto en ningún lado; abrilo y lo intento de nuevo."
+            return _plan_b(intent, "No veo Spotify abierto en ningún lado; abrilo y lo intento de nuevo.")
 
         if intent.accion == "play":
             res = sp.search(q=intent.query, type="track", limit=1)
             items = res.get("tracks", {}).get("items", [])
             if not items:
-                return f"No encontré «{intent.query}» en Spotify."
+                return _plan_b(intent, f"No encontré «{intent.query}» en Spotify.")
             track = items[0]
             uri = track["uri"]
             nombre = track["name"]
@@ -332,26 +426,27 @@ def ejecutar(intent: MusicIntent) -> str:
             try:
                 sp.start_playback(uris=[uri])
             except spotipy.SpotifyException:
-                return "Encontré la canción pero no hay un Spotify activo donde reproducirla; abrilo."
+                return _plan_b(intent, "Encontré la canción pero no hay un Spotify activo "
+                                       "donde reproducirla; abrilo.")
             return f"¡Dale! Poniendo {nombre}" + (f" de {artista}." if artista else ".")
 
         if intent.accion == "play_playlist":
             pls = sp.current_user_playlists(limit=50).get("items", [])
             if not pls:
-                return "No veo playlists en tu cuenta de Spotify."
+                return _plan_b(intent, "No veo playlists en tu cuenta de Spotify.")
             if intent.query:
                 q = intent.query.lower()
                 # 1º coincidencia exacta, si no, la primera que contenga el nombre.
                 match = (next((p for p in pls if p["name"].lower() == q), None)
                          or next((p for p in pls if q in p["name"].lower()), None))
                 if not match:
-                    return f"No encontré una playlist que se llame «{intent.query}»."
+                    return _plan_b(intent, f"No encontré una playlist que se llame «{intent.query}».")
             else:
                 match = pls[0]               # sin nombre → la primera de tu lista
             try:
                 sp.start_playback(context_uri=match["uri"])
             except spotipy.SpotifyException:
-                return "Encontré la playlist pero no hay un Spotify activo; abrilo."
+                return _plan_b(intent, "Encontré la playlist pero no hay un Spotify activo; abrilo.")
             return f"¡Dale! Poniendo tu playlist {match['name']}."
 
         if intent.accion == "resume":
@@ -391,4 +486,4 @@ def ejecutar(intent: MusicIntent) -> str:
     except Exception as e:
         errores.aviso("SPOTIFY", "El comando de música falló. Revisa que Spotify esté abierto en "
                       "la laptop y que la cuenta sea premium.", e)
-        return "Uy, algo falló con Spotify; fijate que esté abierto y sea cuenta premium."
+        return _plan_b(intent, "Uy, algo falló con Spotify; fijate que esté abierto y sea cuenta premium.")
