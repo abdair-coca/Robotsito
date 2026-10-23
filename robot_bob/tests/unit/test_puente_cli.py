@@ -147,6 +147,43 @@ check('stdin cerrado sin salir: corre el finally enseguida',
       textos == ['KeyboardInterrupt', 'cerrado limpio'] and time.monotonic() - t0 < 10,
       f'{textos} ({time.monotonic() - t0:.1f} s)')
 
+# ── 4c. stdin abierto (como con el CLI) no traba la carga de DLLs ──────────────
+# En Windows, un hilo bloqueado leyendo el pipe de stdin traba a quien consulte ese
+# handle: el runtime de Fortran de scipy lo hace al cargarse y `import main` quedaba
+# colgado (2026-10-23).
+HIJO_DLL = r'''
+import sys, time
+sys.path.insert(0, RAIZ)
+from nucleo import puente_cli
+puente_cli.activar()
+time.sleep(0.5)                 # el lector ya está bloqueado en stdin
+t0 = time.monotonic()
+import scipy.linalg
+print(f'scipy.linalg cargó en {time.monotonic() - t0:.1f} s')
+'''.replace('RAIZ', repr(RAIZ))
+env = {k: v for k, v in os.environ.items()}
+env.update(BOB_CLI='1', PYTHONIOENCODING='utf-8')
+p = subprocess.Popen([sys.executable, '-c', HIJO_DLL], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                     stderr=subprocess.PIPE, env=env, cwd=RAIZ)
+try:
+    linea = None
+    import threading as _th          # la lectura con timeout: sin el arreglo, cuelga
+    leida = []
+    _th.Thread(target=lambda: leida.append(p.stdout.readline()), daemon=True).start()
+    for _ in range(300):              # hasta 30 s
+        if leida:
+            break
+        time.sleep(0.1)
+    linea = json.loads(leida[0])['ansi'] if leida and leida[0] else None
+finally:
+    p.stdin.close()                   # recién ahora el "CLI" se va
+    try:
+        p.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        p.kill()
+check('stdin abierto: scipy.linalg carga sin trabarse', linea is not None and 'cargó' in linea,
+      repr(linea))
+
 # ── 5. Sin BOB_CLI: idéntico a no llamar a activar() ────────────────────────────
 sin_cli = correr('puente_cli.activar()', con_cli=False)
 nunca = correr('pass', con_cli=False)

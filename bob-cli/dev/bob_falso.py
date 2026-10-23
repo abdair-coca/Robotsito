@@ -19,6 +19,9 @@ from nucleo import puente_cli   # noqa: E402
 
 fin = threading.Event()
 puente_cli.al_comando('salir', lambda c: fin.set())   # antes de activar (ver T1)
+# Atajos del CLI: el Bob real los manda al loop de main.py; acá solo se muestran.
+puente_cli.al_comando('tecla', lambda c: print(
+    f"(falso) tecla {c['tecla']}" + (f" · nombre: {c['nombre']}" if c.get('nombre') else '')))
 puente_cli.activar()
 
 from rich.console import Console   # noqa: E402

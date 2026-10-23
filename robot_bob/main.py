@@ -25,8 +25,10 @@ except Exception:
     pass
 
 # CLI (bob-cli/): con BOB_CLI=1 todo lo que Bob escribe sale como eventos NDJSON.
-# Va antes de importar config, que imprime al cargarse.
-from nucleo import puente_cli
+# Va antes de importar config, que imprime al cargarse. Los atajos del CLI se
+# registran antes de activar: un comando que llega sin registrar se pierde.
+from nucleo import puente_cli, teclas_cli
+teclas_cli.registrar()
 puente_cli.activar()
 
 # Limitar OpenCV a 1 hilo evita que se coma todos los cores y deje al
@@ -71,14 +73,17 @@ except Exception:
     MEMORIA_ENABLED = False
 
 
-def _enrolar_async(frame, face_id, memoria) -> None:
+def _enrolar_async(frame, face_id, memoria, nombre=None) -> None:
     """Enrolado manual en hilo aparte: no congela el video mientras se escribe
-    el nombre en la consola. Memoria es thread-safe (lock interno)."""
+    el nombre en la consola. Memoria es thread-safe (lock interno).
+    nombre: el que se escribió en el CLI; None = pedirlo en la consola."""
     emb, edad = (face_id.analizar(frame) if face_id.listo else (None, None))
     if emb is None:
         print('[enrolar] no hay cara o InsightFace aún no cargó.')
         return
-    nombre = input('[enrolar] nombre de la persona: ').strip()
+    if nombre is None:
+        nombre = input('[enrolar] nombre de la persona: ')
+    nombre = nombre.strip()
     if not nombre:
         print('[enrolar] cancelado (nombre vacío).')
         return
@@ -191,9 +196,12 @@ def main() -> None:
     print('\nRobot Bob activo. Presiona Q para salir, S para silenciar o activar el micrófono.')
     serial_mgr.cmd_servo(PAN_HOME, TILT_HOME)
 
+    teclas_cli.en_loop.set()
     try:
         while True:
             t_inicio_ciclo = time.monotonic()
+            if teclas_cli.salida.is_set():
+                break                            # Q en el CLI (también sin video)
 
             frame = tracker.leer_frame()
             if frame is None:
@@ -288,8 +296,13 @@ def main() -> None:
 
             cv2.imshow('Robot Bob', frame)
             tecla = cv2.waitKey(1) & 0xFF
+            nombre_cli = None
+            if tecla == teclas_cli.SIN_TECLA:
+                tecla, nombre_cli = teclas_cli.siguiente()   # atajo del CLI, si hubo
             if tecla == ord('q'):
                 break
+            elif tecla == teclas_cli.TURNO:
+                voice.disparar_turno()           # ENTER en el CLI (modo tecla)
             elif tecla in (ord('s'), ord('S')):
                 voice.alternar_microfono()       # Bob sigue con todo; solo deja de escuchar
             elif tecla in (ord('d'), ord('D')):
@@ -302,12 +315,15 @@ def main() -> None:
                 # local ya tiene el HUD dibujado encima de la cara).
                 if enroll_hilo is not None and enroll_hilo.is_alive():
                     print('[enrolar] ya hay un enrolado en curso — escribí el nombre en la consola.')
+                elif puente_cli.ACTIVO and nombre_cli is None:
+                    # En modo CLI no hay consola para input(): el nombre se escribe allá.
+                    print('[enrolar] aprieta E en el CLI para escribir el nombre.')
                 else:
                     frame_limpio = tracker.leer_frame()
                     if frame_limpio is not None:
                         enroll_hilo = threading.Thread(
                             target=_enrolar_async,
-                            args=(frame_limpio.copy(), face_id, memoria),
+                            args=(frame_limpio.copy(), face_id, memoria, nombre_cli),
                             daemon=True, name='enrolar')
                         enroll_hilo.start()
 

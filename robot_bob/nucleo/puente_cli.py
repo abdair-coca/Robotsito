@@ -42,7 +42,7 @@ def activar() -> bool:
     # se pida truecolor: el naranja de los avisos saldría amarillo.
     import rich.console
     rich.console.detect_legacy_windows = lambda: False
-    entrada = sys.stdin
+    entrada = _apartar_stdin()
     _canal = sys.stdout.buffer
     sys.stdout = _Escritor('bob')
     sys.stderr = _Escritor('stderr')
@@ -50,6 +50,22 @@ def activar() -> bool:
     threading.Thread(target=_leer_comandos, args=(entrada,), daemon=True,
                      name='cli-comandos').start()
     return True
+
+
+def _apartar_stdin():
+    """Devuelve una copia de stdin para leer los comandos y deja el stdin estándar
+    (fd 0) apuntando a NUL.
+
+    En Windows, un hilo bloqueado leyendo el pipe de stdin traba a cualquier otro que
+    consulte ese mismo handle: el runtime de Fortran de scipy lo hace al cargar su DLL,
+    y `import main` quedaba colgado. Con la copia, lo que mire el stdin estándar ve NUL.
+    En modo CLI nadie más lee stdin (input() da EOF, como debe: el nombre de la E
+    llega por comando)."""
+    copia = os.dup(sys.stdin.fileno())
+    nul = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(nul, 0)              # en consola, también cambia el handle estándar
+    os.close(nul)
+    return open(copia, 'r', encoding='utf-8', closefd=True)
 
 
 def emitir(evento: dict) -> None:

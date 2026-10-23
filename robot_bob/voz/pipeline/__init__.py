@@ -39,6 +39,7 @@ from groq import Groq
 from rich.console import Console
 
 import rutas
+from nucleo import puente_cli
 
 # voicechatLap se appendea (no se inserta al frente) para que robot_bob/config.py
 # tenga prioridad sobre voicechatLap/config.py al hacer `from config import ...`.
@@ -2103,12 +2104,15 @@ class VoicePipeline:
         Cuando detecta "Bob" (o JEV dice que le hablan, J3), notifica
         StateMachine.notificar_wake_word().
         Se mantiene activo mientras el robot no esté en conversación.
-        Con TRIGGER_MODE = "tecla" no escucha: ENTER en la consola dispara el turno.
+        Con TRIGGER_MODE = "tecla" no escucha: ENTER en la consola dispara el turno
+        (en modo CLI, el ENTER del CLI: ver disparar_turno).
         """
         # R2: abrir el micrófono continuo ya (Silero + stream ≈ 2 s), no en el 1er turno.
         threading.Thread(target=self._mic_continuo, daemon=True, name='mic-abrir').start()
         if TRIGGER_MODE == "tecla":
-            threading.Thread(target=self._tecla_loop, daemon=True, name='tecla-trigger').start()
+            # En modo CLI, msvcrt le robaría las teclas a la consola del CLI.
+            if not puente_cli.ACTIVO:
+                threading.Thread(target=self._tecla_loop, daemon=True, name='tecla-trigger').start()
             return
         threading.Thread(target=self._wake_monitor_loop, daemon=True, name='wake-monitor').start()
 
@@ -2386,11 +2390,17 @@ class VoicePipeline:
             if not msvcrt.kbhit():
                 time.sleep(0.05)
                 continue
-            tecla = msvcrt.getwch()
-            if self._sm.en_conversacion or self._muted.is_set():
-                continue
-            if tecla in ('\r', '\n'):
-                self._sm.notificar_wake_word(payload=None)
+            if msvcrt.getwch() in ('\r', '\n'):
+                self.disparar_turno()
+
+    def disparar_turno(self) -> bool:
+        """ENTER en modo tecla (consola o CLI): inicia un turno. Durante una charla o
+        mientras Bob habla solo, no hace nada (no dispara un turno al terminar).
+        True si lo inició."""
+        if TRIGGER_MODE != "tecla" or self._sm.en_conversacion or self._muted.is_set():
+            return False
+        self._sm.notificar_wake_word(payload=None)
+        return True
 
     def _grabar_wake(self) -> Optional[bytes]:
         """Versión corta para wake monitor: ~3 s, despacha a robot o laptop."""
