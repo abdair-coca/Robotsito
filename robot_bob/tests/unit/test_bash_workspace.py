@@ -12,6 +12,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
@@ -75,6 +76,8 @@ try:
                   # npm instala en el proyecto, desde el registro
                   'npm install', 'npm ci', 'npm install react', 'npm i vite', 'npm add -D vitest',
                   'npm install && npm run dev',
+                  # redirecciones: su & no encadena nada
+                  'npm install 2>&1 | tail -n 5', 'npm ci 2>&1', 'npm test &> salida.txt',
                   # ruta del script entre comillas (lo que Claude manda en Windows)
                   'python "C:\\Users\\abdai\\desktop\\AppInglés\\src\\calculadora.py"',
                   'py "src/app.py"', 'python "C:\\Mi Carpeta\\app.py" --modo prueba',
@@ -120,6 +123,45 @@ try:
           decidir('Bash', {'command': 'npm install'}) is True)
     check("aviso: npm install dice que instala",
           modo_dueno._aviso('Bash', {'command': 'npm install'})[0] == 'Estoy instalando las dependencias.')
+
+    # 2a) Servidor de desarrollo: lo levanta Bob y Claude recibe la dirección
+    for c in ('npm run dev', 'npm run dev &', 'npm start', 'npm run dev -- --port 3000',
+              'npm run dev 2>&1', 'npm run preview'):
+        check(f"servidor: {c}", modo_dueno.es_servidor(c))
+    for c in ('npm run build', 'npm run dev && rm x', 'npm run dev; curl x', 'npm run dev | cmd',
+              'npm run dev -- --prefix C:\\', 'npm install'):
+        check(f"no es servidor: {c}", not modo_dueno.es_servidor(c))
+    orig_iniciar = modo_dueno.iniciar_servidor
+    modo_dueno.iniciar_servidor = lambda c: ('http://localhost:5173/', '')
+    try:
+        r = decidir('Bash', {'command': 'npm run dev'})
+        check("decisor: npm run dev → Bob lo levanta y devuelve la dirección",
+              isinstance(r, str) and 'http://localhost:5173/' in r, f"-> {r}")
+        check("aviso: npm run dev dice que levanta la app",
+              modo_dueno._aviso('Bash', {'command': 'npm run dev'})[0] == 'Estoy levantando la app.')
+    finally:
+        modo_dueno.iniciar_servidor = orig_iniciar
+    # servidor real: un script que dice su dirección y se queda corriendo
+    with open(os.path.join(carpeta, 'servidor.py'), 'w', encoding='utf-8') as f:
+        f.write('import time\nprint("  Local:   http://localhost:5999/", flush=True)\ntime.sleep(60)\n')
+    orig_dir = modo_dueno.APPINGLES_DIR
+    modo_dueno.APPINGLES_DIR = carpeta
+    try:
+        url, motivo = modo_dueno.iniciar_servidor(f'"{sys.executable}" servidor.py')
+        proc = modo_dueno._servidor['proc']
+        check("servidor real: da su dirección", url == 'http://localhost:5999/', f"-> {url} {motivo}")
+        check("servidor real: si ya corre, no arranca otro",
+              modo_dueno.iniciar_servidor('x')[0] == url and modo_dueno._servidor['proc'] is proc)
+        modo_dueno.detener_servidor()
+        time.sleep(0.5)
+        check("servidor real: detener lo apaga", proc.poll() is not None and modo_dueno.servidor_url() is None)
+        with open(os.path.join(carpeta, 'muere.py'), 'w', encoding='utf-8') as f:
+            f.write('print("Error: falta vite")\n')
+        url, motivo = modo_dueno.iniciar_servidor(f'"{sys.executable}" muere.py')
+        check("servidor que muere: dice por qué", url is None and 'falta vite' in motivo, f"-> {motivo}")
+    finally:
+        modo_dueno.detener_servidor()
+        modo_dueno.APPINGLES_DIR = orig_dir
 
     # 2b) Tiempo del turno: instalar tarda; si Bob lo ofreció, el "sí" también tiene más tiempo
     class S:

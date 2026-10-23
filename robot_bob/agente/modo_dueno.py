@@ -34,6 +34,7 @@ el texto era un comando de dueño (ejecutado o rechazado).
 Apagado por defecto: MODO_DUENO_ENABLED en config.py.
 """
 
+import atexit
 import os
 import queue
 import random
@@ -90,8 +91,9 @@ except Exception:
 ING_MAX_FRASES = 4
 ING_MAX_TOKENS = 600     # gpt-oss gasta parte en razonar: 160 no alcanza para 4 frases
 ING_TIMEOUT_S = 25.0     # sin respuesta de Claude Code en este tiempo → Groq ese turno
-ING_INSTALAR_TIMEOUT_S = 180.0   # turno de escritura que habla de instalar: npm install tarda
-_RE_INSTALAR = re.compile(r'\binstal\w*|\bdependencias\b|\bnpm\b', re.IGNORECASE)
+ING_INSTALAR_TIMEOUT_S = 180.0   # turno de escritura que instala o levanta la app: tarda
+_RE_INSTALAR = re.compile(r'\binstal\w*|\bdependencias\b|\bnpm\b|\bservidor\b|\bpuerto\b'
+                          r'|\blevant\w*|\barranc\w*', re.IGNORECASE)
 _RE_NPM_INSTALAR = re.compile(r'\bnpm\s+(?:install|i|ci|add)\b', re.IGNORECASE)
 # Memoria de la charla, compartida por las sesiones de Claude (lectura, escritura, web): cada
 # sesión recibe, en una línea, solo lo que pasó desde su último turno. Una sesión nueva (otro
@@ -171,6 +173,9 @@ ESCRITURA_PROMPT = (' Puedes leer, crear y editar archivos y ejecutar comandos d
                     'proyecto (npm install, npm ci, npm install <paquete>), nunca globales (-g). '
                     'No hagas git push, no instales con pip, no descargues nada fuera de npm, no '
                     'cambies de carpeta y no leas ni escribas .env ni claves. '
+                    'Para levantar la app corre npm run dev: Bob la deja corriendo en segundo '
+                    'plano y te devuelve la dirección. Bob también maneja un navegador en otro '
+                    'paso: si piden ver la app, haz tu parte y no digas que no puedes abrirlo. '
                     'Para correr un script usa su ruta relativa a la carpeta de trabajo, con '
                     'barras / (el shell es bash: la barra invertida se pierde) y sin opciones, '
                     'por ejemplo: python src/app.py. '
@@ -211,6 +216,11 @@ BASH_PERMITIDOS = [re.compile(p, re.IGNORECASE) for p in (
     r'node\s+' + _RUTA_SCRIPT.format(ext=r'\.m?js') + r'(?:\s|$)',
     r'npm\s+(?:-v|--version|run|test|ls|list|install|i|ci|add)(?:\s|$)',
 )]
+_RE_REDIRECCION = re.compile(r'\d*>&\d+|&>')
+# Servidor de desarrollo (npm run dev): no termina nunca, así que no lo corre Claude dentro
+# de un turno. Lo arranca Bob en segundo plano (iniciar_servidor) y le devuelve la dirección.
+_RE_SERVIDOR = re.compile(r'^\s*npm\s+(?:run\s+(?:dev|start|preview)|start)(?:\s+[^;&|<>`$]*)?\s*&?\s*$',
+                          re.IGNORECASE)
 # Cambiar de carpeta: solo dentro de AppInglés (B-D3).
 _RE_CAMBIO = re.compile(r'(?:^|[;&|]\s*)(cd|chdir|pushd|set-location|sl|push-location)\b([^;&|]*)',
                         re.IGNORECASE)
@@ -240,6 +250,9 @@ WEB_PROMPT = (
     'El navegador sigue abierto entre pedidos: si el pedido habla de algo que ya está en '
     'pantalla (por ejemplo "abre el de 200 Bs"), trabaja sobre la página actual: léela con '
     'browser_snapshot, busca ese elemento y haz clic en él; no vuelvas a buscar desde cero. '
+    'Editar archivos y correr comandos lo hace Bob en otro paso, no tú: si el pedido lo '
+    'menciona, haz solo la parte del navegador y no digas que no puedes. Si te dan la '
+    'dirección de la app (localhost), ábrela ahí. '
     'Para buscar información usa WebSearch (los buscadores en el navegador piden captcha o '
     'no muestran resultados) y después abre en el navegador la mejor fuente para que se '
     'vea. Para abrir una página concreta o interactuar con ella, usa el navegador y léela '
@@ -465,8 +478,102 @@ def es_bash_bloqueado(comando: str) -> bool:
     texto = comando or ''
     if any(p.search(texto) for p in BASH_BLOQUEADOS) or _cambia_fuera(texto):
         return True
-    tramos = [t.strip() for t in re.split(r'&&|\|\||[;&|]', texto) if t.strip()]
+    # "2>&1" y "&>" redirigen la salida: su & no encadena otro comando
+    tramos = [t.strip() for t in re.split(r'&&|\|\||[;&|]', _RE_REDIRECCION.sub(' ', texto))
+              if t.strip()]
     return not tramos or not all(any(p.match(t) for p in BASH_PERMITIDOS) for t in tramos)
+
+
+SERVIDOR_ESPERA_S = 20.0     # lo que se espera a que el servidor diga su dirección
+_RE_URL_LOCAL = re.compile(r'https?://(?:localhost|127\.0\.0\.1)(?::\d+)?/?')
+_RE_ANSI = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
+_servidor = {'proc': None, 'url': None}
+
+
+def es_servidor(comando: str) -> bool:
+    """True si el comando levanta el servidor de desarrollo (npm run dev y afines) y no trae
+    nada más encadenado ni bloqueado."""
+    texto = comando or ''
+    return (bool(_RE_SERVIDOR.match(_RE_REDIRECCION.sub(' ', texto)))
+            and not any(p.search(texto) for p in BASH_BLOQUEADOS) and not _cambia_fuera(texto))
+
+
+def servidor_url() -> Optional[str]:
+    proc = _servidor['proc']
+    return _servidor['url'] if proc is not None and proc.poll() is None else None
+
+
+def iniciar_servidor(comando: str) -> Tuple[Optional[str], str]:
+    """Arranca el servidor de desarrollo en AppInglés, en segundo plano, y espera a que diga
+    su dirección. (url, '') o (None, motivo). Si ya corre, devuelve su dirección."""
+    import collections
+    import subprocess
+    if servidor_url():
+        return _servidor['url'], ''
+    detener_servidor()
+    comando = _RE_REDIRECCION.sub(' ', comando).strip().rstrip('&').strip()
+    salida = collections.deque(maxlen=20)
+    listo = threading.Event()
+    try:
+        proc = subprocess.Popen(
+            comando, shell=True, cwd=APPINGLES_DIR, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8',
+            errors='replace', start_new_session=os.name != 'nt',
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except Exception as e:
+        return None, str(e)
+    _servidor.update(proc=proc, url=None)
+
+    def leer():
+        for linea in proc.stdout:
+            linea = _RE_ANSI.sub('', linea).strip()
+            if linea:
+                salida.append(linea)
+            m = _RE_URL_LOCAL.search(linea)
+            if m and _servidor['proc'] is proc and not _servidor['url']:
+                _servidor['url'] = m.group(0)
+                listo.set()
+        listo.set()                  # el proceso terminó sin dar dirección
+    threading.Thread(target=leer, daemon=True, name='servidor-dev').start()
+    listo.wait(SERVIDOR_ESPERA_S)
+    url = servidor_url()
+    if url:
+        return url, ''
+    motivo = ' / '.join(list(salida)[-3:]) or 'no mostró ninguna dirección'
+    detener_servidor()
+    return None, motivo
+
+
+def detener_servidor() -> None:
+    """Apaga el servidor de desarrollo y sus hijos (npm lanza node aparte)."""
+    import subprocess
+    proc = _servidor['proc']
+    _servidor.update(proc=None, url=None)
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        if os.name == 'nt':
+            subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)],
+                           capture_output=True, timeout=10)
+        else:
+            import signal
+            os.killpg(proc.pid, signal.SIGTERM)
+    except Exception:
+        proc.kill()
+
+
+atexit.register(detener_servidor)
+
+
+def _aprobar_servidor(comando: str) -> str:
+    """Levanta el servidor y arma lo que recibe Claude: el comando no corre en su turno."""
+    url, motivo = iniciar_servidor(comando)
+    if url:
+        puerto = url.rstrip('/').rsplit(':', 1)[-1]
+        return (f'No hace falta que lo corras: Bob dejó el servidor de desarrollo corriendo en '
+                f'segundo plano en {url}. Bob la abre en el navegador cuando haga falta. Al '
+                f'responder, di solo "en el puerto {puerto}", nunca la dirección completa.')
+    return f'Bob intentó arrancar el servidor de desarrollo y falló: {motivo}'
 
 
 def _aprobar_escritura():
@@ -481,6 +588,11 @@ def _aprobar_escritura():
             detalle = os.path.basename(str(entrada.get('file_path') or '')) or '-'
         elif herramienta == 'Bash':
             comando = str(entrada.get('command') or '')
+            if es_servidor(comando):        # Bob lo deja en segundo plano: el turno no se cuelga
+                mensaje = _aprobar_servidor(comando)
+                console.print(f'[dueño] Bash {escape(comando[:100])}: servidor de Bob '
+                              f'({escape(servidor_url() or "falló")})')
+                return mensaje
             permitido = not es_bash_bloqueado(comando)
             detalle = comando[:100]
         else:
@@ -545,7 +657,9 @@ def salir_ingeniero(vp, avisar: bool = False) -> None:
         if sesion is not None:
             sesion.cerrar()
         setattr(vp, atributo, None)
-    vp._contexto_web = None
+    detener_servidor()
+    vp._contexto_web = vp._contexto_local = None
+    vp._web_local = vp._web_externo = False
     vp._ing_visto, vp._ing_web = {}, set()
     console.print('[bold magenta][dueño][/] modo ingeniero OFF')
     if avisar:
@@ -659,6 +773,8 @@ def _aviso(herramienta: str, entrada: dict) -> Tuple[str, str]:
     ahora, sigue = _AVISOS.get(herramienta, _AVISO_GENERICO)
     if herramienta == 'Bash' and _RE_NPM_INSTALAR.search(str(entrada.get('command') or '')):
         ahora, sigue = 'Estoy instalando las dependencias.', 'Sigo instalando, tarda un poco.'
+    elif herramienta == 'Bash' and es_servidor(str(entrada.get('command') or '')):
+        ahora, sigue = 'Estoy levantando la app.', 'Sigo levantando la app.'
     archivo = os.path.basename(str(entrada.get('file_path') or '')).strip()
     return ahora.format(archivo=archivo).replace(' el archivo .', ' un archivo.'), sigue
 
@@ -741,8 +857,11 @@ def responder_claude(vp, texto: str, sesion, nota: str = ''):
         _contexto_asistente_turno(texto, getattr(vp, '_ruta_turno', None)).strip(),
         f'Resultado de la última tarea web: {vp._contexto_web}'
         if getattr(vp, '_contexto_web', None) else '',
+        f'Lo último que Bob revisó en el navegador (la app en localhost): {vp._contexto_local}'
+        if getattr(vp, '_contexto_local', None) else '',
+        f'La app corre en {servidor_url()}.' if servidor_url() else '',
         nota) if n]
-    vp._contexto_web = None
+    vp._contexto_web = vp._contexto_local = None
     mensaje = ((f'[Antes en esta charla: {memoria}]\n' if memoria else '')
                + (f'[Contexto de este turno: {" ".join(notas)}]\n' if notas else '') + texto)
     t0 = time.monotonic()
@@ -860,6 +979,47 @@ def _sesion_web(vp):
     return sesion
 
 
+_RE_LOCAL = re.compile(r'^(?:https?://)?(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:[/?#]|$)',
+                       re.IGNORECASE)
+# Pedido de navegador que también toca archivos o comandos ("edita App.jsx y muéstramelo",
+# "abre el puerto y muéstrame la app"): primero la sesión de escritura, después el navegador.
+_RE_PASO_ARCHIVOS = re.compile(
+    r'\b(?:edit|modific|cambi|cre[ae]|agreg|añad|escrib|arregl|borr|instal|levant|arranc|ejecut)\w*'
+    r'\b.*?\b(?:archivos?|ficheros?|c[oó]digo|componentes?|proyecto|servidor|puerto|dependencias'
+    r'|npm|app\s*\.?\s*jsx|\w+\.(?:jsx|js|tsx|ts|css|html|json|py))\b'
+    r'|\babr\w*\s+(?:el\s+)?(?:puerto|servidor)\b', re.IGNORECASE)
+NOTA_DOS_PASOS = ('Este pedido tiene dos pasos. Tú haces ahora solo la parte de archivos y '
+                  'comandos (si hace falta ver la app, levántala con npm run dev); después Bob '
+                  'abre el navegador para revisar. Responde en 1 o 2 frases.')
+
+
+def _con_paso_de_archivos(vp, tarea: str) -> bool:
+    voz = getattr(vp, '_voz_turno', None)
+    return bool(_RE_PASO_ARCHIVOS.search(tarea or '') and _puede_escribir(vp)
+                and voz is not None and voz >= VOZ_UMBRAL_SHELL)      # B-D11
+
+
+def _paso_archivos(vp, tarea: str) -> Optional[str]:
+    """Primer paso de un pedido con archivos y navegador: lo de los archivos lo hace la
+    sesión de escritura. Devuelve lo que dijo, o None si no pudo (y ya avisó)."""
+    vp._contexto_web = None      # B-D1: el contenido de internet pendiente no llega a la escritura
+    vp._convo.append({'role': 'user', 'content': tarea})
+    frases = []
+    for frase in responder_claude(vp, tarea, _sesion_escritura(vp), nota=NOTA_DOS_PASOS):
+        if isinstance(frase, Aviso):
+            _decir(vp, frase, 'PENSANDO')
+        else:
+            _decir(vp, frase, 'CURIOSO')
+            frases.append(frase)
+    if not frases:
+        aviso = 'No pude hacer la parte de los archivos. ¿Probamos de otra forma?'
+        _decir(vp, aviso, 'TRISTE')
+        vp._convo.append({'role': 'assistant', 'content': aviso})
+        return None
+    vp._convo.append({'role': 'assistant', 'content': ' '.join(frases)})
+    return ' '.join(frases)
+
+
 def web(vp, tarea: str) -> None:
     """Tarea en el navegador (Playwright), sin pedir confirmación: la voz del dueño ya se
     verificó en el comando. El navegador queda abierto hasta salir del modo ingeniero; el
@@ -876,18 +1036,35 @@ def web(vp, tarea: str) -> None:
         _decir(vp, 'No encuentro Claude Code en esta laptop, así que no puedo usar el navegador.',
                'TRISTE')
         return
+    nota = ''
+    if _con_paso_de_archivos(vp, tarea):      # "edita App.jsx y muéstramelo": primero los archivos
+        if not _paso_archivos(vp, tarea):
+            return
+        nota = '[Bob ya hizo la parte de los archivos. Tu parte es solo el navegador: revisa ahí lo pedido.]\n'
+    else:
+        vp._convo.append({'role': 'user', 'content': tarea})
     _decir(vp, 'Dale, lo hago en el navegador.' if _navegador_abierto(vp) else 'Abro el navegador.',
            'PENSANDO')
     sesion = _sesion_web(vp)
-    memoria, _, fin = _memoria_pendiente(vp, sesion)
-    vp._convo.append({'role': 'user', 'content': tarea})
-    mensaje = (f'[Antes en esta charla: {memoria}]\n' if memoria else '') + tarea
-    pasos = []
+    memoria, _, _ = _memoria_pendiente(vp, sesion)
+    url = servidor_url()
+    mensaje = ((f'[Antes en esta charla: {memoria}]\n' if memoria else '')
+               + (f'[La app AppInglés corre en {url}]\n' if url else '') + nota + tarea)
+    pasos, externo = [], []
 
     def al_usar(nombre, entrada):
         pasos.append(nombre.replace(_WEB, ''))
         console.print(f'[dim][web] {pasos[-1]} '
                       f'{str(entrada.get("url") or entrada.get("query") or entrada.get("text") or "")[:80]}[/]')
+        # B-D1: solo la app en localhost no cuenta como contenido de internet
+        if nombre == _WEB + 'navigate':
+            vp._web_local = bool(_RE_LOCAL.match(str(entrada.get('url') or '').strip()))
+            vp._web_externo = getattr(vp, '_web_externo', False) or not vp._web_local
+            if not vp._web_local:
+                externo.append(nombre)
+        elif nombre == 'WebSearch' or (nombre in (_WEB + 'navigate_back', _WEB + 'tabs')
+                                       and getattr(vp, '_web_externo', False)):
+            externo.append(nombre)
     t0 = time.monotonic()
     narrar = _preguntar_narrando(sesion, mensaje, WEB_TIMEOUT_S,
                                  max_herramientas=WEB_MAX_HERRAMIENTAS, al_usar=al_usar)
@@ -905,15 +1082,18 @@ def web(vp, tarea: str) -> None:
         _decir(vp, aviso, 'TRISTE')
         vp._convo.append({'role': 'assistant', 'content': aviso})
         return
-    _marcar_visto(vp, sesion, fin + 2)
+    _marcar_visto(vp, sesion, len(vp._convo) + 1)      # el pedido y la respuesta de abajo
     console.print('[bold cyan][web] resultado:[/]')
     console.print(f'  {escape(resultado)}')
     frases = frases_para_decir(resultado, 3)
     for frase in frases:
         _decir(vp, frase, 'ORGULLOSO')
-    vp._contexto_web = ' '.join(frases)
-    vp._ing_web = getattr(vp, '_ing_web', set())
-    vp._ing_web.add(len(vp._convo))               # contenido de internet: no va a la escritura
+    if not externo and getattr(vp, '_web_local', False):    # solo localhost: la escritura sí lo ve
+        vp._contexto_local = ' '.join(frases)
+    else:
+        vp._contexto_web = ' '.join(frases)
+        vp._ing_web = getattr(vp, '_ing_web', set())
+        vp._ing_web.add(len(vp._convo))           # contenido de internet: no va a la escritura
     vp._convo.append({'role': 'assistant', 'content': ' '.join(frases)})
 
 

@@ -308,6 +308,78 @@ def main() -> None:
         check('sesión: un turno cortado no cierra el navegador', s.conservar is True)
         md.salir_ingeniero(v)
         check('salir del modo ingeniero cierra el navegador', v._sesion_web is None)
+
+        # 12) B-D1: revisar la app en localhost no cuenta como contenido de internet
+        class Local(FakeSesion):
+            def preguntar(self, texto, **k):
+                self.vivo = True
+                self.tareas.append(texto)
+                k['al_usar']('mcp__playwright__browser_navigate', {'url': 'http://localhost:5173/'})
+                return self.resultado
+        v = construir()
+        v._sesion_web = Local('La flashcard se ve bien en la página principal.')
+        md.web(v, 'muéstrame la app en el navegador')
+        check('localhost: no queda como contenido de internet',
+              v._contexto_web is None and 'flashcard' in (v._contexto_local or '')
+              and (len(v._convo) - 1) not in getattr(v, '_ing_web', set()))
+        esc = FakeSesion('Listo.')
+        esc.nombre = 'escritura'
+        list(md.responder_claude(v, 'ahora cámbiale el color', esc))
+        check('localhost: la escritura recibe lo que vio Bob',
+              'la app en localhost' in esc.tareas[-1] and 'se ve bien' in esc.tareas[-1])
+        v = construir()                                   # otra página → sigue siendo de internet
+        md.web(v, 'en el navegador busca el precio del ESP32-CAM')
+        check('página externa: sigue siendo contenido de internet',
+              v._contexto_web and (len(v._convo) - 1) in v._ing_web)
+        v._sesion_web = Local('Ya volví a la app.')
+        md.web(v, 'abre la app en el navegador')
+        check('localhost tras una página externa: vuelve a ser local', v._contexto_local == 'Ya volví a la app.')
+        v._sesion_web = FakeSesion('ok')
+        v._sesion_web.preguntar = lambda texto, **k: (k['al_usar'](md._WEB + 'navigate_back', {}), 'Volví.')[1]
+        md.web(v, 'en el navegador vuelve atrás')
+        check('navigate_back tras una página externa: de internet', v._contexto_web == 'Volví.')
+
+        # 13) Pedido de dos pasos: primero los archivos (escritura), después el navegador
+        class Esc(FakeSesion):
+            nombre = 'escritura'
+
+            def preguntar(self, texto, **k):
+                self.vivo = True
+                self.tareas.append(texto)
+                return 'Listo, agregué la flashcard en App.jsx.'
+        for t in ('edita el archivo App.jsx y muéstramelo en el navegador',
+                  'abre el puerto y muéstrame la aplicación en el navegador',
+                  'instala las dependencias y abre la app en el navegador'):
+            check(f'dos pasos: "{t}"', bool(md._RE_PASO_ARCHIVOS.search(t)))
+        for t in ('abre la página de wikipedia', 'en el navegador cambia de pestaña',
+                  'abre el navegador y busca tenis adidas'):
+            check(f'un paso: "{t}"', not md._RE_PASO_ARCHIVOS.search(t))
+        orig = md._puede_escribir, md._sesion_escritura
+        esc = Esc('')
+        md._puede_escribir, md._sesion_escritura = (lambda vp: True), (lambda vp: esc)
+        try:
+            v = construir()
+            v._sesion_web = Local('Ya se ve la flashcard.')
+            v._voz_turno = 0.9
+            v._contexto_web = 'algo de internet'
+            md.web(v, 'edita el archivo App.jsx con una flashcard y muéstramelo en el navegador')
+            check('dos pasos: la escritura hace los archivos', len(esc.tareas) == 1
+                  and md.NOTA_DOS_PASOS in esc.tareas[0] and 'algo de internet' not in esc.tareas[0])
+            check('dos pasos: después el navegador, sabiendo que ya se editó',
+                  len(v._sesion_web.tareas) == 1 and 'ya hizo la parte de los archivos' in v._sesion_web.tareas[0])
+            dicho = ' '.join(v.dichas)
+            check('dos pasos: dice las dos partes', dicho.index('agregué la flashcard')
+                  < dicho.index('Ya se ve la flashcard'))
+            check('dos pasos: el pedido queda una sola vez en la charla',
+                  [m['role'] for m in v._convo] == ['user', 'assistant', 'assistant'])
+            v = construir()
+            v._sesion_web = Local('ok')
+            v._voz_turno = 0.3                          # B-D11: voz insegura → sin escritura
+            esc.tareas.clear()
+            md.web(v, 'edita el archivo App.jsx y muéstramelo en el navegador')
+            check('dos pasos con voz insegura: no escribe', esc.tareas == [])
+        finally:
+            md._puede_escribir, md._sesion_escritura = orig
     finally:
         claude_code.disponible = original_disp
 

@@ -45,14 +45,15 @@ class SesionClaude:
                  permitidas: Sequence[str] = (), prohibidas: Sequence[str] = (),
                  cwd: str = CWD_DEFAULT, nombre: str = 'claude', herramientas: str = '',
                  comando: Optional[list] = None, add_dirs: Sequence[str] = (),
-                 aprobar: Optional[Callable[[str, dict], bool]] = None,
+                 aprobar: Optional[Callable[[str, dict], object]] = None,
                  restringido: bool = False, conservar: bool = False):
         """mcp: {'nombre': {'command': ..., 'args': [...]}} (formato mcpServers).
         herramientas: herramientas propias de Claude Code habilitadas ('' = ninguna;
         p. ej. 'WebSearch', que busca del lado de Anthropic y no toca la laptop).
         add_dirs: carpetas extra donde las herramientas de archivo pueden trabajar
         (con --restricted, nada fuera de cwd y de estas carpetas).
-        aprobar: decide cada pedido de permiso (herramienta, entrada) → sí o no. Con
+        aprobar: decide cada pedido de permiso (herramienta, entrada) → True (sí), False
+        (no) o un texto (no, y Claude recibe ese texto como motivo). Con
         aprobar, Claude pide permiso al host (B2) en vez de denegar solo; sin decisor
         o si falla, se deniega.
         restringido: --restricted aunque no haya add_dirs (archivos solo en cwd).
@@ -187,16 +188,17 @@ class SesionClaude:
         req = ev.get('request') or {}
         resp: dict = {}
         if req.get('subtype') == 'can_use_tool':
-            permitido = False
+            decision = False
             if self.aprobar is not None:
                 try:
-                    permitido = bool(self.aprobar(req.get('tool_name', ''), req.get('input') or {}))
+                    decision = self.aprobar(req.get('tool_name', ''), req.get('input') or {})
                 except Exception as e:
                     print(f'[claude] {self.nombre}: el permiso falló ({e}), se niega')
-            if permitido:
+            if decision is True:
                 resp = {'behavior': 'allow', 'updatedInput': req.get('input') or {}}
-            else:
-                resp = {'behavior': 'deny', 'message': 'Bob no permitió esta acción'}
+            else:     # un texto: se niega con ese mensaje (p. ej. "Bob ya lo hizo")
+                resp = {'behavior': 'deny', 'message': decision if isinstance(decision, str) and decision
+                        else 'Bob no permitió esta acción'}
         salida = {'type': 'control_response',
                   'response': {'subtype': 'success', 'request_id': ev.get('request_id'),
                                'response': resp}}
