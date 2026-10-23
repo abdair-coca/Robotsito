@@ -28,7 +28,8 @@ Causa raíz: el ESP32-CAM emite a 60-80 FPS y nuestro main loop intenta procesar
 Cambios ya aplicados (verificar que están en su lugar):
 - `cv2.setNumThreads(1)` al inicio de main.py / test_2_tracker.py
 - `TARGET_FPS = 20` con `time.sleep(TARGET_PERIOD - elapsed)` al final del main loop
-- `STREAM_TIMEOUT_S = 5.0` en `vision/facial_tracker.py`
+- `STREAM_TIMEOUT_S = 2.0` en `vision/facial_tracker.py` (reconecta rápido si se congela)
+- `CAM_XCLK_MHZ = 10` en `config.py`: el lector pone la CAM a ~25 FPS al conectar (a 20 MHz manda ~50 y satura el WiFi)
 
 Si todavía falla: bajar `TARGET_FPS` a 15.
 

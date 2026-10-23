@@ -25,10 +25,11 @@ from mediapipe.tasks.python import vision
 import socket
 import threading
 import time
+import urllib.request
 from urllib.parse import urlparse
 
 # ── Configuración ──────────────────────────────────────────────────────────────
-STREAM_TIMEOUT_S  = 5.0    # tolerante a hipos del ESP32-CAM bajo carga
+STREAM_TIMEOUT_S  = 2.0    # sin datos en este tiempo → reconecta (a 25 FPS, 2 s ya es congelado)
 STREAM_READ_BYTES = 32768
 DET_W, DET_H      = 320, 240
 DET_INTERVAL_S    = 0.07   # ~14 Hz
@@ -65,6 +66,14 @@ try:
 except Exception:
     ROTAR_CAMARA_180 = False
 
+# Reloj del sensor de la CAM. A 20 MHz manda ~50 FPS y Bob usa 25: la mitad del WiFi se gasta
+# en frames que se tiran. A 10 MHz da ~25 FPS estables (medido el 2026-10-22). Se pide por
+# HTTP al conectar, porque la CAM vuelve a 20 MHz cuando se reinicia. 0 = no tocarlo.
+try:
+    from config import CAM_XCLK_MHZ
+except Exception:
+    CAM_XCLK_MHZ = 10
+
 
 # ── LectorStream (socket TCP crudo — evita crash FFmpeg) ──────────────────────
 
@@ -84,7 +93,16 @@ class LectorStream:
         self._hilo = threading.Thread(target=self._loop, daemon=True, name='stream-reader')
         self._hilo.start()
 
+    def _ajustar_xclk(self) -> None:
+        if not CAM_XCLK_MHZ:
+            return
+        try:
+            urllib.request.urlopen(f'http://{self.host}/xclk?xclk={CAM_XCLK_MHZ}', timeout=1.5).close()
+        except Exception as e:
+            print(f'[stream] No pude poner la CAM en {CAM_XCLK_MHZ} MHz ({e}).')
+
     def _conectar(self) -> socket.socket:
+        self._ajustar_xclk()
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(self.timeout)
         s.connect((self.host, self.port))
