@@ -68,7 +68,7 @@ except Exception:
 
 # Reloj del sensor de la CAM. A 20 MHz manda ~50 FPS y Bob usa 25: la mitad del WiFi se gasta
 # en frames que se tiran. A 10 MHz da ~25 FPS estables (medido el 2026-10-22). Se pide por
-# HTTP al conectar, porque la CAM vuelve a 20 MHz cuando se reinicia. 0 = no tocarlo.
+# HTTP tras cada conexión, porque la CAM vuelve a 20 MHz cuando se reinicia. 0 = no tocarlo.
 try:
     from config import CAM_XCLK_MHZ
 except Exception:
@@ -102,7 +102,6 @@ class LectorStream:
             print(f'[stream] No pude poner la CAM en {CAM_XCLK_MHZ} MHz ({e}).')
 
     def _conectar(self) -> socket.socket:
-        self._ajustar_xclk()
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(self.timeout)
         s.connect((self.host, self.port))
@@ -141,6 +140,8 @@ class LectorStream:
 
                 print('[stream] Conectado.')
                 self.ok = True
+                # aparte: si la CAM se reinició volvió a 20 MHz, y esperar aquí frena el video
+                threading.Thread(target=self._ajustar_xclk, daemon=True, name='cam-xclk').start()
 
                 while not self._detener:
                     chunk = sock.recv(STREAM_READ_BYTES)
