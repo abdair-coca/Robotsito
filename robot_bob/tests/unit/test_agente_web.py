@@ -339,6 +339,10 @@ def main() -> None:
         md.web(v, 'en el navegador vuelve atrás')
         check('navigate_back tras una página externa: de internet', v._contexto_web == 'Volví.')
 
+        check('voz: la dirección local se dice como puerto',
+              md.frases_para_decir('Está en http://localhost:5173/. Se ve bien.', 3)
+              == ['Está en el puerto 5173.', 'Se ve bien.'])
+
         # 13) Pedido de dos pasos: primero los archivos (escritura), después el navegador
         class Esc(FakeSesion):
             nombre = 'escritura'
@@ -349,7 +353,9 @@ def main() -> None:
                 return 'Listo, agregué la flashcard en App.jsx.'
         for t in ('edita el archivo App.jsx y muéstramelo en el navegador',
                   'abre el puerto y muéstrame la aplicación en el navegador',
-                  'instala las dependencias y abre la app en el navegador'):
+                  'instala las dependencias y abre la app en el navegador',
+                  'quiero que leas el proyecto y después abras un puerto y me muestres el '
+                  'puerto en el navegador'):
             check(f'dos pasos: "{t}"', bool(md._RE_PASO_ARCHIVOS.search(t)))
         for t in ('abre la página de wikipedia', 'en el navegador cambia de pestaña',
                   'abre el navegador y busca tenis adidas'):
@@ -366,7 +372,7 @@ def main() -> None:
             check('dos pasos: la escritura hace los archivos', len(esc.tareas) == 1
                   and md.NOTA_DOS_PASOS in esc.tareas[0] and 'algo de internet' not in esc.tareas[0])
             check('dos pasos: después el navegador, sabiendo que ya se editó',
-                  len(v._sesion_web.tareas) == 1 and 'ya hizo la parte de los archivos' in v._sesion_web.tareas[0])
+                  len(v._sesion_web.tareas) == 1 and 'Ya hiciste la parte de los archivos' in v._sesion_web.tareas[0])
             dicho = ' '.join(v.dichas)
             check('dos pasos: dice las dos partes', dicho.index('agregué la flashcard')
                   < dicho.index('Ya se ve la flashcard'))
@@ -378,6 +384,29 @@ def main() -> None:
             esc.tareas.clear()
             md.web(v, 'edita el archivo App.jsx y muéstramelo en el navegador')
             check('dos pasos con voz insegura: no escribe', esc.tareas == [])
+
+            # 14) "muéstrame la app": si el servidor no corre, Bob lo levanta antes del navegador
+            levantados = []
+            orig_iniciar = md.iniciar_servidor
+            md.iniciar_servidor = lambda c: (levantados.append(c), ('http://localhost:5173/', ''))[1]
+            try:
+                v = construir()
+                v._sesion_web = Local('Ya se ve la app.')
+                v._voz_turno = 0.9
+                md.web(v, 'muéstrame la app en el navegador')
+                check('ver la app: Bob levanta el servidor antes', levantados == ['npm run dev']
+                      and v.dichas.index('Levanto la app.') < v.dichas.index('Abro el navegador.'))
+                levantados.clear()
+                v = construir()
+                v._sesion_web = Local('ok')
+                v._voz_turno = 0.3
+                md.web(v, 'muéstrame la app en el navegador')
+                check('ver la app con voz insegura: no levanta nada', levantados == [])
+                v._voz_turno = 0.9
+                md.web(v, 'abre la página de wikipedia')
+                check('otra página: no levanta la app', levantados == [])
+            finally:
+                md.iniciar_servidor = orig_iniciar
         finally:
             md._puede_escribir, md._sesion_escritura = orig
     finally:

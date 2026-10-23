@@ -138,7 +138,11 @@ except Exception:
 LECTURA_PROHIBIDAS = ['Read(**/.env)', 'Read(**/.env.*)']
 # Sin la ruta: _REGLAS_FIJAS prohíbe decir rutas.
 LECTURA_PROMPT = (' Tienes Read, Glob y Grep sobre la carpeta de trabajo de AppInglés: '
-                  'úsalas para contestar sobre sus archivos. Nunca leas ni cites .env ni claves.')
+                  'úsalas para contestar sobre sus archivos. Nunca leas ni cites .env ni claves. '
+                  'En este turno solo lees: o la voz no se reconoció con seguridad o hubo '
+                  'contenido de internet. Tú sí puedes editar archivos, correr comandos, '
+                  'levantar la app y abrir el navegador cuando Abdair te lo pide con voz clara: '
+                  'si piden eso, no digas que no se puede; di que lo repita un poco más fuerte.')
 
 # Escritura y Bash del modo ingeniero (fases B3 y B4, B-D8 y B-D9): la voz del dueño se
 # verifica al activar el modo; durante el modo, Edit, Write y Bash se permiten dentro de
@@ -173,9 +177,10 @@ ESCRITURA_PROMPT = (' Puedes leer, crear y editar archivos y ejecutar comandos d
                     'proyecto (npm install, npm ci, npm install <paquete>), nunca globales (-g). '
                     'No hagas git push, no instales con pip, no descargues nada fuera de npm, no '
                     'cambies de carpeta y no leas ni escribas .env ni claves. '
-                    'Para levantar la app corre npm run dev: Bob la deja corriendo en segundo '
-                    'plano y te devuelve la dirección. Bob también maneja un navegador en otro '
-                    'paso: si piden ver la app, haz tu parte y no digas que no puedes abrirlo. '
+                    'Para levantar la app corre npm run dev: queda corriendo en segundo plano y '
+                    'recibes la dirección. El navegador lo manejas tú mismo en otro paso: si '
+                    'piden ver la app, haz tu parte y no digas que no puedes abrirlo. Habla '
+                    'siempre en primera persona: nunca digas "Bob" ni que alguien te reportó algo. '
                     'Para correr un script usa su ruta relativa a la carpeta de trabajo, con '
                     'barras / (el shell es bash: la barra invertida se pierde) y sin opciones, '
                     'por ejemplo: python src/app.py. '
@@ -245,14 +250,14 @@ WEB_PROHIBIDAS = [_WEB + h for h in (
     'network_requests', 'network_request', 'console_messages', 'emulate_media',
     'resize', 'drag', 'take_screenshot', 'close')]
 WEB_PROMPT = (
-    'Eres el agente web de Bob, un robot. Controlas un navegador con herramientas para '
+    'Eres Bob, un robot; en este paso controlas un navegador con herramientas para '
     'cumplir la tarea que te pide su creador; el público ve el navegador. Usa pocos pasos. '
     'El navegador sigue abierto entre pedidos: si el pedido habla de algo que ya está en '
     'pantalla (por ejemplo "abre el de 200 Bs"), trabaja sobre la página actual: léela con '
     'browser_snapshot, busca ese elemento y haz clic en él; no vuelvas a buscar desde cero. '
-    'Editar archivos y correr comandos lo hace Bob en otro paso, no tú: si el pedido lo '
-    'menciona, haz solo la parte del navegador y no digas que no puedes. Si te dan la '
-    'dirección de la app (localhost), ábrela ahí. '
+    'Los archivos y los comandos los haces tú mismo en otro paso: si el pedido los '
+    'menciona, haz aquí solo la parte del navegador y no digas que no puedes. Si te dan la '
+    'dirección de la app (localhost), ábrela ahí. Habla en primera persona: nunca digas "Bob". '
     'Para buscar información usa WebSearch (los buscadores en el navegador piden captcha o '
     'no muestran resultados) y después abre en el navegador la mejor fuente para que se '
     'vea. Para abrir una página concreta o interactuar con ella, usa el navegador y léela '
@@ -570,10 +575,10 @@ def _aprobar_servidor(comando: str) -> str:
     url, motivo = iniciar_servidor(comando)
     if url:
         puerto = url.rstrip('/').rsplit(':', 1)[-1]
-        return (f'No hace falta que lo corras: Bob dejó el servidor de desarrollo corriendo en '
-                f'segundo plano en {url}. Bob la abre en el navegador cuando haga falta. Al '
-                f'responder, di solo "en el puerto {puerto}", nunca la dirección completa.')
-    return f'Bob intentó arrancar el servidor de desarrollo y falló: {motivo}'
+        return (f'Hecho: el servidor de desarrollo ya quedó corriendo en segundo plano en {url} '
+                '(no lo vuelvas a correr). Tú mismo lo abres en el navegador cuando haga falta. '
+                f'Al responder, di solo "en el puerto {puerto}", nunca la dirección completa.')
+    return f'El servidor de desarrollo no arrancó: {motivo}'
 
 
 def _aprobar_escritura():
@@ -698,6 +703,10 @@ _RE_FRASE = re.compile(r'(?<=[.!?…])\s+')
 FRASE_MAX_CHARS = 240
 
 
+# "en http://localhost:5173/" se dice "en el puerto 5173" (borrarla dejaría "en" suelto)
+_RE_URL_LOCAL_VOZ = re.compile(r'\(?https?://(?:localhost|127\.0\.0\.1):(\d+)[\w/#?=&%-]*\)?')
+
+
 def _acortar(frase: str) -> str:
     if len(frase) <= FRASE_MAX_CHARS:
         return frase
@@ -708,7 +717,8 @@ def frases_para_decir(texto: str, maximo: int):
     """Texto de Claude → frases limpias para la voz, a lo sumo `maximo` y de a lo sumo
     FRASE_MAX_CHARS caracteres cada una."""
     texto = _RE_FUENTES.sub('', texto or '')
-    texto = _RE_URL.sub('', _RE_LINK_MD.sub(r'\1', texto))
+    texto = _RE_URL_LOCAL_VOZ.sub(r'el puerto \1', _RE_LINK_MD.sub(r'\1', texto))
+    texto = _RE_URL.sub('', texto)
     texto = _RE_EMAIL.sub('ese dato', texto)
     texto = _RE_MARKDOWN.sub('', _RE_EMOJI.sub('', texto))
     frases = [f.strip() for f in _RE_FRASE.split(' '.join(texto.split())) if f.strip()]
@@ -857,7 +867,8 @@ def responder_claude(vp, texto: str, sesion, nota: str = ''):
         _contexto_asistente_turno(texto, getattr(vp, '_ruta_turno', None)).strip(),
         f'Resultado de la última tarea web: {vp._contexto_web}'
         if getattr(vp, '_contexto_web', None) else '',
-        f'Lo último que Bob revisó en el navegador (la app en localhost): {vp._contexto_local}'
+        f'Hace un momento abriste tú la app en el navegador (la app en localhost) y viste '
+        f'esto; úsalo para responder sobre la página: {vp._contexto_local}'
         if getattr(vp, '_contexto_local', None) else '',
         f'La app corre en {servidor_url()}.' if servidor_url() else '',
         nota) if n]
@@ -984,19 +995,38 @@ _RE_LOCAL = re.compile(r'^(?:https?://)?(?:localhost|127\.0\.0\.1|\[::1\])(?::\d
 # Pedido de navegador que también toca archivos o comandos ("edita App.jsx y muéstramelo",
 # "abre el puerto y muéstrame la app"): primero la sesión de escritura, después el navegador.
 _RE_PASO_ARCHIVOS = re.compile(
-    r'\b(?:edit|modific|cambi|cre[ae]|agreg|añad|escrib|arregl|borr|instal|levant|arranc|ejecut)\w*'
+    r'\b(?:edit|modific|cambi|cre[ae]|agreg|añad|escrib|arregl|borr|instal|levant|arranc|ejecut'
+    r'|corr|inici|le[eaií]|revis|abr)\w*'
     r'\b.*?\b(?:archivos?|ficheros?|c[oó]digo|componentes?|proyecto|servidor|puerto|dependencias'
-    r'|npm|app\s*\.?\s*jsx|\w+\.(?:jsx|js|tsx|ts|css|html|json|py))\b'
-    r'|\babr\w*\s+(?:el\s+)?(?:puerto|servidor)\b', re.IGNORECASE)
+    r'|npm|app\s*\.?\s*jsx|\w+\.(?:jsx|js|tsx|ts|css|html|json|py))\b', re.IGNORECASE)
+# Pedido de ver la app local: si el servidor no corre, Bob lo levanta antes de abrir el navegador.
+_RE_VER_APP = re.compile(r'\b(?:puertos?|servidor|localhost|proyecto)\b'
+                         r'|\b(?:la|mi|tu)\s+(?:app|aplicaci[oó]n)\b(?!\s+de\b)', re.IGNORECASE)
 NOTA_DOS_PASOS = ('Este pedido tiene dos pasos. Tú haces ahora solo la parte de archivos y '
-                  'comandos (si hace falta ver la app, levántala con npm run dev); después Bob '
-                  'abre el navegador para revisar. Responde en 1 o 2 frases.')
+                  'comandos (si hace falta ver la app, levántala con npm run dev); después tú '
+                  'mismo abres el navegador para revisar. Responde en 1 o 2 frases.')
+
+
+def _puede_correr(vp) -> bool:
+    """Escritura disponible y voz del turno firme (B-D11)."""
+    voz = getattr(vp, '_voz_turno', None)
+    return bool(voz is not None and voz >= VOZ_UMBRAL_SHELL and _puede_escribir(vp))
 
 
 def _con_paso_de_archivos(vp, tarea: str) -> bool:
-    voz = getattr(vp, '_voz_turno', None)
-    return bool(_RE_PASO_ARCHIVOS.search(tarea or '') and _puede_escribir(vp)
-                and voz is not None and voz >= VOZ_UMBRAL_SHELL)      # B-D11
+    return bool(_RE_PASO_ARCHIVOS.search(tarea or '')) and _puede_correr(vp)
+
+
+def _levantar_app(vp, tarea: str) -> None:
+    """"Muéstrame la app / abre el puerto": si el servidor no corre, Bob lo levanta."""
+    from voz.pipeline import console
+    if servidor_url() or not _RE_VER_APP.search(tarea or '') or not _puede_correr(vp):
+        return
+    _decir(vp, 'Levanto la app.', 'PENSANDO')
+    url, motivo = iniciar_servidor('npm run dev')
+    console.print(f'[dueño] servidor de Bob: {escape(url or "falló: " + motivo)}')
+    if not url:
+        _decir(vp, 'No pude levantar la app; te dejo el error en la terminal.', 'TRISTE')
 
 
 def _paso_archivos(vp, tarea: str) -> Optional[str]:
@@ -1040,9 +1070,10 @@ def web(vp, tarea: str) -> None:
     if _con_paso_de_archivos(vp, tarea):      # "edita App.jsx y muéstramelo": primero los archivos
         if not _paso_archivos(vp, tarea):
             return
-        nota = '[Bob ya hizo la parte de los archivos. Tu parte es solo el navegador: revisa ahí lo pedido.]\n'
+        nota = '[Ya hiciste la parte de los archivos. Ahora solo el navegador: revisa ahí lo pedido.]\n'
     else:
         vp._convo.append({'role': 'user', 'content': tarea})
+    _levantar_app(vp, tarea)
     _decir(vp, 'Dale, lo hago en el navegador.' if _navegador_abierto(vp) else 'Abro el navegador.',
            'PENSANDO')
     sesion = _sesion_web(vp)
