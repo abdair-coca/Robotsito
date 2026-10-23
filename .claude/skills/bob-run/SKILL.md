@@ -20,11 +20,14 @@ Punto de entrada: `robot_bob/main.py`. Inicia los 6 componentes en orden y los c
 
 ## Comando
 
-Desde `scripts/robot_bob/`:
+Dos arranques; el usuario elige. Si no lo dijo, pregúntale cuál quiere.
 
-```bash
-python main.py
-```
+- **Con el CLI** (salida ordenada, barra de estado y atajos): desde `scripts/`, `bob`. La primera vez instala sus dependencias con npm. Necesita Node 22 o superior.
+- **Clásico** (plan B, igual que siempre): desde `scripts/robot_bob/`, `python main.py`.
+
+Los dos corren el mismo `main.py`. Detalle del CLI: `docs/ARCHITECTURE.md` §9.
+
+Terminado cuando: aparece `Robot Bob activo.` En el CLI, además, la barra muestra la fase de Bob (por ejemplo «en reposo»).
 
 ## Flujo de arranque esperado
 
@@ -44,8 +47,9 @@ Si alguna línea no aparece en orden, hay un problema. Detener con Ctrl+C y diag
 
 ## Cómo cerrar correctamente
 
-- **Q** en la ventana de video (preferido — el `finally` del main loop ejecuta limpieza)
-- **Ctrl+C** en terminal (también dispara el `finally`)
+- **Q** en la ventana de video o en el CLI (preferido — el `finally` del main loop ejecuta limpieza)
+- **Ctrl+C** en terminal o en el CLI (también dispara el `finally`)
+- En el CLI, una segunda Q o Ctrl+C mientras cierra lo corta enseguida (sin limpieza): úsalo solo si Bob no cierra en 10 s
 - **NO usar TaskKill ni cerrar la terminal con X** — deja COM3 huérfano y la próxima ejecución falla
 
 ## Comportamiento esperado durante uso

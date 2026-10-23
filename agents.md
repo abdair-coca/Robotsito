@@ -21,6 +21,7 @@ repo es firmware (`firmware/`), dependencias vivas (`shared/`) o base histórica
 | Necesito entender… | Lee |
 |---|---|
 | Hilos, FSM, módulos, emociones, backends | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| CLI de Bob (`bob-cli/`, `BOB_CLI=1`, protocolo NDJSON) | [docs/ARCHITECTURE.md §9](docs/ARCHITECTURE.md#9-cli-de-bob-bob-cli) |
 | Pines, IPs, puertos, firmware, brownout | [docs/HARDWARE.md](docs/HARDWARE.md) |
 | Discovery de IPs, mDNS, multi-WiFi, troubleshooting de red | [docs/NETWORK.md](docs/NETWORK.md) |
 | Qué falta por hacer y en qué orden | [docs/ROADMAP.md](docs/ROADMAP.md) |

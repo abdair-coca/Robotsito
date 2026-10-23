@@ -1,0 +1,3 @@
+# cmd.exe espera CRLF en los .bat/.cmd (bob.cmd), sin importar core.autocrlf.
+*.cmd text eol=crlf
+*.bat text eol=crlf

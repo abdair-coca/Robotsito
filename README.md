@@ -16,6 +16,14 @@ python -m hardware.discovery                  # localiza las IPs de los ESP32 (t
 python main.py                       # sistema completo — Q para salir
 ```
 
+Con el CLI (todo lo que Bob escribe, barra de estado y atajos; necesita Node 22+), desde
+la raíz del repo:
+
+```bash
+bob                 # Bob completo dentro del CLI — Q para salir
+bob --falso         # Bob de mentira, sin placas, para probar el CLI
+```
+
 Primera vez: `cp .env.example .env` y poner la `GROQ_API_KEY`
 (https://console.groq.com/keys).
 
@@ -24,6 +32,7 @@ Primera vez: `cp .env.example .env` y poner la `GROQ_API_KEY`
 | Carpeta | Qué es |
 |---|---|
 | `robot_bob/` | **Sistema canónico** — el cerebro Python de la laptop. Empieza por aquí. |
+| `bob-cli/` | CLI de Bob (Ink + TypeScript): lanza `robot_bob/main.py` y muestra su salida. |
 | `firmware/` | Código que corre DENTRO de los ESP32 (DevKit MicroPython, CAM Arduino, OLED). |
 | `shared/` | Dependencias vivas compartidas (`voicechatLap`: audio TCP, wake word). |
 | `legacy/` | Prototipos viejos de los que nació Bob. No se editan. |

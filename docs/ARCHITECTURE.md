@@ -33,7 +33,8 @@ PROCESO PRINCIPAL (main.py)
 ├── [Hilo 4] behavior-engine   Tick @20 Hz, movimiento humano (idle/presence/thinking/speaking)
 ├── [Hilo 5] voice-pipeline    STT → LLM → TTS, activado por eventos
 ├── [Hilo 6] wake-monitor      Escucha "Bob" continuamente cuando no hay conversación
-└── [Hilo principal] main loop Display OpenCV + HUD, cap a 25 FPS, Q para salir
+├── [Hilo principal] main loop Display OpenCV + HUD, cap a 25 FPS, Q para salir
+└── [solo modo CLI] cli-comandos (atajos por stdin) y cli-estado (barra), ver §9
 ```
 
 **Orden de arranque:** SerialManager → StateMachine → FacialTracker (espera primer
@@ -62,6 +63,9 @@ quedan en la raíz, y también los datos de runtime (`memory.db`, `devices.json`
 | `nucleo/behavior.py` | Motor de movimiento humano @20 Hz (incluye soliloquio/muecas y giro de cuerpo). |
 | `nucleo/expression_engine.py` | Reacciones instantáneas a lo que dice el usuario (`react_to_user_text`). |
 | `nucleo/show.py` | Modo presentación ("preséntate"). |
+| `nucleo/puente_cli.py` | Con `BOB_CLI=1`: stdout/stderr → eventos NDJSON y comandos por stdin (§9). |
+| `nucleo/teclas_cli.py` | Atajos del CLI → cola que lee el loop de `main.py` (§9). |
+| `nucleo/estado_cli.py` | Foto del estado de Bob cada 200 ms para la barra del CLI (§9). |
 | `hardware/serial_manager.py` | Único dueño del canal de control. Cola priorizada SERVO > ESTADO > SIGUIENDO, throttle, dedup. WiFi/USB/none. |
 | `hardware/discovery.py` | Auto-localiza las IPs de los 3 ESP32 (ver [NETWORK.md](NETWORK.md)). |
 | `hardware/preflight.py` | Chequeo de arranque: red, placas, cámara, COM3, micrófono, voz, LLM y Groq. |
@@ -149,6 +153,7 @@ Entorno: **Python 3.11**, venv en `robot_bob/venv311/`. Deps en
 # desde robot_bob/, con venv311 activo
 python -m hardware.discovery       # refresca IPs de los ESP32 (tras cambiar de WiFi)
 python main.py            # sistema completo (Q para salir)
+# o con el CLI, desde la raíz del repo: bob   (Bob de mentira sin placas: bob --falso)
 
 python tests/hardware/test_1_serial.py        # COM3 / OLED / servos / throttle
 python tests/hardware/test_2_tracker.py       # stream MJPEG + MediaPipe + servos (sin voz)
@@ -173,3 +178,33 @@ python tests/hardware/test_memoria.py         # memoria persistente
 - **Secretos:** nunca hardcodear claves; van en `.env`.
 - **Cable como fallback de oro:** la arquitectura por USB COM3 nunca se elimina; es el
   patrón contra el que se compara el WiFi.
+
+---
+
+## 9. CLI de Bob (`bob-cli/`)
+
+CLI al estilo de Claude Code: muestra todo lo que Bob escribe, con una barra de estado en
+vivo y los atajos. Es opcional: `python main.py` (modo clásico) no cambia y es el plan B.
+
+```
+bob.cmd → bob-cli (Node, Ink) ──lanza──▶ robot_bob/main.py con BOB_CLI=1
+             ▲  stdout: NDJSON (un evento por línea)  │
+             └──────────────────────────────────────┘
+             ──▶ stdin: comandos {"cmd": "tecla" | "salir", ...}
+```
+
+- **Eventos** (`nucleo/puente_cli.py`):
+  - `{"t":"log","origen","nivel","ansi","turno"?}`: cada línea que escribe Bob, con los colores de Rich. `nivel` sale de `errores.error`/`aviso`; `turno` marca «Usuario:» y las frases de Bob (`puente_cli.turno()`).
+  - `{"t":"estado",…}`: lo que cambió de la FSM, la emoción, el micrófono, la música, el baile o el modo ingeniero (`estado_cli`).
+  - Lo que no es JSON y el stderr nativo se muestran crudos (en gris).
+- **Captura sin tocar los mensajes:** con `BOB_CLI=1`, `sys.stdout` y `sys.stderr` pasan a ser escritores de eventos. Rich busca `sys.stdout` al escribir, así que las consolas de Rich y los `print()` quedan capturados sin cambiarlos.
+- **Atajos:** Q, S, D, J, E y ENTER llegan como `{"cmd":"tecla"}` a una cola que el loop de `main.py` lee cuando `cv2.waitKey` no trae nada. Pasan por las mismas ramas que en la ventana de video. Q marca `teclas_cli.salida`, así que funciona aunque no llegue video. E trae el nombre escrito en el CLI.
+- **Cierre:** si se cierra el stdin de Bob (el CLI terminó o se cayó), Bob cierra limpio: `salir` → el `finally` de `main.py`. Si el CLI cae, Bob no queda corriendo con COM3 tomado. Si Bob se cae, el CLI queda abierto con el código de salida.
+- **Trampas de Windows, ya resueltas:**
+  - Un hilo bloqueado leyendo el pipe de stdin traba a cualquier otro que consulte ese handle, y la carga de la DLL de Fortran de scipy se colgaba. Por eso el lector usa una copia (`os.dup`) y fd 0 pasa a NUL.
+  - Con la salida por pipe, Rich baja a 16 colores ("legacy windows"). En modo CLI se desactiva esa detección.
+  - `signal.raise_signal(SIGINT)` despierta un `time.sleep` del hilo principal; `_thread.interrupt_main` no.
+- **Pruebas:**
+  - Python: `test_puente_cli`, `test_teclas_cli` y `test_estado_cli` (unit).
+  - CLI: `npm test` y `npm run typecheck` en `bob-cli/`.
+  - Sin placas: `bob --falso` (modos `demo`, `rafaga [s]` y `caida`).
