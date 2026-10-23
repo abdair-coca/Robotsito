@@ -1,24 +1,29 @@
 """
 show.py — Modo presentación de Bob ("Bob, presentate").
 
-Coreografía FIJA de ~75 s que muestra todas las habilidades en orden:
+Coreografía FIJA de ~95 s que muestra todas las habilidades en orden:
   1. Intro
-  2. Emociones en los ojos OLED
+  2. Emociones en los ojos OLED, con gestos de cabeza
   3. Movimiento de cabeza (pan/tilt)
   4. Giro del cuerpo (motores)
-  5. Reconocimiento facial + memoria de personas
-  6. Recordatorios (mención)
-  7. Datos en vivo (hora + clima)
-  8. Cierre: arranca música en Spotify y se queda bailando
+  5. Reconocimiento facial + memoria de personas ("te presento a…")
+  6. Voz del dueño
+  7. Modo ingeniero (mención: código, navegador, búsqueda con fuentes)
+  8. Recordatorios (mención)
+  9. Datos en vivo (hora + clima)
+ 10. Cierre: arranca música en Spotify y se queda bailando
 
 Guion fijo (sin LLM): confiable para demo, timing exacto frase-acción.
 Cada paso degrada con gracia si su subsistema no está disponible.
+Los gestos de cabeza van mientras Bob habla, chicos y lentos: con movimientos fuertes
+la fuente actual hace caer el voltaje (y se reinicia la cámara).
 
 run_show(vp) recibe el VoicePipeline en curso y usa sus piezas
 (_hablar, _serial, _sm, _face_id, _memoria, _get_frame).
 """
 
 import re
+import threading
 import time
 
 from asistente.assistant import hora_actual, obtener_clima
@@ -57,52 +62,78 @@ def run_show(vp) -> bool:
     def ojos(estado):
         serial.cmd_estado(estado)
 
+    cabeza = _Cabeza(serial, (90.0, 80.0))
+
+    def decir(frase, estado, gesto=None):
+        """Cara + frase; el gesto de cabeza va mientras habla (no antes ni después)."""
+        ojos(estado)
+        hilo = threading.Thread(target=gesto, daemon=True, name='show-gesto') if gesto else None
+        if hilo:
+            hilo.start()
+        hablar(frase, estado)
+        if hilo:
+            hilo.join(timeout=5.0)
+
     con_baile = False
     try:
         # ── 1. INTRO ────────────────────────────────────────────────────────
         ojos('MUY_FELIZ')
         serial.cmd_servo(90, 80)
-        pos = (90.0, 80.0)
         time.sleep(0.3)
-        hablar('¡Hola amiguitos! Soy Bob, un robotito hecho en Potosí con '
-               'mucho cariño. ¿Quieren ver todo lo que sé hacer? ¡Miren!',
-               'MUY_FELIZ')
+        decir('¡Hola, hola, amiguitos! Soy Bob, un robotito hecho en Potosí con '
+              'mucho cariño... y unos cuantos cables.', 'MUY_FELIZ', cabeza.asentir)
+        decir('¿Quieren ver todo lo que sé hacer? ¡Acérquense, que no muerdo!',
+              'TRAVIESO', cabeza.ladito)
 
-        # ── 2. EMOCIONES OLED ───────────────────────────────────────────────
-        hablar('Mis ojitos muestran cómo me siento. ¿Ven?', 'FELIZ')
-        for estado, frase in (
-                ('CURIOSO',     'Así me pongo cuando algo me da curiosidad.'),
-                ('PENSANDO',    'Así, cuando pienso bien fuerte.'),
-                ('SOSPECHANDO', 'Así, cuando alguien se hace el misterioso...'),
-                ('MUY_FELIZ',   '¡Y así de feliz me pongo cuando me visitan!')):
-            ojos(estado)
-            time.sleep(0.4)
-            hablar(frase, estado)
+        # ── 2. EMOCIONES OLED + GESTOS ──────────────────────────────────────
+        decir('Mis ojitos muestran cómo me siento. ¿Ven?', 'FELIZ')
+        for estado, frase, gesto in (
+                ('CURIOSO',     'Así me pongo cuando algo me da curiosidad.', cabeza.ladito),
+                ('SORPRENDIDO', '¡Así, cuando algo me sorprende!', cabeza.atras),
+                ('PENSANDO',    'Así, cuando pienso bien fuerte.', None),
+                ('AVERGONZADO', 'Así, cuando me dicen algo bonito... ay, no me miren tanto.',
+                 cabeza.mirar_abajo),
+                ('TRISTE',      'Así, cuando se van sin despedirse...', cabeza.mirar_abajo),
+                ('MUY_FELIZ',   '¡Pero se me pasa rapidito, porque ustedes vinieron a '
+                                'verme!', cabeza.asentir)):
+            time.sleep(0.3)
+            decir(frase, estado, gesto)
 
         # ── 3. CABEZA (lenta y suave) ───────────────────────────────────────
-        hablar('Mi cabecita se mueve solita, despacito, y te sigue '
-               'a donde vayas.', 'CURIOSO')
+        decir('Mi cabecita se mueve solita, despacito, y te sigue '
+              'a donde vayas.', 'CURIOSO')
         for destino in ((55, 85), (125, 85), (90, 70), (90, 95), (90, 85)):
-            pos = _mover_suave(serial, pos, destino)
+            cabeza.ir(destino)
             time.sleep(0.15)
 
         # ── 4. CUERPO ───────────────────────────────────────────────────────
-        hablar('Y si te me escondés... ¡giro con todo mi cuerpito '
-               'para encontrarte!', 'SOSPECHANDO')
+        decir('Y si te me escondés... ¡giro con todo mi cuerpito '
+              'para encontrarte!', 'TRAVIESO')
         _wiggle_cuerpo(serial)
 
         # ── 5. RECONOCIMIENTO FACIAL + MEMORIA ──────────────────────────────
-        _demo_reconocimiento(vp, hablar, ojos)
+        _demo_reconocimiento(vp, decir, cabeza)
 
-        # ── 6. RECORDATORIOS ────────────────────────────────────────────────
-        hablar('También te cuido: decime «Bob, recordame algo» '
-               'y yo te aviso justo a tiempo.', 'PENSANDO')
+        # ── 6. VOZ DEL DUEÑO ────────────────────────────────────────────────
+        decir('Y no solo veo: también escucho. Reconozco la voz de mi creador, '
+              'así que hay cositas que solo le hago caso a él.', 'ORGULLOSO', cabeza.asentir)
 
-        # ── 7. DATOS EN VIVO ────────────────────────────────────────────────
-        _demo_asistente(hablar, ojos)
+        # ── 7. MODO INGENIERO ───────────────────────────────────────────────
+        decir('Cuando trabajamos juntos, me pongo en modo ingeniero: leo su código, '
+              'lo arreglo, instalo lo que falte y le abro su app en el navegador.',
+              'EMOCIONADO', cabeza.ladito)
+        decir('Y les voy contando lo que hago; si busco algo en internet, digo de dónde '
+              'lo saqué. ¡Nada de inventar!', 'ORGULLOSO')
 
-        # ── 8. CIERRE MUSICAL ───────────────────────────────────────────────
-        con_baile = _cierre_musical(vp, hablar, ojos)
+        # ── 8. RECORDATORIOS ────────────────────────────────────────────────
+        decir('También te cuido: decime «Bob, recordame algo» '
+              'y yo te aviso justo a tiempo.', 'AMOR')
+
+        # ── 9. DATOS EN VIVO ────────────────────────────────────────────────
+        _demo_asistente(decir)
+
+        # ── 10. CIERRE MUSICAL ──────────────────────────────────────────────
+        con_baile = _cierre_musical(vp, decir, ojos, cabeza)
     finally:
         sm.oled_liberar()
         sm.show_activo.clear()
@@ -123,6 +154,44 @@ def _mover_suave(serial, desde, hasta, paso=1.5, dt=0.06):
     return (pan_f, tilt_f)
 
 
+_PAN_LIM, _TILT_LIM = (20, 160), (40, 130)    # los de facial_tracker (tilt menor = mira arriba)
+
+
+class _Cabeza:
+    """Gestos de cabeza chicos y lentos alrededor de donde está; cada gesto vuelve al
+    punto de partida. Un lock evita que un gesto y un movimiento se pisen."""
+
+    def __init__(self, serial, pos):
+        self._serial = serial
+        self.pos = (float(pos[0]), float(pos[1]))
+        self._lock = threading.Lock()
+
+    def ir(self, destino, paso=1.5, dt=0.06):
+        pan = max(_PAN_LIM[0], min(_PAN_LIM[1], destino[0]))
+        tilt = max(_TILT_LIM[0], min(_TILT_LIM[1], destino[1]))
+        with self._lock:
+            self.pos = _mover_suave(self._serial, self.pos, (pan, tilt), paso, dt)
+
+    def _ida_vuelta(self, d_pan, d_tilt, veces=1, pausa=0.3):
+        base = self.pos
+        for _ in range(veces):
+            self.ir((base[0] + d_pan, base[1] + d_tilt), paso=1.0, dt=0.04)
+            time.sleep(pausa)
+            self.ir(base, paso=1.0, dt=0.04)
+
+    def asentir(self):          # "sí", contento
+        self._ida_vuelta(0, 6, veces=2, pausa=0.05)
+
+    def ladito(self):           # curioso, pícaro
+        self._ida_vuelta(10, 0, pausa=0.6)
+
+    def atras(self):            # sorpresa: la cabeza sube un poquito
+        self._ida_vuelta(0, -8, pausa=0.8)
+
+    def mirar_abajo(self):      # vergüenza o tristeza
+        self._ida_vuelta(-6, 10, pausa=1.2)
+
+
 def _wiggle_cuerpo(serial) -> None:
     """Giro corto a un lado y al otro. No hace nada si los motores están off."""
     try:
@@ -138,14 +207,14 @@ def _wiggle_cuerpo(serial) -> None:
     serial.cmd_motor(0, 0)
 
 
-def _demo_reconocimiento(vp, hablar, ojos) -> None:
-    hablar('Ahora lo mejor: yo veo con mi propia cámara... '
-           'y nunca olvido una cara.', 'CURIOSO')
+def _demo_reconocimiento(vp, decir, cabeza) -> None:
+    decir('Ahora lo mejor: yo veo con mi propia cámara... '
+          'y nunca olvido una cara.', 'CURIOSO', cabeza.ladito)
     activo = (vp._face_id is not None and vp._memoria is not None
               and vp._get_frame is not None and vp._face_id.listo)
     if not activo:
-        hablar('Mi memoria de caras está descansando ahora, pero cuando está '
-               'despierta, ¡me acuerdo de todos!', 'FELIZ')
+        decir('Mi memoria de caras está descansando ahora, pero cuando está '
+              'despierta, ¡me acuerdo de todos!', 'FELIZ')
         return
     time.sleep(0.8)         # que alguien quede frente a la cámara
     try:
@@ -155,31 +224,35 @@ def _demo_reconocimiento(vp, hablar, ojos) -> None:
     except Exception:
         emb, m, total = None, None, 0
     if m and m[1]:
-        hablar(f'¡{m[1]}! A vos ya te conozco. ¡Qué lindo verte de nuevo!',
-               'MUY_FELIZ')
+        decir(f'¡{m[1]}! A vos ya te conozco. ¡Qué lindo verte de nuevo!',
+              'AMOR', cabeza.asentir)
     elif emb is not None:
-        hablar('A vos todavía no te conozco... ¡pero ya te estoy guardando '
-               'en mi corazoncito!', 'SOSPECHANDO')
+        decir('A vos todavía no te conozco... ¡pero ya te estoy guardando '
+              'en mi corazoncito!', 'AVERGONZADO', cabeza.mirar_abajo)
     else:
-        hablar('Ahora no veo bien ninguna carita. ¡Pónganse frente a mi '
-               'cámara la próxima!', 'CURIOSO')
+        decir('Ahora no veo bien ninguna carita. ¡Pónganse frente a mi '
+              'cámara la próxima!', 'CURIOSO')
     if total:
-        hablar(f'Ya tengo {total} amiguitos guardados en mi memoria.', 'FELIZ')
+        decir(f'Ya tengo {total} amiguitos guardados en mi memoria.', 'FELIZ')
+    decir('Y si mi creador me dice «Bob, te presento a alguien», ¡esa persona '
+          'también pasa a ser mi amiguito!', 'MUY_FELIZ', cabeza.asentir)
 
 
-def _demo_asistente(hablar, ojos) -> None:
-    ojos('PENSANDO')
+def _demo_asistente(decir) -> None:
     frase = f'¿Datos en vivo? Fácil: son las {hora_actual()}'
     clima = obtener_clima()      # None si no hay red (timeout 3 s)
     if clima:
         frase += f', y en Potosí el cielo está así: {clima}'
     frase += '. ¿Y saben qué es lo mejor? ¡Puedo hacer todo eso solito!'
-    hablar(frase, 'MUY_FELIZ')
+    decir(frase, 'MUY_FELIZ')
 
 
-def _cierre_musical(vp, hablar, ojos) -> bool:
-    hablar('Y ahora sí... ¡lo que más me gusta en el mundo: bailar! '
-           '¡DJ, dale play!', 'MUY_FELIZ')
+def _cierre_musical(vp, decir, ojos, cabeza) -> bool:
+    decir('Gracias por quedarse conmigo todo este ratito. Me hicieron muy, '
+          'muy feliz.', 'AMOR', cabeza.mirar_abajo)
+    decir('Y ahora sí... ¡lo que más me gusta en el mundo: bailar! '
+          '¡DJ, dale play!', 'EMOCIONADO', cabeza.asentir)
+    hablar = vp._hablar
     if not MUSICA_ENABLED:
         hablar('Hoy vine sin mi Spotify... pero decime «Bob» y charlamos '
                'igual. ¡Gracias!', 'FELIZ')
