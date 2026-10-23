@@ -1047,7 +1047,8 @@ class VoicePipeline:
                     continue
                 break
 
-            console.print(f'[bold cyan]Usuario:[/] {texto}')
+            with puente_cli.turno('usuario'):            # el CLI lo resalta
+                console.print(f'[bold cyan]Usuario:[/] {texto}')
 
             if self._modo_ingeniero and stt.es_cancelar_dictado(texto):
                 # R3: "…no, borra eso" al final de un dictado → no se envía nada.
@@ -1153,7 +1154,8 @@ class VoicePipeline:
                 self._sm.iniciar_hablando()
                 ack = random.choice(['¡Voy para allá!', '¡Ya te busco!',
                                      '¡Me doy la vuelta!', '¡A ver dónde estás!'])
-                console.print(f'[bold green]Bob[/] [dim](giro:{intent})[/]: {ack}')
+                with puente_cli.turno('bob'):
+                    console.print(f'[bold green]Bob[/] [dim](giro:{intent})[/]: {ack}')
                 self._hablar(ack, 'TRAVIESO')
                 es_primer_turno = False
                 continue
@@ -1168,8 +1170,9 @@ class VoicePipeline:
                         f'¡Listo! Te aviso {rec.cuando_str}.',
                         f'¡Anotado! Te lo recuerdo {rec.cuando_str}.',
                         f'¡Hecho! {rec.cuando_str} te aviso, tranqui.'])
-                    console.print(f'[bold green]Bob[/] [dim](recordatorio '
-                                  f'{rec.cuando_str}: "{rec.que}")[/]: {ack}')
+                    with puente_cli.turno('bob'):
+                        console.print(f'[bold green]Bob[/] [dim](recordatorio '
+                                      f'{rec.cuando_str}: "{rec.que}")[/]: {ack}')
                     self._hablar(ack, 'FELIZ')
                     es_primer_turno = False
                     continue
@@ -1215,8 +1218,9 @@ class VoicePipeline:
                 if mintent:
                     self._sm.iniciar_hablando()
                     ack = ejecutar_musica(mintent)          # hace la llamada a Spotify
-                    console.print(f'[bold green]Bob[/] [dim](música:{mintent.accion}'
-                                  f'{" «"+mintent.query+"»" if mintent.query else ""})[/]: {ack}')
+                    with puente_cli.turno('bob'):
+                        console.print(f'[bold green]Bob[/] [dim](música:{mintent.accion}'
+                                      f'{" «"+mintent.query+"»" if mintent.query else ""})[/]: {ack}')
                     # Baile: si arrancó música, Bob sale de la charla y se pone a
                     # bailar con el wake monitor activo (decir "Bob" lo corta). Si
                     # la pausó, deja de bailar.
@@ -2061,7 +2065,8 @@ class VoicePipeline:
 
             # JEV decidió la emoción del turno (ver _marcar_emo)
             self._serial.cmd_estado(emo)
-            console.print(f'[bold green]Bob[/] [dim]({emo})[/]: {sent_text}')
+            with puente_cli.turno('bob'):
+                console.print(f'[bold green]Bob[/] [dim]({emo})[/]: {sent_text}')
 
             c = self._reproducir(mp3)
 
@@ -2285,7 +2290,8 @@ class VoicePipeline:
         try:
             if emo:
                 self._serial.cmd_estado(emo)
-            console.print(f'[bold blue][soliloquio][/] [dim]({emo})[/]: {clean}')
+            with puente_cli.turno('bob'):
+                console.print(f'[bold blue][soliloquio][/] [dim]({emo})[/]: {clean}')
             self._hablar(clean, emo)
         except Exception as e:
             errores.aviso('HABLA SOLO', 'Falló una frase suelta de Bob; sigue como siempre.', e)

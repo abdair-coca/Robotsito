@@ -13,6 +13,19 @@ test('nivel desconocido o ausente → info', () => {
   assert.deepEqual(e, { t: 'log', origen: 'bob', nivel: 'info', ansi: 'hola' });
 });
 
+test('log con turno; turno desconocido se ignora', () => {
+  assert.deepEqual(parsearLinea('{"t":"log","ansi":"Usuario: hola","turno":"usuario"}', 'stdout'),
+    { t: 'log', origen: 'bob', nivel: 'info', ansi: 'Usuario: hola', turno: 'usuario' });
+  assert.deepEqual(parsearLinea('{"t":"log","ansi":"x","turno":"otro"}', 'stdout'),
+    { t: 'log', origen: 'bob', nivel: 'info', ansi: 'x' });
+});
+
+test('estado: solo los campos conocidos y con su tipo', () => {
+  assert.deepEqual(
+    parsearLinea('{"t":"estado","fsm":"THINKING","mic":false,"emocion":"FELIZ","baile":"si","raro":1}', 'stdout'),
+    { t: 'estado', cambios: { fsm: 'THINKING', emocion: 'FELIZ', mic: false } });
+});
+
 test('stdout que no es JSON va crudo', () => {
   assert.deepEqual(parsearLinea('INFO: Created TensorFlow Lite delegate', 'stdout'),
     { t: 'crudo', de: 'stdout', texto: 'INFO: Created TensorFlow Lite delegate' });

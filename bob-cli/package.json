@@ -11,7 +11,7 @@
     "start": "tsx src/index.tsx",
     "falso": "tsx src/index.tsx --falso",
     "typecheck": "tsc --noEmit",
-    "test": "node --test src/protocolo.test.ts src/teclas.test.ts"
+    "test": "node --test src/protocolo.test.ts src/teclas.test.ts src/vista.test.ts"
   },
   "dependencies": {
     "ink": "5.2.1",

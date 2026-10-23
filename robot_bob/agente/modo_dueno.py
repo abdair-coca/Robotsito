@@ -45,6 +45,7 @@ from typing import Optional, Tuple
 
 import errores
 from asistente import busqueda
+from nucleo import puente_cli
 from rich.markup import escape
 
 try:
@@ -925,7 +926,8 @@ def _responder_con_fuentes(vp, texto: str, consultas, sesion):
         dichas = []
         for frase in busqueda.responder_con_fuentes(texto, fuentes):
             dichas.append(frase)
-            console.print(f'  [bold cyan]Bob:[/] {escape(frase)}')
+            with puente_cli.turno('bob'):
+                console.print(f'  [bold cyan]Bob:[/] {escape(frase)}')
             yield frase
         if dichas:
             # el turno siguiente de Claude lo sabe: lo dicho y las fuentes, para poder explicarlas

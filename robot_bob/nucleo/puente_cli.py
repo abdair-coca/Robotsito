@@ -5,7 +5,8 @@ El CLI lanza a Bob con BOB_CLI=1. Con eso, todo lo que Bob escribe sale por stdo
 como NDJSON, un evento por línea:
 
   {"t": "log", "origen": "bob" | "stderr", "nivel": "info" | "aviso" | "error",
-   "ansi": "<la línea, con los colores de Rich>"}
+   "ansi": "<la línea, con los colores de Rich>", "turno": "usuario" | "bob" (opcional)}
+  {"t": "estado", ...}   lo que cambió del estado de Bob (ver estado_cli.py)
 
 y por stdin llegan comandos {"cmd": "<nombre>", ...} que se despachan a lo registrado
 con al_comando(). Sin BOB_CLI, activar() no hace nada: Bob escribe en la consola como
@@ -92,6 +93,18 @@ def nivel(n: str):
         _local.nivel = previo
 
 
+@contextlib.contextmanager
+def turno(quien: str):
+    """Marca las líneas escritas adentro como turno de `quien` ("usuario", "bob"): el
+    CLI las resalta. El texto no cambia; sin CLI no hace nada."""
+    previo = getattr(_local, 'turno', None)
+    _local.turno = quien
+    try:
+        yield
+    finally:
+        _local.turno = previo
+
+
 def al_comando(nombre: str, fn: Callable[[dict], None]) -> None:
     """Registra qué hacer cuando el CLI manda {"cmd": nombre}. fn recibe el comando."""
     _comandos[nombre] = fn
@@ -112,9 +125,13 @@ class _Escritor:
         pendiente = getattr(_local, clave, '') + texto
         *lineas, resto = pendiente.split('\n')
         setattr(_local, clave, resto)
+        quien = getattr(_local, 'turno', None)
         for linea in lineas:
-            emitir({'t': 'log', 'origen': self.origen,
-                    'nivel': getattr(_local, 'nivel', 'info'), 'ansi': linea.rstrip('\r')})
+            evento = {'t': 'log', 'origen': self.origen,
+                      'nivel': getattr(_local, 'nivel', 'info'), 'ansi': linea.rstrip('\r')}
+            if quien:
+                evento['turno'] = quien
+            emitir(evento)
         return len(texto)
 
     def flush(self) -> None:

@@ -27,7 +27,7 @@ except Exception:
 # CLI (bob-cli/): con BOB_CLI=1 todo lo que Bob escribe sale como eventos NDJSON.
 # Va antes de importar config, que imprime al cargarse. Los atajos del CLI se
 # registran antes de activar: un comando que llega sin registrar se pierde.
-from nucleo import puente_cli, teclas_cli
+from nucleo import estado_cli, puente_cli, teclas_cli
 teclas_cli.registrar()
 puente_cli.activar()
 
@@ -177,6 +177,8 @@ def main() -> None:
     voice.iniciar_soliloquio_monitor()   # Bob habla solo cuando está libre
     voice.iniciar_recordatorio_monitor() # P9: anuncia recordatorios al vencer
     voice.iniciar_baile_monitor()        # apaga el baile cuando la música para
+    fin_estado_cli = threading.Event()
+    estado_cli.iniciar(sm, voice, serial_mgr, fin_estado_cli)   # barra del CLI (solo modo CLI)
 
     # ── 5. BehaviorEngine ──────────────────────────────────────────────────────
     behavior = BehaviorEngine(sm, tracker)
@@ -334,6 +336,7 @@ def main() -> None:
 
     finally:
         print('\nCerrando...')
+        fin_estado_cli.set()
         behavior.cerrar()
         voice.cerrar()
         tracker.cerrar()

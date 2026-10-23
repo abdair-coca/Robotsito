@@ -18,10 +18,25 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
 from nucleo import puente_cli   # noqa: E402
 
 fin = threading.Event()
+mic = {'activo': True}
+
+
+def estado(**cambios) -> None:
+    """Lo que en el Bob real manda nucleo/estado_cli.py."""
+    puente_cli.emitir({'t': 'estado', **cambios})
+
+
+def tecla(c: dict) -> None:
+    """Atajos del CLI: el Bob real los manda al loop de main.py; acá se muestran y la S
+    alterna el micrófono, para ver la barra."""
+    print(f"(falso) tecla {c['tecla']}" + (f" · nombre: {c['nombre']}" if c.get('nombre') else ''))
+    if c['tecla'] == 's':
+        mic['activo'] = not mic['activo']
+        estado(mic=mic['activo'])
+
+
 puente_cli.al_comando('salir', lambda c: fin.set())   # antes de activar (ver T1)
-# Atajos del CLI: el Bob real los manda al loop de main.py; acá solo se muestran.
-puente_cli.al_comando('tecla', lambda c: print(
-    f"(falso) tecla {c['tecla']}" + (f" · nombre: {c['nombre']}" if c.get('nombre') else '')))
+puente_cli.al_comando('tecla', tecla)
 puente_cli.activar()
 
 from rich.console import Console   # noqa: E402
@@ -50,10 +65,26 @@ def demo() -> None:
     except KeyError:
         traceback.print_exc()
     console.print('[dim]Una línea larga para ver el corte: ' + 'palabra ' * 40 + '[/]')
+    estado(fsm='IDLE', mic=True, musica=False, baile=False, ingeniero=False)
+    # Una charla de mentira cada 8 s: la barra pasa por cada fase y los turnos se resaltan.
     n = 0
     while not fin.wait(2.0):
         n += 1
-        console.print(f'[dim][latido] {n}[/]')
+        estado(fsm='LISTENING', emocion='ESCUCHANDO')
+        if fin.wait(1.5):
+            break
+        with puente_cli.turno('usuario'):
+            console.print(f'[bold cyan]Usuario:[/] ¿Qué hora es? (charla {n})')
+        estado(fsm='THINKING', emocion='PENSANDO')
+        if fin.wait(2.0):        # acá gira el spinner
+            break
+        estado(fsm='SPEAKING', emocion='FELIZ')
+        with puente_cli.turno('bob'):
+            console.print('[bold green]Bob[/] [dim](FELIZ)[/]: Son las cinco y media, ¡hora de bailar!')
+        estado(musica=True, baile=n % 2 == 1)
+        if fin.wait(1.5):
+            break
+        estado(fsm='CONVERSATION_IDLE', musica=False, baile=False)
     print('Robot Bob detenido.')
 
 

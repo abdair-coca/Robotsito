@@ -6,21 +6,30 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput, useStdin, useStdout } from 'ink';
 
 import { Bob, type Lanzamiento } from './bob.ts';
-import type { Evento } from './protocolo.ts';
 import { interpretar } from './teclas.ts';
+import { aTexto, fusionar, partesEstado, SPINNER, type EstadoBob } from './vista.ts';
 
 const LOTE_MS = 50;
-const GRIS = '\x1b[2m';
-const NORMAL = '\x1b[0m';
+const SPINNER_MS = 100;
 
 type Estado =
   | { fase: 'corriendo' }
   | { fase: 'cerrando' }
   | { fase: 'caido'; codigo: number | null };
 
-function aTexto(e: Evento): string {
-  if (e.t === 'log') return e.ansi;
-  return e.de === 'stderr' ? `${GRIS}${e.texto}${NORMAL}` : e.texto;
+/** Fase, emoción, micrófono, música y modo de Bob; con un spinner mientras piensa. */
+function BarraBob({ bob, giro }: { bob: EstadoBob; giro: number }) {
+  const partes = partesEstado(bob);
+  return (
+    <Text>
+      {bob.fsm === 'THINKING'
+        ? <Text color="yellow">{SPINNER[giro % SPINNER.length]}</Text>
+        : <Text color="green">●</Text>} Bob
+      {partes.map((p, i) => (
+        <Text key={i}><Text dimColor> · </Text><Text color={p.color}>{p.texto}</Text></Text>
+      ))}
+    </Text>
+  );
 }
 
 export function App({ lanzamiento, registrar }: {
@@ -32,6 +41,8 @@ export function App({ lanzamiento, registrar }: {
   const { isRawModeSupported } = useStdin();
   const [estado, setEstado] = useState<Estado>({ fase: 'corriendo' });
   const [nombre, setNombre] = useState<string | null>(null);   // línea de la E abierta
+  const [estadoBob, setEstadoBob] = useState<EstadoBob>({});
+  const [giro, setGiro] = useState(0);
   const bob = useRef<Bob | null>(null);
   const cola = useRef<string[]>([]);
   const pedido = useRef(false);   // el usuario pidió cerrar (no es una caída)
@@ -44,7 +55,10 @@ export function App({ lanzamiento, registrar }: {
 
   useEffect(() => {
     const b = new Bob(
-      (e) => cola.current.push(aTexto(e)),
+      (e) => {
+        if (e.t === 'estado') setEstadoBob((previo) => fusionar(previo, e.cambios));
+        else cola.current.push(aTexto(e));
+      },
       (codigo) => {
         volcar();
         // Cierre normal o pedido (con Ctrl+C, Python sale con 0xC000013A): el CLI se
@@ -59,6 +73,14 @@ export function App({ lanzamiento, registrar }: {
     const t = setInterval(volcar, LOTE_MS);
     return () => clearInterval(t);
   }, []);
+
+  // El spinner gira solo mientras Bob piensa: no redibujar la barra sin necesidad.
+  const pensando = estadoBob.fsm === 'THINKING' && estado.fase === 'corriendo';
+  useEffect(() => {
+    if (!pensando) return;
+    const t = setInterval(() => setGiro((g) => g + 1), SPINNER_MS);
+    return () => clearInterval(t);
+  }, [pensando]);
 
   useInput((input, key) => {
     const accion = interpretar({ input, ...key }, nombre);
@@ -89,10 +111,10 @@ export function App({ lanzamiento, registrar }: {
         </Text>
       )}
       {estado.fase === 'corriendo' && nombre === null && (
-        <Text>
-          <Text color="green">●</Text> Bob corriendo
-          <Text dimColor>  Q salir · S micrófono · D cortar y escuchar · J cortar · E enrolar · ENTER turno</Text>
-        </Text>
+        <Box flexDirection="column">
+          <BarraBob bob={estadoBob} giro={giro} />
+          <Text dimColor>Q salir · S micrófono · D corta y escucha · J corta · E enrola · ENTER turno</Text>
+        </Box>
       )}
       {estado.fase === 'cerrando' && (
         <Text><Text color="yellow">●</Text> Cerrando a Bob… <Text dimColor>· Q otra vez para cortarlo ya</Text></Text>

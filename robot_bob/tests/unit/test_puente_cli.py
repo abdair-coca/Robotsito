@@ -50,6 +50,9 @@ print(' y fin')
 errores.error('CÁMARA', 'No llega video.', 'timed out')
 errores.aviso('CLAUDE', 'No respondió a tiempo.')
 print('a stderr', file=sys.stderr)
+with puente_cli.turno('usuario'):
+    como_pipeline.print('[bold cyan]Usuario:[/] hola Bob')
+print('fuera del turno')
 def hilo(n):
     for i in range(50):
         print(f'hilo{n}-linea{i:02d}-' + 'x' * 40)
@@ -128,6 +131,11 @@ e = buscar('a stderr')
 check('stderr: origen stderr', e is not None and e['origen'] == 'stderr', repr(e))
 check('nivel vuelve a info tras errores', buscar('a stderr')['nivel'] == 'info'
       and buscar('hilo1-linea00')['nivel'] == 'info')
+e = buscar('hola Bob')
+check('turno: la línea lleva turno usuario, el texto igual', e is not None and e.get('turno') == 'usuario'
+      and 'Usuario:' in e['ansi'], repr(e))
+check('turno: la línea siguiente ya no lo lleva', 'turno' not in buscar('fuera del turno')
+      and all('turno' not in x for x in eventos if 'hilo' in x['ansi']))
 hilos = [e['ansi'] for e in eventos if e['ansi'].startswith('hilo')]
 enteras = all(len(x) == len('hilo1-linea00-') + 40 and x.endswith('x' * 40) for x in hilos)
 check('hilos: 100 líneas enteras, sin mezclar', len(hilos) == 100 and enteras, f'({len(hilos)})')
