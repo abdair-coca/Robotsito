@@ -24,6 +24,11 @@ try:
 except Exception:
     pass
 
+# CLI (bob-cli/): con BOB_CLI=1 todo lo que Bob escribe sale como eventos NDJSON.
+# Va antes de importar config, que imprime al cargarse.
+from nucleo import puente_cli
+puente_cli.activar()
+
 # Limitar OpenCV a 1 hilo evita que se coma todos los cores y deje al
 # hilo stream-reader sin CPU para drenar el socket TCP del ESP32-CAM.
 cv2.setNumThreads(1)

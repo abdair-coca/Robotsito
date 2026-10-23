@@ -1,0 +1,130 @@
+"""
+test_puente_cli.py — Puente Bob → CLI (nucleo/puente_cli.py), T1 del plan del CLI.
+
+Corre un proceso hijo con stdout y stdin por pipe, como lo lanza bob-cli (Node):
+  1. Con BOB_CLI=1 cada línea de stdout es un evento NDJSON válido.
+  2. Rich (las dos formas de consola de Bob), print(), errores.error/aviso y stderr
+     llegan con su origen, nivel y colores.
+  3. Dos hilos imprimiendo a la vez no mezclan líneas.
+  4. Los comandos de stdin se despachan; los ilegibles o desconocidos avisan.
+  5. Sin BOB_CLI la salida es idéntica a la de no llamar a activar().
+
+  python tests/unit/test_puente_cli.py
+"""
+import json
+import os
+import subprocess
+import sys
+
+RAIZ = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+
+fallos = 0
+
+
+def check(nombre: str, ok: bool, detalle: str = "") -> None:
+    global fallos
+    fallos += 0 if ok else 1
+    print(f"[{'OK' if ok else 'FALLA'}] {nombre} {detalle}", flush=True)
+
+
+# Script del hijo: imprime por todos los caminos que usa Bob. ACTIVAR se reemplaza
+# para comparar con y sin activar().
+HIJO = r'''
+import sys, threading
+sys.path.insert(0, RAIZ)
+from nucleo import puente_cli
+puente_cli.al_comando('eco', lambda c: print(f"eco {c['x']}"))
+puente_cli.al_comando('roto', lambda c: 1 / 0)
+ACTIVAR
+from rich.console import Console
+import errores
+como_config = Console(force_terminal=True, color_system="truecolor")   # config.console
+como_pipeline = Console()                                              # consola.console
+como_config.print('[red]rojo de config[/]')
+como_pipeline.print('[dark_orange]naranja del pipeline[/]')
+print('un print suelto')
+print('dos', 'partes', end='')
+print(' y fin')
+errores.error('CÁMARA', 'No llega video.', 'timed out')
+errores.aviso('CLAUDE', 'No respondió a tiempo.')
+print('a stderr', file=sys.stderr)
+def hilo(n):
+    for i in range(50):
+        print(f'hilo{n}-linea{i:02d}-' + 'x' * 40)
+hs = [threading.Thread(target=hilo, args=(n,)) for n in (1, 2)]
+[h.start() for h in hs]
+[h.join() for h in hs]
+[t.join(5) for t in threading.enumerate() if t.name == 'cli-comandos']
+'''.replace('RAIZ', repr(RAIZ))
+
+COMANDOS = '{"cmd":"eco","x":7}\nbasura\n{"cmd":"nada"}\n{"cmd":"roto"}\n'
+
+
+def correr(activar: str, con_cli: bool, entrada: str = '') -> subprocess.CompletedProcess:
+    env = {k: v for k, v in os.environ.items() if k != 'BOB_CLI'}
+    env['PYTHONIOENCODING'] = 'utf-8'
+    if con_cli:
+        env['BOB_CLI'] = '1'
+    return subprocess.run([sys.executable, '-c', HIJO.replace('ACTIVAR', activar)],
+                          input=entrada.encode('utf-8'), capture_output=True,
+                          env=env, cwd=RAIZ, timeout=60)
+
+
+# ── 1-4. Con BOB_CLI=1 ──────────────────────────────────────────────────────────
+# El hijo registra los comandos antes de activar(): el lector arranca ahí y ya
+# encuentra en stdin lo que se manda desde el inicio.
+r = correr('puente_cli.activar()', con_cli=True, entrada=COMANDOS)
+lineas = r.stdout.decode('utf-8').splitlines()
+eventos, malas = [], []
+for linea in lineas:
+    try:
+        eventos.append(json.loads(linea))
+    except ValueError:
+        malas.append(linea)
+check('cli: el hijo termina bien', r.returncode == 0, r.stderr.decode('utf-8', 'replace')[-300:])
+check('cli: todo stdout es NDJSON', lineas and not malas, f'({len(lineas)} líneas, malas: {malas[:2]})')
+check('cli: stderr de Python no queda crudo', r.stderr == b'', repr(r.stderr[:200]))
+
+
+def buscar(texto):
+    return next((e for e in eventos if texto in e.get('ansi', '')), None)
+
+
+e = buscar('rojo de config')
+check('rich (config): evento log de bob con rojo', e is not None and e['t'] == 'log'
+      and e['origen'] == 'bob' and e['nivel'] == 'info' and '\x1b[31m' in e['ansi'], repr(e))
+e = buscar('naranja del pipeline')
+check('rich (pipeline): naranja real, no 16 colores', e is not None and '208' in e['ansi'], repr(e))
+e = buscar('un print suelto')
+check('print(): llega como evento', e is not None and e['ansi'] == 'un print suelto', repr(e))
+e = buscar('dos partes')
+check('print() en dos partes: una sola línea', e is not None and e['ansi'] == 'dos partes y fin', repr(e))
+e = buscar('No llega video')
+check('errores.error: nivel error con ✖', e is not None and e['nivel'] == 'error'
+      and '✖' in e['ansi'] and 'CÁMARA' in e['ansi'], repr(e))
+e = buscar('No respondió a tiempo')
+check('errores.aviso: nivel aviso, naranja con ⚠', e is not None and e['nivel'] == 'aviso'
+      and '⚠' in e['ansi'] and '208' in e['ansi'], repr(e))
+e = buscar('a stderr')
+check('stderr: origen stderr', e is not None and e['origen'] == 'stderr', repr(e))
+check('nivel vuelve a info tras errores', buscar('a stderr')['nivel'] == 'info'
+      and buscar('hilo1-linea00')['nivel'] == 'info')
+hilos = [e['ansi'] for e in eventos if e['ansi'].startswith('hilo')]
+enteras = all(len(x) == len('hilo1-linea00-') + 40 and x.endswith('x' * 40) for x in hilos)
+check('hilos: 100 líneas enteras, sin mezclar', len(hilos) == 100 and enteras, f'({len(hilos)})')
+check('comando: eco despachado', buscar('eco 7') is not None)
+avisos = [e['ansi'] for e in eventos if e['nivel'] == 'aviso' and e['ansi'].startswith('[cli]')]
+check('comandos: ilegible, desconocido y fallido avisan', len(avisos) == 3
+      and 'ilegible' in avisos[0] and 'desconocido: nada' in avisos[1] and 'roto falló' in avisos[2],
+      repr(avisos))
+
+# ── 5. Sin BOB_CLI: idéntico a no llamar a activar() ────────────────────────────
+sin_cli = correr('puente_cli.activar()', con_cli=False)
+nunca = correr('pass', con_cli=False)
+check('sin BOB_CLI: stdout idéntico', sin_cli.stdout == nunca.stdout and b'rojo de config' in nunca.stdout,
+      f'({len(sin_cli.stdout)} vs {len(nunca.stdout)} bytes)')
+check('sin BOB_CLI: stderr idéntico', sin_cli.stderr == nunca.stderr)
+check('sin BOB_CLI: nada de NDJSON', b'"t": "log"' not in sin_cli.stdout)
+
+print(f"\nRESULTADO: {'TODO OK' if fallos == 0 else f'{fallos} FALLO(S)'}")
+sys.exit(1 if fallos else 0)

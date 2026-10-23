@@ -14,6 +14,8 @@ con su propia función de log.
 from rich.console import Console
 from rich.markup import escape
 
+from nucleo import puente_cli
+
 _console = Console()
 _ANCHO_PARTE = 10
 
@@ -40,21 +42,24 @@ def formato_aviso(parte: str, texto: str, detalle=None) -> str:
     return _formato(_simbolo('⚠', '!'), 'dark_orange', parte, texto, detalle)
 
 
-def _imprimir(markup: str) -> None:
-    """Un mensaje de error nunca debe tumbar a Bob: si Rich falla, va en texto plano."""
-    try:
-        _console.print(markup, highlight=False)
-    except Exception:
-        from rich.text import Text
+def _imprimir(markup: str, nivel: str) -> None:
+    """Un mensaje de error nunca debe tumbar a Bob: si Rich falla, va en texto plano.
+    nivel: con el que lo marca el CLI (bob-cli); sin CLI no cambia nada."""
+    with puente_cli.nivel(nivel):
         try:
-            print(Text.from_markup(markup).plain.encode('ascii', 'replace').decode('ascii'), flush=True)
+            _console.print(markup, highlight=False)
         except Exception:
-            pass
+            from rich.text import Text
+            try:
+                print(Text.from_markup(markup).plain.encode('ascii', 'replace').decode('ascii'),
+                      flush=True)
+            except Exception:
+                pass
 
 
 def error(parte: str, texto: str, detalle=None) -> None:
-    _imprimir(formato_error(parte, texto, detalle))
+    _imprimir(formato_error(parte, texto, detalle), 'error')
 
 
 def aviso(parte: str, texto: str, detalle=None) -> None:
-    _imprimir(formato_aviso(parte, texto, detalle))
+    _imprimir(formato_aviso(parte, texto, detalle), 'aviso')
