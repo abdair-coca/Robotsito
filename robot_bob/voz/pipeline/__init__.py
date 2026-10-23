@@ -1158,7 +1158,9 @@ class VoicePipeline:
             ruta_musica = (esperaba_cancion or ruta is None or ruta == 'musica'
                            or (ruta or '').startswith('musica_'))
             if MUSICA_ENABLED and ruta_musica:
-                mintent = parse_music_command(texto)
+                # modo ingeniero: solo con una palabra de música ("pon un botón" no es Spotify)
+                mintent = parse_music_command(texto,
+                                              estricto=getattr(self, '_modo_ingeniero', False))
                 if ruta and ruta.startswith('musica_'):
                     mintent = intent_desde_jev(ruta, texto, mintent)   # J4: JEV manda la acción
                 if mintent is None and esperaba_cancion:

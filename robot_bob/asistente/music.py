@@ -64,6 +64,15 @@ _RE_PLAY_VERB = re.compile(
     rf"\b(?:{_VERBO_PON}|reproduce|reproduci|toca|escuch\w*|"
     r"quiero (?:escuchar|oir|oír)|dale play)\b", re.IGNORECASE)
 
+# Palabras que dejan claro que se habla de música. Sin ninguna, un "pon X" solo cuenta si el
+# verbo va al inicio y X es corto: "…de las palabras pongas también un campo color…" es
+# charla (o un pedido del modo ingeniero), no un tema.
+_RE_PALABRA_MUSICA = re.compile(
+    r"\b(?:m[uú]sica|canci[oó]n(?:es)?|temas?|spotify|playlists?|lista de reproducci[oó]n|"
+    r"volumen|[aá]lbum|disco|cantante|artista|banda|play)\b", re.IGNORECASE)
+PLAY_VERBO_MAX_POS = 4      # palabras antes del verbo ("bob, ahora quiero que pongas …")
+PLAY_TEMA_MAX_PALABRAS = 7  # "the fate of ophelia de taylor swift"
+
 # Playlist: captura el nombre tras "playlist"/"lista (de reproducción)". Acepta
 # plural y conectores ("de", "llamada", "que se llama"). Sin nombre → playlist genérica.
 _RE_PLAYLIST = re.compile(
@@ -153,11 +162,16 @@ def tema_de(texto_orden: str) -> str:
     return _limpiar_query(q)
 
 
-def parse_music_command(texto: str) -> Optional[MusicIntent]:
-    """Devuelve un MusicIntent si `texto` es un comando de música, o None."""
+def parse_music_command(texto: str, estricto: bool = False) -> Optional[MusicIntent]:
+    """Devuelve un MusicIntent si `texto` es un comando de música, o None.
+    estricto (modo ingeniero): sin una palabra de música no hay comando, para que
+    "pon un botón" o "siguiente paso" no toquen Spotify."""
     if not MUSICA_ENABLED:
         return None
     t = texto.lower().strip()
+    con_palabra_musica = bool(_RE_PALABRA_MUSICA.search(t))
+    if estricto and not con_palabra_musica:
+        return None
 
     # Pausa / siguiente / anterior / volumen: frases fijas (chequear antes que play,
     # porque "pasa la canción" no debe caer como búsqueda).
@@ -192,6 +206,10 @@ def parse_music_command(texto: str) -> Optional[MusicIntent]:
     m = _RE_PLAY.search(texto)
     if m:
         query = tema_de(m.group(1))
+        if not con_palabra_musica and (
+                len(texto[:m.start()].split()) > PLAY_VERBO_MAX_POS
+                or len((query or '').split()) > PLAY_TEMA_MAX_PALABRAS):
+            return None                  # un "pon" en medio de una frase larga: es charla
         if query:
             return MusicIntent("play", query=query)
         return MusicIntent("resume")     # "pon" sin tema → reanudar

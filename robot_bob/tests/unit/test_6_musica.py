@@ -70,6 +70,27 @@ def main() -> None:
         if not ok:
             fallos += 1
 
+    # Un "pon" en medio de un pedido largo no es un tema (el turno real que puso música)
+    for texto in ("Perfecto. Ahora quiero que en el JSON, verdad, de las palabras pongas también "
+                  "un campo ahora que diga color y pongas el color de la que va a tener la "
+                  "flashcard de esa palabra.",
+                  "quiero que en la página principal pongas una flashcard con el estilo que quieras"):
+        intent = M.parse_music_command(texto)
+        ok = intent is None
+        print(f'  [{"OK" if ok else "FALLO"}] "{texto[:50]}…" → {intent}')
+        if not ok:
+            fallos += 1
+    # Modo ingeniero (estricto): sin palabra de música no hay comando
+    for texto, esperado in (("pon un botón azul en la página", None), ("siguiente paso", None),
+                            ("pausa", None), ("pon despacito", None),
+                            ("pon música de Queen", "play"), ("pausa la música", "pause"),
+                            ("siguiente canción", "next"), ("sube el volumen", "vol_up")):
+        intent = M.parse_music_command(texto, estricto=True)
+        ok = (intent.accion if intent else None) == esperado
+        print(f'  [{"OK" if ok else "FALLO"}] estricto "{texto}" → {intent}  (esperado {esperado})')
+        if not ok:
+            fallos += 1
+
     # Apagada → siempre None
     M.MUSICA_ENABLED = False
     if M.parse_music_command("pon despacito") is not None:
