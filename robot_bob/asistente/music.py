@@ -24,6 +24,8 @@ import threading
 from dataclasses import dataclass
 from typing import Optional
 
+import errores
+
 try:
     from config import (MUSICA_ENABLED, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET,
                         SPOTIFY_REDIRECT_URI, SPOTIFY_CACHE_PATH)
@@ -258,7 +260,8 @@ def _cliente():
             )
             _sp = spotipy.Spotify(auth_manager=auth, requests_timeout=8)
         except Exception as e:
-            print(f"[music] no se pudo iniciar Spotify: {e}")
+            errores.error("SPOTIFY", "No se pudo conectar: Bob no controla la música. Revisa las "
+                          "credenciales de Spotify en robot_bob/.env.", e)
             _sp = None
     return _sp
 
@@ -368,5 +371,6 @@ def ejecutar(intent: MusicIntent) -> str:
         return "No entendí qué hacer con la música."
 
     except Exception as e:
-        print(f"[music] error: {e}")
+        errores.aviso("SPOTIFY", "El comando de música falló. Revisa que Spotify esté abierto en "
+                      "la laptop y que la cuenta sea premium.", e)
         return "Uy, algo falló con Spotify; fijate que esté abierto y sea cuenta premium."

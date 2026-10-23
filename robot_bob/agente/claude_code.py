@@ -28,6 +28,8 @@ import threading
 import time
 from typing import Callable, Optional, Sequence
 
+import errores
+
 CWD_DEFAULT = os.path.join(tempfile.gettempdir(), 'bob_claude')
 # Variables que no deben llegar al hijo: CLAUDECODE haría que se niegue a correr
 # dentro de otra sesión de Claude Code; ANTHROPIC_API_KEY lo cobraría como API.
@@ -140,7 +142,8 @@ class SesionClaude:
                 finally:
                     log.close()          # el hijo ya tiene su propio handle
             except Exception as e:
-                print(f'[claude] {self.nombre}: no arrancó ({e})')
+                errores.error('CLAUDE', f'La sesión "{self.nombre}" no arrancó. Revisa que Claude '
+                              'Code esté instalado y con la sesión iniciada.', e)
                 self._proc = None
                 return False
             self.arranques += 1
@@ -193,7 +196,8 @@ class SesionClaude:
                 try:
                     decision = self.aprobar(req.get('tool_name', ''), req.get('input') or {})
                 except Exception as e:
-                    print(f'[claude] {self.nombre}: el permiso falló ({e}), se niega')
+                    errores.aviso('CLAUDE', f'Sesión "{self.nombre}": falló el control de permisos; '
+                                  'por seguridad niego esa acción.', e)
             if decision is True:
                 resp = {'behavior': 'allow', 'updatedInput': req.get('input') or {}}
             else:     # un texto: se niega con ese mensaje (p. ej. "Bob ya lo hizo")
@@ -206,7 +210,8 @@ class SesionClaude:
             proc.stdin.write(json.dumps(salida, ensure_ascii=False) + '\n')
             proc.stdin.flush()
         except Exception as e:
-            print(f'[claude] {self.nombre}: no se pudo responder el permiso ({e})')
+            errores.aviso('CLAUDE', f'Sesión "{self.nombre}": no pude contestarle un permiso; el '
+                          'turno puede cortarse por tiempo.', e)
 
     def _cortar(self, eventos) -> None:
         """Turno pasado de tiempo o de herramientas. Con `conservar`, lo interrumpe y espera
@@ -231,7 +236,8 @@ class SesionClaude:
                     elif ev.get('type') == 'result':
                         return
             except Exception as e:
-                print(f'[claude] {self.nombre}: no se pudo interrumpir ({e})')
+                errores.aviso('CLAUDE', f'Sesión "{self.nombre}": no pude frenar el turno; la '
+                              'reinicio.', e)
         self.cerrar()
 
     def preguntar(self, texto: str, timeout: float = 30.0,
@@ -257,7 +263,8 @@ class SesionClaude:
                     ensure_ascii=False) + '\n')
                 self._proc.stdin.flush()
             except Exception as e:
-                print(f'[claude] {self.nombre}: no se pudo escribir ({e})')
+                errores.aviso('CLAUDE', f'Sesión "{self.nombre}": no pude mandarle el mensaje; la '
+                              'reinicio para el próximo turno.', e)
                 self.cerrar()
                 return None
             partes, usos = [], 0
@@ -265,7 +272,8 @@ class SesionClaude:
             while True:
                 restante = limite - time.monotonic()
                 if restante <= 0:
-                    print(f'[claude] {self.nombre}: sin respuesta en {timeout:.0f} s')
+                    errores.aviso('CLAUDE', f'Sesión "{self.nombre}": no respondió en {timeout:.0f} s; '
+                                  'corto el turno.')
                     self._cortar(eventos)
                     return None
                 try:
@@ -273,7 +281,8 @@ class SesionClaude:
                 except queue.Empty:
                     continue
                 if ev is None:
-                    print(f'[claude] {self.nombre}: el proceso terminó')
+                    errores.aviso('CLAUDE', f'Sesión "{self.nombre}": el proceso se cerró solo; el '
+                                  'próximo turno lo vuelve a abrir.')
                     self._proc = None
                     return None
                 tipo = ev.get('type')
@@ -286,15 +295,16 @@ class SesionClaude:
                             if al_usar:
                                 al_usar(b.get('name', ''), b.get('input') or {})
                             if max_herramientas is not None and usos > max_herramientas:
-                                print(f'[claude] {self.nombre}: más de {max_herramientas} '
-                                      'herramientas, se corta')
+                                errores.aviso('CLAUDE', f'Sesión "{self.nombre}": usó más de '
+                                              f'{max_herramientas} herramientas; corto el turno.')
                                 self._cortar(eventos)
                                 return None
                 elif tipo == 'control_request':
                     self._responder_permiso(self._proc, ev)
                 elif tipo == 'result':
                     if ev.get('is_error'):
-                        print(f'[claude] {self.nombre}: error ({ev.get("subtype")})')
+                        errores.aviso('CLAUDE', f'Sesión "{self.nombre}": el turno terminó con error.',
+                                      ev.get('subtype'))
                         return None
                     self.turnos += 1
                     texto_final = (ev.get('result') or ''.join(partes)).strip()

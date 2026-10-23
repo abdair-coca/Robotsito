@@ -193,7 +193,9 @@ def registrar(d: Decision, ruta_archivo: Optional[str] = None) -> None:
             with open(destino, "a", encoding="utf-8") as f:
                 f.write(json.dumps(linea, ensure_ascii=False) + "\n")
     except OSError as e:
-        print(f"[jev] no pude registrar la decisión en {destino}: {e}", flush=True)
+        import errores
+        errores.aviso("REGISTRO", "No pude guardar el registro de este turno; Bob sigue igual.",
+                      f"{destino}: {e}")
 
 
 def decidir(frase: str, ultimo_turno: str = "") -> Decision:

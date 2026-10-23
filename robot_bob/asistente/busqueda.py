@@ -24,6 +24,7 @@ from typing import List, Optional
 from urllib.parse import urlparse
 
 import config  # noqa: F401  (carga robot_bob/.env en el entorno)
+import errores
 
 SERPER_URL = 'https://google.serper.dev/search'
 SERPER_NOTICIAS_URL = 'https://google.serper.dev/news'
@@ -42,7 +43,8 @@ def buscar(consulta: str, n: int = 10, noticias: bool = False,
     """Resultados de Serper para `consulta`, o None si no se pudo buscar."""
     clave = clave or os.environ.get('SERPER_API_KEY', '')
     if not clave:
-        print('[busqueda] sin SERPER_API_KEY en .env')
+        errores.error('BÚSQUEDA', 'Falta SERPER_API_KEY en robot_bob/.env: no puedo buscar en '
+                      'internet.')
         return None
     url = SERPER_NOTICIAS_URL if noticias else SERPER_URL
     cuerpo = json.dumps({'q': consulta, 'gl': GL, 'hl': HL, 'num': n}).encode('utf-8')
@@ -52,10 +54,12 @@ def buscar(consulta: str, n: int = 10, noticias: bool = False,
         with urllib.request.urlopen(peticion, timeout=timeout) as r:
             datos = json.loads(r.read().decode('utf-8'))
     except urllib.error.HTTPError as e:          # 401 clave mala, 429 cuota agotada...
-        print(f'[busqueda] HTTP {e.code} en "{consulta}"')
+        motivo = {401: 'la clave SERPER_API_KEY no sirve', 403: 'la clave SERPER_API_KEY no sirve',
+                  429: 'se acabó el cupo de búsquedas'}.get(e.code, 'Serper rechazó la búsqueda')
+        errores.error('BÚSQUEDA', f'No pude buscar "{consulta}": {motivo}.', f'HTTP {e.code}')
         return None
     except (urllib.error.URLError, OSError, ValueError) as e:   # red, timeout, JSON roto
-        print(f'[busqueda] falló "{consulta}": {e}')
+        errores.aviso('BÚSQUEDA', f'No pude buscar "{consulta}" (¿sin internet?).', e)
         return None
 
     items = datos.get('news' if noticias else 'organic') or []
@@ -208,7 +212,8 @@ def descomponer(pregunta: str, cliente=None, modelo: str = DESCOMPONER_MODELO,
                       {'role': 'user', 'content': pregunta}],
             **_razonamiento(modelo))
     except Exception as e:
-        print(f'[busqueda] descomposición falló ({modelo}): {e}')
+        errores.aviso('BÚSQUEDA', 'No pude planear la búsqueda; busco con la pregunta tal cual.',
+                      f'{modelo}: {e}')
         return None
     datos = _json_de(r.choices[0].message.content)
     if not isinstance(datos, dict):
@@ -302,7 +307,7 @@ def responder_con_fuentes(pregunta: str, fuentes: List[dict], cliente=None,
                 yield limpia
     except Exception as e:
         registro['error'] = str(e)
-        print(f'[busqueda] respuesta cortada ({modelo}): {e}')
+        errores.aviso('BÚSQUEDA', 'La respuesta con fuentes se cortó a la mitad.', f'{modelo}: {e}')
     print(f'[busqueda] fuentes citadas: {sorted(usadas)} de {len(fuentes)}')
 
 
@@ -311,7 +316,7 @@ if __name__ == '__main__':
     consulta = ' '.join(sys.argv[1:]) or 'noticias de tecnología hoy'
     res = buscar(consulta, n=5)
     if res is None:
-        print('falló la búsqueda')
+        errores.error('BÚSQUEDA', 'La búsqueda falló (mira el mensaje de arriba).')
     else:
         print(f'{len(res)} resultados para "{consulta}"')
         for r in res:

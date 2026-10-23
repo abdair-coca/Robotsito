@@ -7,6 +7,7 @@ from config import EXIT_PHRASES, GOODBYE_PHRASES
 from voz import stt
 from voz.pipeline.consola import console
 from voz.pipeline.frases import FRASE_SIN_ACCION
+import errores
 
 
 # ── E-C: lo que el LLM de la charla no puede afirmar ───────────────────────────
@@ -41,7 +42,7 @@ def _promete_accion(frase: str) -> bool:
 
 def _sin_promesas(frase: str) -> str:
     if _promete_accion(frase):
-        console.print(f'[red][guard] acción no hecha, frase cambiada: "{frase}"[/]')
+        errores.aviso('GUARDIA', 'Bob iba a decir que hizo algo que no hizo; cambié la frase.', frase)
         return FRASE_SIN_ACCION
     return frase
 

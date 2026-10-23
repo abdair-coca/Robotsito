@@ -12,6 +12,8 @@ Carga pesada (modelos buffalo_l ~300 MB) → se inicializa en un hilo de fondo;
 import threading
 import numpy as np
 
+import errores
+
 
 class FaceID:
     def __init__(self, det_size=(320, 320)):
@@ -31,7 +33,8 @@ class FaceID:
             self._listo.set()
             print('[face_id] InsightFace listo (buffalo_l).')
         except Exception as e:
-            print(f'[face_id] No se pudo cargar InsightFace: {e}')
+            errores.error('CARAS', 'No cargó InsightFace: Bob no reconocerá a las personas en esta '
+                          'sesión.', e)
 
     @property
     def listo(self) -> bool:
@@ -47,7 +50,8 @@ class FaceID:
             with self._lock:
                 faces = app.get(frame_bgr)
         except Exception as e:
-            print(f'[face_id] error analizando: {e}')
+            errores.aviso('CARAS', 'No pude analizar la cara en esta imagen; pruebo con la '
+                          'siguiente.', e)
             return None, None
         if not faces:
             return None, None

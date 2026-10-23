@@ -43,6 +43,7 @@ import threading
 import time
 from typing import Optional, Tuple
 
+import errores
 from asistente import busqueda
 from rich.markup import escape
 
@@ -602,7 +603,11 @@ def _aprobar_escritura():
             detalle = comando[:100]
         else:
             permitido, detalle = False, ''
-        console.print(f'[dueño] {herramienta} {escape(detalle)}: {"sí" if permitido else "no"}')
+        if permitido:
+            console.print(f'[dueño] {herramienta} {escape(detalle)}: sí')
+        else:
+            que = f'{herramienta} "{detalle}"' if detalle else herramienta
+            errores.aviso('COMANDO', f'Bloqueé {que}: no está permitido en el modo ingeniero.')
         return permitido
     return aprobar
 
@@ -878,7 +883,7 @@ def responder_claude(vp, texto: str, sesion, nota: str = ''):
     t0 = time.monotonic()
     respuesta = yield from _preguntar_narrando(sesion, mensaje, _timeout_turno(vp, texto, sesion))
     if not respuesta:
-        console.print('[yellow][dueño] Claude Code no respondió: este turno va con Groq[/]')
+        errores.aviso('CLAUDE', 'No respondió a tiempo: este turno lo contesta Groq.')
         return
     console.print(f'[dim][dueño] Claude Code respondió en {time.monotonic() - t0:.1f} s[/]')
     _marcar_visto(vp, sesion, fin + 2)            # este turno y su respuesta ya los sabe
@@ -929,7 +934,8 @@ def _responder_con_fuentes(vp, texto: str, consultas, sesion):
             vp._contexto_web = f'{" ".join(dichas)} Fuentes de esa búsqueda: {lista}'
             return
         nota = 'No pude armar la respuesta con las fuentes: dilo y responde con lo que sabes.'
-    console.print(f'[yellow][dueño] búsqueda sin respuesta: {nota}[/]')
+    errores.aviso('BÚSQUEDA', 'No salió una respuesta con fuentes; Bob contesta con lo que sabe.',
+                  nota)
     yield from responder_claude(vp, texto, sesion, nota=nota)
 
 
@@ -1024,7 +1030,11 @@ def _levantar_app(vp, tarea: str) -> None:
         return
     _decir(vp, 'Levanto la app.', 'PENSANDO')
     url, motivo = iniciar_servidor('npm run dev')
-    console.print(f'[dueño] servidor de Bob: {escape(url or "falló: " + motivo)}')
+    if url:
+        console.print(f'[dueño] servidor de Bob: {escape(url)}')
+    else:
+        errores.error('APP', 'No pude levantar la app con npm run dev. ¿Faltan dependencias? '
+                      'Pídele a Bob que las instale.', motivo)
     if not url:
         _decir(vp, 'No pude levantar la app; te dejo el error en la terminal.', 'TRISTE')
 
@@ -1158,7 +1168,7 @@ def _resumir_noticias(vp, titulares):
             **extra)
         texto = (r.choices[0].message.content or '').replace('**', '')
     except Exception as e:
-        console.print(f'[yellow][dueño] resumen de noticias falló: {e}[/]')
+        errores.aviso('NOTICIAS', 'No pude resumir las noticias: leo los titulares tal cual.', e)
         return None
     lineas = [_RE_VINETA.sub('', l).strip() for l in texto.splitlines()]
     lineas = [l for l in lineas if l]

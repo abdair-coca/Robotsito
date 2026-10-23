@@ -276,6 +276,7 @@ from voz.pipeline.reglas_turno import (
     _is_exit, _is_goodbye, _es_alucinacion,
 )
 from voz.pipeline.consola import console
+import errores
 from voz.pipeline.frases import (
     RELLENOS, FRASE_SIN_ACCION, FRASE_CORTE, REGLA_CHARLA, DESPEDIDAS_JEV, WAKE_GREETINGS,
     AUTO_OPENERS, PREGUNTAS_VOZ, NEXT_TURN_TIMEOUT_VOZ,
@@ -391,7 +392,7 @@ class VoicePipeline:
                 self._llm_extra = {"reasoning_effort": "none"}   # thinking off
                 console.print(f"[dim][llm] Gemini OK → {self._llm_model}[/]")
             except Exception as _e:
-                console.print(f"[yellow][llm] Gemini no responde ({_e}); fallback a Groq[/]")
+                errores.aviso('IA', 'Gemini no responde: uso Groq.', _e)
                 self._llm = self._client
                 self._llm_model = GROQ_LLM_MODEL
         elif LLM_BACKEND == "ollama":
@@ -403,7 +404,7 @@ class VoicePipeline:
                 self._usando_ollama = True
                 console.print(f"[dim][llm] Ollama OK → {self._llm_model}[/]")
             except Exception as _e:
-                console.print(f"[yellow][llm] Ollama no responde ({_e}); fallback a Groq[/]")
+                errores.aviso('IA', 'Ollama (el modelo local) no responde: uso Groq.', _e)
                 self._llm = self._client
                 self._llm_model = GROQ_LLM_MODEL
         else:
@@ -471,7 +472,8 @@ class VoicePipeline:
             if not pygame.mixer.get_init():
                 pygame.mixer.init(frequency=24000, size=-16, channels=1, buffer=512)
         except Exception as e:
-            console.print(f'[red][voice] pygame error: {e}[/]')
+            errores.error('VOZ', 'No arrancó el audio de la laptop (pygame): Bob puede quedarse '
+                          'mudo. Revisa el parlante o los audífonos.', e)
         self._pygame = pygame
 
         self._warmup()
@@ -508,8 +510,8 @@ class VoicePipeline:
                         console.print('[dim][mic] micrófono continuo + Silero VAD[/]')
                     except Exception as e:
                         self._mic_fallo = True
-                        console.print(f'[yellow][mic] sin micrófono continuo ({e}); '
-                                      f'se graba como antes[/]')
+                        errores.aviso('MICRÓFONO', 'No abrió el micrófono continuo: grabo con el '
+                                      'método anterior (escucha un poco más lento).', e)
         return getattr(self, '_mic', None)
 
     def alternar_microfono(self) -> bool:
@@ -956,7 +958,8 @@ class VoicePipeline:
             if not texto and getattr(self, '_stt_fallo', False):
                 # Groq caído (red/API): no es silencio. Lo decimos y cerramos el
                 # turno; el wake monitor vuelve a escuchar.
-                console.print('[red][voice] Groq STT caído → frase de respaldo[/]')
+                errores.error('ESCUCHA', 'Groq no puede transcribir (¿sin internet o caído?): Bob '
+                              'dice una frase de respaldo y vuelve a esperar "Bob".')
                 self._sm.iniciar_hablando()
                 self._hablar(FRASE_RESPALDO_STT, 'CONFUNDIDO')
                 break
@@ -1569,7 +1572,8 @@ class VoicePipeline:
                 return r.texto, False, r.dudosa, ''
             except Exception as e:
                 if attempt == MAX_RETRIES:
-                    console.print(f'[red][voice] STT error: {e}[/]')
+                    errores.error('ESCUCHA', f'No pude transcribir lo que dijiste tras {MAX_RETRIES} '
+                                  'intentos (¿sin internet?).', e)
                     return '', True, False, ''
                 time.sleep(0.5)
         return '', True, False, ''
@@ -1581,7 +1585,8 @@ class VoicePipeline:
         except (TypeError, ValueError):
             return
         if quedan in (500, 200, 100, 50) or quedan < 20:
-            console.print(f'[yellow][stt] quedan {quedan} transcripciones de Groq hoy[/]')
+            errores.aviso('ESCUCHA', f'Quedan {quedan} transcripciones de Groq por hoy; al '
+                          'llegar a 0, Bob deja de entender.')
 
     # ── LLM ──────────────────────────────────────────────────────────────────
 
@@ -1680,7 +1685,8 @@ class VoicePipeline:
                     stream = pre
                     console.print('[dim][llm] respuesta adelantada (JEV en paralelo)[/]')
                 else:
-                    console.print(f'[red][voice] LLM error: {pre.error} → frase de respaldo[/]')
+                    errores.error('IA', 'El modelo no respondió: Bob dice una frase de respaldo.',
+                                  pre.error)
                     yield f'[EMO:{EMO_LLM_ERROR}] {FRASE_RESPALDO_LLM}'
                     return
             else:
@@ -1689,7 +1695,7 @@ class VoicePipeline:
             try:
                 stream = llm.chat.completions.create(**kwargs)
             except Exception as e:
-                console.print(f'[red][voice] LLM error: {e} → frase de respaldo[/]')
+                errores.error('IA', 'El modelo no respondió: Bob dice una frase de respaldo.', e)
                 # Sin LLM: Bob lo dice en voz en vez de quedarse callado.
                 yield f'[EMO:{EMO_LLM_ERROR}] {FRASE_RESPALDO_LLM}'
                 return
@@ -1737,7 +1743,8 @@ class VoicePipeline:
         except Exception as e:
             # E-C: antes el error se perdía y la respuesta quedaba a medias sin aviso.
             fallo = True
-            console.print(f'[red][llm] stream cortado a mitad: {e}[/]')
+            errores.aviso('IA', 'La respuesta se cortó a la mitad: Bob dice lo que alcanzó a '
+                          'llegar.', e)
         if corte:
             try:
                 stream.close()              # no seguir generando server-side
@@ -1949,7 +1956,8 @@ class VoicePipeline:
                     mp3 = _sintetizar(clean, emo)
                 except Exception as e:
                     # Una frase mala no debe matar el hilo TTS entero
-                    console.print(f'[red][voice] TTS error ("{clean[:40]}"): {e}[/]')
+                    errores.aviso('VOZ', f'No pude decir "{clean[:40]}"; sigo con la frase '
+                                  'siguiente.', e)
                     continue
                 audio_q.put((clean, mp3, emo))
 
@@ -2218,7 +2226,7 @@ class VoicePipeline:
             console.print(f'[bold blue][soliloquio][/] [dim]({emo})[/]: {clean}')
             self._hablar(clean, emo)
         except Exception as e:
-            console.print(f'[red][soliloquio] error: {e}[/]')
+            errores.aviso('HABLA SOLO', 'Falló una frase suelta de Bob; sigue como siempre.', e)
         finally:
             self._sm.oled_liberar()
             self._restaurar_oled()
@@ -2263,7 +2271,8 @@ class VoicePipeline:
                 continue   # Bob habló o arrancó una charla mientras grababa
             if not self._cupo_stt.libre(reserva=4):
                 # R2: cupo de Whisper (20/min) casi lleno: la charla tiene prioridad.
-                console.print('[yellow][stt] cupo del minuto casi lleno: no transcribo en reposo[/]')
+                errores.aviso('ESCUCHA', 'Casi lleno el cupo de Groq de este minuto: mientras nadie '
+                              'charla, no transcribo.')
                 continue
 
             texto = self._transcribir(audio, contexto=False)

@@ -26,6 +26,8 @@ import threading
 import time
 import serial
 
+import errores
+
 try:
     from config import USE_WIFI_SERIAL, CONTROL_IP, CONTROL_PORT
 except Exception:               # config viejo sin estas claves → solo USB
@@ -145,7 +147,7 @@ class SerialManager:
         if self._use_wifi and self._control_ip and self._control_port:
             if self._conectar_wifi():
                 return
-            print('[serial] WiFi no disponible, intentando USB...')
+            errores.aviso('PLACA', 'El DevKit no responde por WiFi: pruebo por USB.')
         self._conectar_usb()
 
     def _conectar_wifi(self, timeout: float = 3.0) -> bool:
@@ -160,7 +162,8 @@ class SerialManager:
             print(f'[serial] Conectado WiFi {self._control_ip}:{self._control_port}')
             return True
         except Exception as e:
-            print(f'[serial] No conecta WiFi {self._control_ip}:{self._control_port}: {e}')
+            errores.aviso('PLACA', f'No conecta por WiFi con el DevKit ({self._control_ip}:'
+                          f'{self._control_port}). Revisa que esté encendido y en la misma red.', e)
             self._sock = None
             return False
 
@@ -178,8 +181,9 @@ class SerialManager:
             self._modo  = 'usb'
             print(f'[serial] Conectado en {self._port}')
         except Exception as e:
-            print(f'[serial] No conecta en {self._port}: {e}')
-            print('[serial] Continuando en modo sin ESP32 (solo visión)')
+            errores.error('PLACA', f'Tampoco conecta por USB ({self._port}): Bob sigue sin servos, '
+                          'ojos ni motores. Cierra el Arduino IDE o el monitor serial y revisa '
+                          'el cable.', e)
             self._esp32 = None
             self._modo  = 'none'
 
@@ -238,7 +242,8 @@ class SerialManager:
                 pass
             self._esp32 = None
         if self._modo != 'none':
-            print('[serial] Transporte caído (¿reinicio del DevKit?). Reconectando...')
+            errores.aviso('PLACA', 'Se cortó la conexión con el DevKit (¿se reinició?). '
+                          'Reconectando...')
         self._modo = 'none'
 
     def _reconectar(self) -> None:

@@ -41,6 +41,7 @@ from typing import Callable, Optional
 import numpy as np
 
 import rutas
+from errores import formato_aviso, formato_error
 
 SR = 16000
 BLOQUE = 512                      # muestras por bloque: lo que Silero pide a 16 kHz
@@ -188,7 +189,8 @@ class Microfono:
             self._ultimo_dato = time.monotonic()
         except Exception as e:
             self._stream = None
-            self._log(f'[red][mic] no se pudo abrir el micrófono: {e}[/]')
+            self._log(formato_error('MICRÓFONO', 'No se pudo abrir: Bob no te escucha. Revisa que '
+                                    'esté conectado y que otra app no lo esté usando.', e))
 
     def _trabajar(self) -> None:
         while not self._detener.is_set():
@@ -196,7 +198,7 @@ class Microfono:
                 datos = self._q.get(timeout=0.5)
             except queue.Empty:
                 if time.monotonic() - self._ultimo_dato > SIN_DATOS_S:
-                    self._log('[yellow][mic] sin audio del micrófono → reabriendo[/]')
+                    self._log(formato_aviso('MICRÓFONO', 'Dejó de mandar audio: lo vuelvo a abrir.'))
                     self._cerrar_stream()
                     self._abrir()
                 continue

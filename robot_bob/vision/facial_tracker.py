@@ -28,6 +28,8 @@ import time
 import urllib.request
 from urllib.parse import urlparse
 
+import errores
+
 # ── Configuración ──────────────────────────────────────────────────────────────
 STREAM_TIMEOUT_S  = 2.0    # sin datos en este tiempo → reconecta (a 25 FPS, 2 s ya es congelado)
 STREAM_READ_BYTES = 32768
@@ -99,7 +101,8 @@ class LectorStream:
         try:
             urllib.request.urlopen(f'http://{self.host}/xclk?xclk={CAM_XCLK_MHZ}', timeout=1.5).close()
         except Exception as e:
-            print(f'[stream] No pude poner la CAM en {CAM_XCLK_MHZ} MHz ({e}).')
+            errores.aviso('CÁMARA', f'No pude pasarla a {CAM_XCLK_MHZ} MHz: sigue a su velocidad '
+                          'normal (más cortes posibles).', e)
 
     def _conectar(self) -> socket.socket:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -125,7 +128,8 @@ class LectorStream:
             except Exception as e:
                 self.ok = False
                 if not self._detener:
-                    print(f'[stream] No conecta ({e}). Reintento en 1s...')
+                    errores.aviso('CÁMARA', 'No responde (¿se está reiniciando?). Reintento en 1 s; '
+                                  'si sigue, revisa que esté encendida.', e)
                     time.sleep(1)
                 continue
 
@@ -159,7 +163,7 @@ class LectorStream:
             except Exception as e:
                 self.ok = False
                 if not self._detener:
-                    print(f'[stream] Reconectando ({e})...')
+                    errores.aviso('CÁMARA', 'Se cortó el video. Reconectando...', e)
             finally:
                 try:
                     sock.close()
@@ -451,7 +455,8 @@ class FacialTracker:
                 self._camera_ready.set()
                 return
             time.sleep(0.05)
-        print('[tracker] ERROR: No llegan frames de la cámara.')
+        errores.error('CÁMARA', 'No llega video de la ESP32-CAM. Revisa que esté encendida y en '
+                      'la misma red.')
 
     def _iniciar_detector(self):
         base_options = mp_python.BaseOptions(model_asset_path=self._modelo)

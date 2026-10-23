@@ -394,8 +394,9 @@ def main(argv) -> int:
         _print_table(roles)
         faltan = [r for r in ("cam", "control", "audio") if r not in roles]
         if faltan:
-            print(f"[discovery] AVISO: sin resolver {faltan}. "
-                  "¿Placa apagada o en otra subred? Revisa que estén en el mismo WiFi.")
+            import errores
+            errores.aviso("RED", f"No encontré estas placas: {', '.join(faltan)}. Revisa que estén "
+                          "encendidas y en el mismo WiFi que la laptop.")
     return 0
 
 

@@ -53,6 +53,7 @@ COLOR_STATE = {
 }
 
 # ── Imports de módulos robot_bob ───────────────────────────────────────────────
+import errores
 import rutas
 from hardware.serial_manager import SerialManager
 from nucleo.state_machine  import StateMachine, RobotState
@@ -110,7 +111,8 @@ def main() -> None:
 
     print('Esperando primer frame (máx 15 s)...')
     if not tracker.camera_ready.wait(timeout=15.0):
-        print('ERROR: No llegan frames de la cámara. ¿Está encendido el ESP32-CAM?')
+        errores.error('CÁMARA', 'No llega video en 15 s: Bob no arranca. Revisa que la ESP32-CAM '
+                      'esté encendida y corre python -m hardware.discovery.')
         serial_mgr.cerrar()
         return
 
@@ -129,8 +131,8 @@ def main() -> None:
             audio_io.connect(timeout_s=5.0)
             print(f'[audio] ✓ Conectado. MIC={USE_ROBOT_MIC} SPEAKER={USE_ROBOT_SPEAKER}')
         except Exception as e:
-            print(f'[audio] ✗ No se pudo conectar al ESP32 audio: {e}')
-            print(f'[audio]   Fallback automático a laptop (mic + speaker).')
+            errores.aviso('AUDIO', 'No conecta con el audio del DevKit: uso el micrófono y el '
+                          'parlante de la laptop.', e)
             audio_io = None
 
     # ── Memoria persistente (P1): reconocimiento facial + SQLite ───────────────
@@ -143,7 +145,8 @@ def main() -> None:
             memoria = Memoria()
             print(f'[memoria] activa. Personas en la base: {memoria.total_personas()}')
         except Exception as e:
-            print(f'[memoria] desactivada (no se pudo iniciar): {e}')
+            errores.error('MEMORIA', 'No arrancó: en esta sesión Bob no reconoce caras ni recuerda '
+                          'nombres.', e)
             face_id = memoria = None
 
     # ── Voz del dueño (Fase V): solo si está activada y hay memoria ───────────
@@ -154,7 +157,8 @@ def main() -> None:
             from voz.voice_id import VoiceID
             voice_id = VoiceID()                # carga el modelo en hilo de fondo
         except Exception as e:
-            print(f'[voz] desactivada (no se pudo iniciar): {e}')
+            errores.error('IDENTIDAD', 'No arrancó el reconocimiento de voz: Bob no sabrá quién '
+                          'habla ni obedecerá los comandos del dueño.', e)
 
     voice = VoicePipeline(serial_mgr, sm, audio_io=audio_io,
                           face_id=face_id, memoria=memoria,

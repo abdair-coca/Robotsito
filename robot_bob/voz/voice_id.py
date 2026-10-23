@@ -19,6 +19,7 @@ import wave
 
 import numpy as np
 
+import errores
 import rutas
 
 _MODELO_DEFAULT = os.path.join(rutas.MODELOS_DIR, 'voxceleb_resnet34_LM.onnx')
@@ -123,7 +124,8 @@ class VoiceID:
             self._listo.set()
             print('[voice_id] WeSpeaker listo (resnet34_LM).')
         except Exception as e:
-            print(f'[voice_id] No se pudo cargar el modelo de voz: {e}')
+            errores.error('IDENTIDAD', 'No cargó el modelo de voz: Bob no sabrá quién habla ni '
+                          'obedecerá los comandos del dueño.', e)
 
     @property
     def listo(self) -> bool:
@@ -149,7 +151,8 @@ class VoiceID:
         try:
             voz = solo_voz(wav_a_i16(wav_bytes))
         except Exception as e:
-            print(f'[voice_id] error leyendo audio: {e}')
+            errores.aviso('IDENTIDAD', 'No pude leer el audio para reconocer la voz; este turno '
+                          'sigue sin ese dato.', e)
             return None, 0.0
         segundos = len(voz) / SR
         return self.embedding(voz), segundos
