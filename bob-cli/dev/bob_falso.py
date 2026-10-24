@@ -46,11 +46,37 @@ console = Console(force_terminal=True, color_system="truecolor")   # como config
 modo = sys.argv[1] if len(sys.argv) > 1 else 'demo'
 
 
+def arranque() -> None:
+    """Las mismas líneas que imprime el Bob real al arrancar (copiadas de una corrida).
+    Rich se come los [etiquetas] de sus mensajes, por eso algunas empiezan con espacio.
+    Hay 13 líneas de librerías: 5 modelos de insightface (2 líneas cada uno), 1 de
+    det-size y 2 de pygame."""
+    print(' perfil=normal · LLM=rotacion · TTS=piper · clima=True · noticias=True · musica=True')
+    print('═' * 60)
+    print('  Robot Bob — Sistema Integrado')
+    print('═' * 60)
+    print('[serial] Conectado WiFi 192.168.0.16:5007')
+    print('Conectando al stream de la cámara...')
+    print('Esperando primer frame (máx 15 s)...')
+    print('[stream] Conectado.')
+    print('[tracker] Cámara lista: 320x240')
+    print('[memoria] activa. Personas en la base: 23')
+    print('[voice_id] WeSpeaker listo (resnet34_LM).')
+    for modelo in ('1k3d68', '2d106det', 'det_10g', 'genderage', 'w600k_r50'):
+        print("Applied providers: ['CPUExecutionProvider'], with options: {'CPUExecutionProvider': {}}")
+        print(f'find model: C:/Users/abdai/.insightface/models/buffalo_l/{modelo}.onnx detection [1, 3, 640, 640] 127.5 128.0')
+    print('set det-size: (320, 320)')
+    print('[face_id] InsightFace listo (buffalo_l).')
+    print(' rotación → gpt-oss-20b → qwen3.8-27b → gpt-oss-120b → ollama')
+    print(' LLM=rotación (nube) · TTS=piper · STT=groq · clima=True · noticias=True · musica=True')
+    print('pygame 2.6.1 (SDL 2.28.4, Python 3.11.9)')
+    print('Hello from the pygame community. https://www.pygame.org/contribute.html')
+    print('\nRobot Bob activo. Presiona Q para salir, S para silenciar o activar el micrófono.')
+    print(' micrófono continuo + Silero VAD')
+
+
 def demo() -> None:
-    print('═' * 60)
-    print('  Robot Bob — Sistema Integrado (falso)')
-    print('═' * 60)
-    console.print('[dim][config] perfil=normal · LLM=rotacion · TTS=piper · musica=True[/]')
+    arranque()
     console.print('[voice] Escuchando (8s timeout)...')
     console.print('[bold yellow][wake] "Bob, ¿cómo estás?" → payload: "¿cómo estás?"[/]')
     console.print('[bold green]Bob[/] [dim](FELIZ)[/]: ¡Hola! Estoy muy bien, gracias por preguntar.')

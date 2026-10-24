@@ -1,10 +1,13 @@
 // Vista del CLI: arriba el historial de lo que Bob escribe, abajo una línea de estado.
 // El historial va con write() de Ink (queda en el scroll de la terminal y no se
 // acumula en memoria); las líneas se juntan en lotes para aguantar ráfagas.
+// Al arrancar, un panel en vivo muestra cada parte de Bob; cuando Bob queda activo,
+// el panel se guarda en el historial y el ruido de las librerías queda oculto.
 
 import React, { useEffect, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput, useStdin, useStdout } from 'ink';
 
+import { aplicar, arranqueInicial, clasificar, panelTexto, quitarAnsi, type Arranque } from './arranque.ts';
 import { Bob, type Lanzamiento } from './bob.ts';
 import { interpretar } from './teclas.ts';
 import { aTexto, fusionar, partesEstado, SPINNER, type EstadoBob } from './vista.ts';
@@ -46,6 +49,8 @@ export function App({ lanzamiento, registrar }: {
   const bob = useRef<Bob | null>(null);
   const cola = useRef<string[]>([]);
   const pedido = useRef(false);   // el usuario pidió cerrar (no es una caída)
+  const arranque = useRef<Arranque>(arranqueInicial());
+  const [panel, setPanel] = useState<Arranque | null>(arranque.current);   // null: ya se guardó
 
   const volcar = () => {
     if (cola.current.length === 0) return;
@@ -53,13 +58,40 @@ export function App({ lanzamiento, registrar }: {
     cola.current = [];
   };
 
+  // Guarda el panel en el historial (una sola vez) y lo quita de la zona en vivo.
+  const cerrarPanel = (final: 'activo' | 'detenido') => {
+    if (!arranque.current.abierto) return;
+    arranque.current = { ...arranque.current, abierto: false };
+    volcar();                                  // lo que llegó antes del panel, primero
+    write(panelTexto(arranque.current, final).join('\n') + '\n');
+    setPanel(null);
+  };
+
   useEffect(() => {
     const b = new Bob(
       (e) => {
-        if (e.t === 'estado') setEstadoBob((previo) => fusionar(previo, e.cambios));
-        else cola.current.push(aTexto(e));
+        if (e.t === 'estado') {
+          setEstadoBob((previo) => fusionar(previo, e.cambios));
+          return;
+        }
+        if (e.t === 'log' && arranque.current.abierto) {
+          const c = clasificar(quitarAnsi(e.ansi).trim());
+          if (c.tipo === 'normal') {
+            cola.current.push(aTexto(e));   // lo que no es del arranque sigue como log
+            return;
+          }
+          if (c.tipo === 'activo') {
+            cerrarPanel('activo');
+            return;
+          }
+          arranque.current = aplicar(arranque.current, c);
+          setPanel(arranque.current);
+          return;
+        }
+        cola.current.push(aTexto(e));
       },
       (codigo) => {
+        cerrarPanel('detenido');               // si no llegó a activo, igual queda guardado
         volcar();
         // Cierre normal o pedido (con Ctrl+C, Python sale con 0xC000013A): el CLI se
         // va con Bob. Si no, es una caída: queda abierto para leer qué pasó.
@@ -103,25 +135,28 @@ export function App({ lanzamiento, registrar }: {
                                                     // useInput solo se apaga con false
 
   return (
-    <Box borderStyle="round" borderColor={estado.fase === 'caido' ? 'red' : 'gray'} paddingX={1}>
-      {estado.fase === 'corriendo' && nombre !== null && (
-        <Text>
-          <Text color="cyan">Nombre de la persona:</Text> {nombre}<Text inverse> </Text>
-          <Text dimColor>  ENTER guarda · ESC cancela</Text>
-        </Text>
-      )}
-      {estado.fase === 'corriendo' && nombre === null && (
-        <Box flexDirection="column">
-          <BarraBob bob={estadoBob} giro={giro} />
-          <Text dimColor>Q salir · S micrófono · D corta y escucha · J corta · E enrola · ENTER turno</Text>
-        </Box>
-      )}
-      {estado.fase === 'cerrando' && (
-        <Text><Text color="yellow">●</Text> Cerrando a Bob… <Text dimColor>· Q otra vez para cortarlo ya</Text></Text>
-      )}
-      {estado.fase === 'caido' && (
-        <Text><Text color="red">●</Text> Bob se detuvo (código {String(estado.codigo)}) <Text dimColor>· Q para salir</Text></Text>
-      )}
+    <Box flexDirection="column">
+      {panel && <Text>{panelTexto(panel, 'en-curso').join('\n')}</Text>}
+      <Box borderStyle="round" borderColor={estado.fase === 'caido' ? 'red' : 'gray'} paddingX={1}>
+        {estado.fase === 'corriendo' && nombre !== null && (
+          <Text>
+            <Text color="cyan">Nombre de la persona:</Text> {nombre}<Text inverse> </Text>
+            <Text dimColor>  ENTER guarda · ESC cancela</Text>
+          </Text>
+        )}
+        {estado.fase === 'corriendo' && nombre === null && (
+          <Box flexDirection="column">
+            <BarraBob bob={estadoBob} giro={giro} />
+            <Text dimColor>Q salir · S micrófono · D corta y escucha · J corta · E enrola · ENTER turno</Text>
+          </Box>
+        )}
+        {estado.fase === 'cerrando' && (
+          <Text><Text color="yellow">●</Text> Cerrando a Bob… <Text dimColor>· Q otra vez para cortarlo ya</Text></Text>
+        )}
+        {estado.fase === 'caido' && (
+          <Text><Text color="red">●</Text> Bob se detuvo (código {String(estado.codigo)}) <Text dimColor>· Q para salir</Text></Text>
+        )}
+      </Box>
     </Box>
   );
 }
