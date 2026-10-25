@@ -95,6 +95,11 @@ try:
     from config import MEMORIA_ENABLED
 except Exception:
     MEMORIA_ENABLED = False
+# Registro por turno (perfil feria). Apagado si un config viejo no lo define.
+try:
+    from config import REGISTRO_TURNOS
+except Exception:
+    REGISTRO_TURNOS = False
 # Voz del dueño (Fase V). Apagado si un config viejo no lo define.
 #   VOZ_ID_ENABLED     aprender la voz del dueño (requiere memoria + voice_id)
 #   DUENO_ID           persona en memory.db cuya voz se aprende
@@ -257,6 +262,7 @@ from llm.llm_router import RouterLLM, Backend       # R1: rotación de LLM por c
 from voz import audio_engine                             # R2: micrófono continuo + Silero VAD
 from asistente.reminders import parse_recordatorio, ReminderStore   # P9: recordatorios
 from voz.jev_decision import decidir, EMOCION_RESPALDO   # J2: ruta del turno; J3: emoción
+from voz import registro_turnos   # registro por turno (perfil feria)
 from nucleo.expression_engine import (
     pulse_emotion, react_to_user_text,
     mood_delta_for_user_text, is_love,
@@ -1564,6 +1570,7 @@ class VoicePipeline:
         """Texto de la frase, o '' si no hubo voz o Groq falló (ver _stt_fallo).
         R1: descarta alucinaciones (_stt_descartado) y marca lo dudoso (_stt_dudosa).
         R2: si esa misma grabación ya se transcribió en la pausa, usa ese resultado."""
+        t0 = time.monotonic()
         listo, self._stt_listo = getattr(self, '_stt_listo', None), None
         r = None
         if listo is not None and listo[0] is wav_bytes:
@@ -1576,6 +1583,7 @@ class VoicePipeline:
         if r is None:
             r = self._stt_bruto(wav_bytes, contexto)
         texto, self._stt_fallo, self._stt_dudosa, self._stt_descartado = r
+        self._stt_s = round(time.monotonic() - t0, 3)
         return texto
 
     def _stt_bruto(self, wav_bytes: bytes, contexto: bool = True,
@@ -1707,6 +1715,7 @@ class VoicePipeline:
     def _stream_llm(self, texto: str) -> Iterator[str]:
         ing = modo_dueno.ajustes_ingeniero(self)
         if ing and ing.get('sesion') is not None:      # Claude Code (Pro del dueño)
+            self._llm_modelo = 'claude_code'
             self._convo.append({'role': 'user', 'content': texto})
             frases = []
             for frase in modo_dueno.responder_ingeniero(self, texto, ing['sesion']):   # S4
@@ -1734,6 +1743,7 @@ class VoicePipeline:
                 else:
                     errores.error('IA', 'El modelo no respondió: Bob dice una frase de respaldo.',
                                   pre.error)
+                    self._llm_fallo = 'respaldo'
                     yield f'[EMO:{EMO_LLM_ERROR}] {FRASE_RESPALDO_LLM}'
                     return
             else:
@@ -1744,9 +1754,11 @@ class VoicePipeline:
             except Exception as e:
                 errores.error('IA', 'El modelo no respondió: Bob dice una frase de respaldo.', e)
                 # Sin LLM: Bob lo dice en voz en vez de quedarse callado.
+                self._llm_fallo = 'respaldo'
                 yield f'[EMO:{EMO_LLM_ERROR}] {FRASE_RESPALDO_LLM}'
                 return
 
+        self._llm_modelo = getattr(getattr(llm, 'ultimo', None), 'nombre', None)
         # Guard: corta el turno al llegar a MAX_FRASES_TURNO frases y pone en cada
         # frase la emoción de JEV (_marcar_emo). Guardamos en el historial SOLO lo
         # dicho, sin tags (refuerza brevedad y evita que el LLM copie los tags).
@@ -1790,6 +1802,7 @@ class VoicePipeline:
         except Exception as e:
             # E-C: antes el error se perdía y la respuesta quedaba a medias sin aviso.
             fallo = True
+            self._llm_fallo = 'corte'
             errores.aviso('IA', 'La respuesta se cortó a la mitad: Bob dice lo que alcanzó a '
                           'llegar.', e)
         if corte:
@@ -1964,10 +1977,29 @@ class VoicePipeline:
                 break
         return True
 
+    def _registrar_turno(self, cortado: bool, llm_s, tts_s: float, hasta_audio_s) -> None:
+        """Una línea por turno en logs/turnos.jsonl (solo perfil feria). Sin texto."""
+        if not REGISTRO_TURNOS:
+            return
+        registro_turnos.registrar({
+            'ruta': getattr(self, '_ruta_turno', None),
+            'stt_s': getattr(self, '_stt_s', None),
+            'stt_fallo': bool(getattr(self, '_stt_fallo', False)),
+            'llm_modelo': self._llm_modelo,
+            'llm_fallo': self._llm_fallo,
+            'llm_s': llm_s,
+            'hasta_audio_s': hasta_audio_s,
+            'tts_s': round(tts_s, 3),
+            'cortado': cortado,
+        })
+        self._stt_s = None      # el STT de este turno ya quedó registrado
+
     def _stream_and_speak(self, texto: str) -> Optional[bytes]:
         """LLM streaming + TTS en paralelo, reproducción en cuanto llega cada frase."""
         if self._cortado():
             return None                  # D/J mientras pensaba: no responde
+        self._llm_modelo = self._llm_fallo = None
+        t_llm_fin, tts_s, hasta_audio = [None], [0.0], [None]
         sent_q:  queue.Queue = queue.Queue()
         audio_q: queue.Queue = queue.Queue(maxsize=8)
         self._audio_q = audio_q          # cortar_respuesta la despierta
@@ -1981,6 +2013,7 @@ class VoicePipeline:
                 for sent in self._stream_llm(texto):
                     sent_q.put(sent)
             finally:
+                t_llm_fin[0] = round(time.monotonic() - t_pensando, 3)
                 sent_q.put(None)
 
         # Ollama local frío (cargar el modelo a VRAM) tarda más que los 10 s
@@ -2008,7 +2041,9 @@ class VoicePipeline:
                 if terminado.is_set():
                     return
                 try:
+                    t_sint = time.monotonic()
                     mp3 = _sintetizar(clean, emo)
+                    tts_s[0] += time.monotonic() - t_sint
                 except Exception as e:
                     # Una frase mala no debe matar el hilo TTS entero
                     errores.aviso('VOZ', f'No pude decir "{clean[:40]}"; sigo con la frase '
@@ -2059,6 +2094,7 @@ class VoicePipeline:
             # Fase D: si el LLM tardó >2.5s, flash de "¡ya sé!" antes de hablar
             if primera_frase:
                 primera_frase = False
+                hasta_audio[0] = round(time.monotonic() - t_pensando, 3)
                 if time.monotonic() - t_pensando > 2.5:
                     self._serial.cmd_estado('MUY_FELIZ')
                     time.sleep(0.20)
@@ -2082,9 +2118,11 @@ class VoicePipeline:
         self._audio_q = None
         terminado.set()
         if self._cortado():
+            self._registrar_turno(True, t_llm_fin[0], tts_s[0], hasta_audio[0])
             return None                  # cortada: no esperar a que el LLM termine
         llm_t.join(timeout=2.0)
         tts_t.join(timeout=2.0)
+        self._registrar_turno(False, t_llm_fin[0], tts_s[0], hasta_audio[0])
         return captured[0]
 
     # ── Warmup ────────────────────────────────────────────────────────────────
