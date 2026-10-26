@@ -759,10 +759,22 @@ class VoicePipeline:
             console.print(f'[bold magenta][memoria][/] reconocido: {nombre} (score {score:.2f})')
             self._system_prompt_actual = self._prompt_conocido(pid)
         else:
-            console.print('[bold magenta][memoria][/] persona desconocida')
+            cerca = self._memoria.mas_parecida(emb)
+            falta = (f' (más parecida: id={cerca[0]} {cerca[1] or "sin nombre"}, '
+                     f'score {cerca[2]:.2f})' if cerca else '')
+            console.print(f'[bold magenta][memoria][/] persona desconocida{falta}')
             self._system_prompt_actual = (
                 self._system_prompt_base + '\n\n═══ MEMORIA ═══\nNo conocés a esta persona todavía. '
                 'En algún momento de la charla preguntale su nombre con naturalidad.')
+
+    def _identificar_diferido(self) -> None:
+        """Identidad resuelta a mitad de charla (J3). _identificar() resetea la
+        charla; si la persona ya dijo "me llamo X" y la cara no es conocida, el
+        nombre se conserva para que al cerrar no se guarde una persona sin nombre."""
+        nombre = self._nombre_pendiente
+        self._identificar()
+        if nombre and self._convo_persona is None:
+            self._nombre_pendiente = self._persona_nombre = nombre
 
     def _prompt_conocido(self, pid: int) -> str:
         """System prompt para una persona que Bob ya conoce (por cara o por voz)."""
@@ -1112,7 +1124,7 @@ class VoicePipeline:
             if self._voz_activa():
                 if _pide_aprender_voz(texto):
                     if not identificado:       # vino como payload del wake: ver la cara ya
-                        self._identificar()
+                        self._identificar_diferido()
                         identificado = True
                     self._aprender_voz()
                     es_primer_turno = False
@@ -1317,7 +1329,7 @@ class VoicePipeline:
         Con adelantar, además lanza el pedido al LLM (_Prefetch)."""
         try:
             if identificar:
-                self._identificar()   # J3: diferido desde el arranque
+                self._identificar_diferido()   # J3: diferido desde el arranque
             if self._voz_activa():
                 self._aplicar_voz_turno()     # Fase V: quién habla, después de la cara
             if adelantar:

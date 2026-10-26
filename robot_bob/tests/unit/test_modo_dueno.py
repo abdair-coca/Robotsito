@@ -3,8 +3,9 @@ test_modo_dueno.py — Comandos de dueño (V5a), sin red, cámara ni micrófono.
 
 Puerta de voz (dueño / otra voz / frase corta / sin perfil) y "Bob, te presento
 a X" (persona nueva, ya conocida, el propio dueño, sin cara), también pasando
-por el ciclo de la charla. Incluye la regresión de identidad vieja: una charla
-diferida no debe usar la cara de la charla anterior. Usa memory.db temporal.
+por el ciclo de la charla. Incluye dos regresiones de identidad diferida: no usar
+la cara de la charla anterior y no perder el nombre que la persona dijo antes de
+que Bob la identificara. Usa memory.db temporal.
 
   python tests/unit/test_modo_dueno.py
 """
@@ -233,6 +234,46 @@ def main() -> None:
         check('diferida: no guarda la voz ajena como del dueño', mem5.total_voces(d5) == 0,
               f'({mem5.total_voces(d5)} muestras)')
         mem5.cerrar()
+
+        # 13) Regresión: "Bob, me llamo Carla" con identidad diferida y cara nueva.
+        #     _identificar() resetea la charla y borraba el nombre recién dicho: la
+        #     persona se guardaba sin nombre al cerrar.
+        mem6 = Memoria(os.path.join(tmp, 'm6.db'))
+        mem6.registrar('Abdair', cara_dueno)
+        cara_carla = vec(505, 512)
+        face.cara = (cara_carla, 25)
+        v = construir(mem6, face)
+        v._audio_wake = None
+        v._decidir_ruta = lambda texto: 'charla'
+        v._stream_and_speak = lambda texto: None
+        v._grabar = lambda **k: None
+        v._resumir_conversacion = lambda: (None, None, None)
+        v._run_conversation(pending_text='Bob, me llamo Carla')
+        carla = mem6.reconocer(cara_carla)
+        check('diferida: la persona nueva se guarda con el nombre que dijo',
+              carla is not None and carla[1] == 'Carla', f'-> {carla}')
+        check('diferida: una sola persona nueva', mem6.total_personas() == 2,
+              f'({mem6.total_personas()} personas)')
+
+        # 14) Con cara conocida, el nombre dicho antes no renombra a nadie; y una
+        #     charla nueva no hereda el nombre pendiente de la anterior.
+        v._reset_identidad()
+        v._nombre_pendiente = 'Otra'
+        v._identificar_diferido()
+        check('diferida con cara conocida: sigue siendo Carla',
+              v._convo_persona == carla[0] and v._persona_nombre == 'Carla'
+              and v._nombre_pendiente is None)
+        v._nombre_pendiente = 'Otra'
+        v._identificar()
+        check('charla nueva: no hereda el nombre pendiente', v._nombre_pendiente is None)
+
+        # 15) Bajo el umbral: reconocer() no da a nadie y mas_parecida() dice cuánto faltó
+        desconocida = vec(506, 512)
+        cerca_d = mem6.mas_parecida(desconocida)
+        check('más parecida: reconocer no da a nadie', mem6.reconocer(desconocida) is None)
+        check('más parecida: igual da la más cercana con su score',
+              cerca_d is not None and cerca_d[0] in (1, carla[0]), f'-> {cerca_d}')
+        mem6.cerrar()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

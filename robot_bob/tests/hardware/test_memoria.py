@@ -5,7 +5,8 @@ Abre la cámara, corre InsightFace y reconoce contra la base SQLite (memory.db).
 Sirve para validar que distingue personas ANTES de integrarlo a la conversación.
 
 Controles (con foco en la ventana de video):
-  E = enrolar la cara actual (pide el nombre en la consola)
+  E = enrolar la cara actual (pide el nombre en la consola; si ya la conoce,
+      solo le cambia el nombre en vez de duplicarla)
   Q = salir
 
 ⚠️ La primera vez InsightFace tarda en cargar (modelos). Esperá a "[face_id] listo".
@@ -96,8 +97,14 @@ def main() -> None:
             elif k == ord('e') and emb_actual is not None:
                 nombre = input('Nombre de la persona: ').strip()
                 if nombre:
-                    pid = mem.registrar(nombre, emb_actual, edad_actual)
-                    print(f'  ✓ Enrolado "{nombre}" (id={pid}). Total: {mem.total_personas()}')
+                    m = mem.reconocer(emb_actual)    # misma cara ya guardada: no duplicar
+                    if m:
+                        mem.actualizar(m[0], nombre=nombre)
+                        print(f'  ✓ Ya la conocía: id={m[0]} "{m[1]}" → "{nombre}" '
+                              f'(score {m[2]:.2f}). Total: {mem.total_personas()}')
+                    else:
+                        pid = mem.registrar(nombre, emb_actual, edad_actual)
+                        print(f'  ✓ Enrolado "{nombre}" (id={pid}). Total: {mem.total_personas()}')
     finally:
         detener.set()
         stream.cerrar()

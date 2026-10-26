@@ -72,6 +72,14 @@ class Memoria:
     # ── Reconocimiento ──────────────────────────────────────────────────────
     def reconocer(self, embedding, umbral: float = _SIM_THR):
         """Devuelve (id, nombre, score) de la persona más parecida ≥ umbral, o None."""
+        mejor = self.mas_parecida(embedding)
+        if mejor and mejor[2] >= umbral:
+            return mejor
+        return None
+
+    def mas_parecida(self, embedding):
+        """(id, nombre, score) de la persona más parecida SIN umbral, o None si no
+        hay caras guardadas. Cuando no reconoce a alguien, dice cuánto faltó."""
         if embedding is None:
             return None
         with self._lock:
@@ -84,9 +92,7 @@ class Memoria:
             score = float(np.dot(embedding, emb))   # coseno (ambos normalizados)
             if mejor is None or score > mejor[2]:
                 mejor = (pid, nombre, score)
-        if mejor and mejor[2] >= umbral:
-            return mejor
-        return None
+        return mejor
 
     # ── Altas / actualizaciones ─────────────────────────────────────────────
     def registrar(self, nombre, embedding, edad=None) -> int:
