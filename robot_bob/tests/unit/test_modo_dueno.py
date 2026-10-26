@@ -5,8 +5,9 @@ Puerta de voz (dueño / otra voz / frase corta / sin perfil) y "Bob, te presento
 a X" (persona nueva, ya conocida, el propio dueño, sin cara), también pasando
 por el ciclo de la charla. Incluye dos regresiones de identidad diferida: no usar
 la cara de la charla anterior y no perder el nombre que la persona dijo antes de
-que Bob la identificara. Y la segunda mirada al cerrar: una persona conocida
-cuyo primer frame salió malo no se duplica. Usa memory.db temporal.
+que Bob la identificara. Y la segunda mirada (al cerrar y al decir "me llamo X"):
+una persona conocida cuyo primer frame salió malo no se duplica. Usa memory.db
+temporal.
 
   python tests/unit/test_modo_dueno.py
 """
@@ -118,8 +119,9 @@ def construir(mem, face):
     return v
 
 
-def charla(mem, caras, texto='hola, ¿cómo estás?'):
-    """Una charla diferida completa (JEV sin saludo) hasta cerrar la memoria.
+def charla(mem, caras, texto='hola, ¿cómo estás?', saludo=False):
+    """Una charla completa hasta cerrar la memoria. Sin saludo es diferida (JEV):
+    identifica antes de la primera respuesta; con saludo, al arrancar.
     caras: lo que ve la cámara en orden; la primera es la de _identificar()."""
     v = construir(mem, FakeFaceSecuencia(caras))
     v._audio_wake = None
@@ -127,7 +129,7 @@ def charla(mem, caras, texto='hola, ¿cómo estás?'):
     v._stream_and_speak = lambda t: None
     v._grabar = lambda **k: None
     v._resumir_conversacion = lambda: ('Charlaron un rato.', None, None)
-    v._run_conversation(pending_text=texto)
+    v._run_conversation(pending_text=texto, greeting=saludo)
     return v
 
 
@@ -137,7 +139,7 @@ def main() -> None:
     vp.DUENO_ID = 1
     md.MODO_DUENO_ENABLED = True
     md.CARA_ESPERA_S = 0.0
-    vp.CIERRE_PAUSA_S = 0.0
+    vp.MIRADA_PAUSA_S = 0.0
     tmp = tempfile.mkdtemp(prefix='bob_v5a_')
     try:
         # 1) Detección del comando
@@ -366,6 +368,42 @@ def main() -> None:
         check('sin nombre + "me llamo Eva": completa el nombre sin otra fila',
               mem7.total_personas() == n and mem7.persona(eva)[1] == 'Eva',
               f'({mem7.total_personas()} personas, nombre {mem7.persona(eva)[1]})')
+
+        # 21) "me llamo Fede" a mitad de charla (identidad al arrancar, con saludo).
+        #     Fede ya está en la base y el primer frame sale malo: antes de
+        #     registrarlo, Bob vuelve a mirar y sigue como si lo hubiera reconocido.
+        cara_fede = vec(515, 512)
+        fede = mem7.registrar('Fede', cara_fede)
+        n = mem7.total_personas()
+        malo_fede = con_sim(cara_fede, 0.35, 516)
+        v = charla(mem7, [(malo_fede, 35), (entre(malo_fede, cara_fede), 35)],
+                   'me llamo Fede', saludo=True)
+        check('"me llamo" + segunda mirada: no duplica a Fede', mem7.total_personas() == n,
+              f'({mem7.total_personas()} personas)')
+        check('"me llamo" + segunda mirada: la charla sigue con Fede',
+              v._convo_persona == fede and 'ya conocés a esta persona' in v._system_prompt_actual)
+        check('"me llamo" + segunda mirada: el recuerdo queda en Fede',
+              len(mem7.episodios(fede)) == 1)
+
+        # 22) "me llamo Gabi", nueva: se registra al momento con el promedio de sus caras.
+        cara_gabi = vec(517, 512)
+        charla(mem7, [(con_sim(cara_gabi, 0.6, 518), 22), (cara_gabi, 22)], 'me llamo Gabi',
+               saludo=True)
+        gabi = mem7.reconocer(cara_gabi)
+        check('"me llamo" nueva: guardada con su nombre y el promedio de sus caras',
+              gabi is not None and gabi[1] == 'Gabi' and gabi[2] > 0.9, f'-> {gabi}')
+
+        # 23) Guardada con otro nombre (p. ej. mal transcrito): toma el que dice ahora,
+        #     igual que si la hubiera reconocido al empezar.
+        cara_ale = vec(519, 512)
+        ale = mem7.registrar('Halle', cara_ale)
+        n = mem7.total_personas()
+        malo_ale = con_sim(cara_ale, 0.35, 520)
+        charla(mem7, [(malo_ale, 27), (entre(malo_ale, cara_ale), 27)], 'me llamo Ale',
+               saludo=True)
+        check('"me llamo" con otro nombre guardado: toma el que dice ahora, sin otra fila',
+              mem7.total_personas() == n and mem7.persona(ale)[1] == 'Ale',
+              f'({mem7.total_personas()} personas, nombre {mem7.persona(ale)[1]})')
         mem7.cerrar()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
