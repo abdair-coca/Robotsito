@@ -8,6 +8,7 @@ Uso (desde robot_bob/, con el venv):
   python -m memoria.memoria_admin set <id> <campo> <valor>   campo: edad|gustos|temas|relacion
   python -m memoria.memoria_admin addep <id> <texto>   agrega un recuerdo a mano
   python -m memoria.memoria_admin del <id>             borra la persona y sus recuerdos
+  python -m memoria.memoria_admin delall               borra las personas sin nombre y sus recuerdos (pide confirmar)
   python -m memoria.memoria_admin delep <id_episodio>  borra un recuerdo
   python -m memoria.memoria_admin clear                BORRA TODO (pide confirmar)
 
@@ -91,6 +92,18 @@ def main():
             con.execute('DELETE FROM episodios WHERE persona_id=?', (int(args[1]),))
             con.execute('DELETE FROM personas WHERE id=?', (int(args[1]),))
             con.commit(); print(f'Borrada persona id={args[1]}')
+        elif args[0] == 'delall':
+            ids = [r[0] for r in con.execute(
+                "SELECT id FROM personas WHERE nombre IS NULL OR TRIM(nombre) = '' ORDER BY id")]
+            if not ids:
+                print('No hay personas sin nombre.'); return
+            print(f'Personas sin nombre: {", ".join(map(str, ids))} ({len(ids)})')
+            if input('¿Borrarlas con sus recuerdos? escribí SI: ').strip() != 'SI':
+                print('Cancelado.'); return
+            marcas = ','.join('?' * len(ids))
+            con.execute(f'DELETE FROM episodios WHERE persona_id IN ({marcas})', ids)
+            con.execute(f'DELETE FROM personas WHERE id IN ({marcas})', ids)
+            con.commit(); print(f'Borradas {len(ids)} persona(s) sin nombre.')
         elif args[0] == 'delep':
             con.execute('DELETE FROM episodios WHERE id=?', (int(args[1]),))
             con.commit(); print(f'Borrado recuerdo id={args[1]}')
