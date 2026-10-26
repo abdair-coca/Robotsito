@@ -95,6 +95,10 @@ try:
     from config import MEMORIA_ENABLED
 except Exception:
     MEMORIA_ENABLED = False
+# Segunda mirada (P1): antes de guardar como nueva a una persona que no reconoció,
+# Bob toma CIERRE_FRAMES frames más, cada CIERRE_PAUSA_S, y vuelve a buscar.
+CIERRE_FRAMES  = 3
+CIERRE_PAUSA_S = 0.2
 # Registro por turno (perfil feria). Apagado si un config viejo no lo define.
 try:
     from config import REGISTRO_TURNOS
@@ -860,6 +864,23 @@ class VoicePipeline:
             console.print(f'[dim][memoria] resumen falló: {e}[/]')
         return None, None, None
 
+    def _frames_nuevos(self) -> list:
+        """Embeddings de CIERRE_FRAMES frames nuevos de la cámara (None donde no
+        hay cara), para la segunda mirada antes de guardar a alguien como nuevo."""
+        caras = []
+        for i in range(CIERRE_FRAMES):
+            if self._detener.is_set():
+                break
+            if i:
+                time.sleep(CIERRE_PAUSA_S)
+            try:
+                emb, _edad = self._face_id.analizar(self._get_frame())
+            except Exception as e:
+                console.print(f'[dim][memoria] análisis al cerrar falló: {e}[/]')
+                break
+            caras.append(emb)
+        return caras
+
     def _cerrar_memoria(self) -> None:
         """Al terminar la charla: registra (si nuevo) y guarda recuerdo + gustos/temas."""
         # Sin cara, solo se guarda si la voz identificó a la persona (Fase V).
@@ -867,11 +888,24 @@ class VoicePipeline:
             return
         pid = self._convo_persona
         if pid is None:
-            pid = self._memoria.registrar(self._nombre_pendiente, self._convo_emb,
-                                          self._convo_edad)
+            # La cara de la charla no coincidió con nadie. Antes de guardarla como
+            # nueva, Bob vuelve a mirar: si el primer frame salió movido o de
+            # costado, una persona conocida se duplicaba.
+            m, cara = self._memoria.segunda_mirada(self._convo_emb, self._frames_nuevos())
+            if m:
+                pid, nombre, score = m
+                if self._nombre_pendiente and not nombre:
+                    self._memoria.actualizar(pid, nombre=self._nombre_pendiente)
+                self._persona_nombre = nombre or self._nombre_pendiente
+                self._memoria.marcar_visto(pid)
+                console.print(f'[bold magenta][memoria][/] al cerrar la reconocí: '
+                              f'{self._persona_nombre or "sin nombre"} (id={pid}, '
+                              f'score {score:.2f}); no la guardo como nueva')
+            else:
+                pid = self._memoria.registrar(self._nombre_pendiente, cara, self._convo_edad)
+                console.print(f'[bold magenta][memoria][/] persona nueva guardada '
+                              f'(id={pid}, nombre={self._nombre_pendiente})')
             self._convo_persona = pid
-            console.print(f'[bold magenta][memoria][/] persona nueva guardada '
-                          f'(id={pid}, nombre={self._nombre_pendiente})')
         resumen, gustos, temas = self._resumir_conversacion()
         if resumen:
             self._memoria.agregar_episodio(pid, resumen)

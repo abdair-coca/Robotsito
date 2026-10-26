@@ -5,7 +5,8 @@ Puerta de voz (dueño / otra voz / frase corta / sin perfil) y "Bob, te presento
 a X" (persona nueva, ya conocida, el propio dueño, sin cara), también pasando
 por el ciclo de la charla. Incluye dos regresiones de identidad diferida: no usar
 la cara de la charla anterior y no perder el nombre que la persona dijo antes de
-que Bob la identificara. Usa memory.db temporal.
+que Bob la identificara. Y la segunda mirada al cerrar: una persona conocida
+cuyo primer frame salió malo no se duplica. Usa memory.db temporal.
 
   python tests/unit/test_modo_dueno.py
 """
@@ -73,6 +74,17 @@ class FakeFace:
         return self.cara
 
 
+class FakeFaceSecuencia(FakeFace):
+    """Devuelve las caras en orden (la primera es la de _identificar) y después
+    repite la última."""
+    def __init__(self, caras):
+        super().__init__()
+        self.caras = list(caras)
+
+    def analizar(self, frame):
+        return self.caras.pop(0) if len(self.caras) > 1 else self.caras[0]
+
+
 def vec(seed: int, dim: int = 256) -> np.ndarray:
     v = np.random.default_rng(seed).standard_normal(dim).astype(np.float32)
     return v / np.linalg.norm(v)
@@ -81,6 +93,20 @@ def vec(seed: int, dim: int = 256) -> np.ndarray:
 def cerca(base, seed):
     r = base + vec(seed, len(base)) * 0.3
     return r / np.linalg.norm(r)
+
+
+def con_sim(base, sim: float, seed: int) -> np.ndarray:
+    """Cara con similitud coseno exacta `sim` contra base (un frame malo de la misma persona)."""
+    r = vec(seed, len(base))
+    r = r - np.dot(r, base) * base
+    r = r / np.linalg.norm(r)
+    return (sim * base + np.sqrt(1 - sim * sim) * r).astype(np.float32)
+
+
+def entre(a, b) -> np.ndarray:
+    """Cara a mitad de camino entre a y b (un frame bueno: se parece a las dos)."""
+    m = a + b
+    return (m / np.linalg.norm(m)).astype(np.float32)
 
 
 def construir(mem, face):
@@ -92,12 +118,26 @@ def construir(mem, face):
     return v
 
 
+def charla(mem, caras, texto='hola, ¿cómo estás?'):
+    """Una charla diferida completa (JEV sin saludo) hasta cerrar la memoria.
+    caras: lo que ve la cámara en orden; la primera es la de _identificar()."""
+    v = construir(mem, FakeFaceSecuencia(caras))
+    v._audio_wake = None
+    v._decidir_ruta = lambda t: 'charla'
+    v._stream_and_speak = lambda t: None
+    v._grabar = lambda **k: None
+    v._resumir_conversacion = lambda: ('Charlaron un rato.', None, None)
+    v._run_conversation(pending_text=texto)
+    return v
+
+
 def main() -> None:
     vp.MEMORIA_ENABLED = True
     vp.VOZ_ID_ENABLED = True
     vp.DUENO_ID = 1
     md.MODO_DUENO_ENABLED = True
     md.CARA_ESPERA_S = 0.0
+    vp.CIERRE_PAUSA_S = 0.0
     tmp = tempfile.mkdtemp(prefix='bob_v5a_')
     try:
         # 1) Detección del comando
@@ -274,6 +314,59 @@ def main() -> None:
         check('más parecida: igual da la más cercana con su score',
               cerca_d is not None and cerca_d[0] in (1, carla[0]), f'-> {cerca_d}')
         mem6.cerrar()
+
+        # 16) Segunda mirada al cerrar. Ana ya está en la base; el primer frame de la
+        #     charla sale malo (0.35 contra su cara guardada: no la reconoce) y los
+        #     siguientes son buenos → la charla queda en Ana, sin fila nueva.
+        mem7 = Memoria(os.path.join(tmp, 'm7.db'))
+        mem7.registrar('Abdair', cara_dueno)
+        cara_ana = vec(507, 512)
+        ana = mem7.registrar('Ana', cara_ana)
+        malo = con_sim(cara_ana, 0.35, 508)
+        charla(mem7, [(malo, 30), (entre(malo, cara_ana), 30)])
+        check('segunda mirada: no duplica a Ana', mem7.total_personas() == 2,
+              f'({mem7.total_personas()} personas)')
+        check('segunda mirada: el recuerdo queda en Ana', len(mem7.episodios(ana)) == 1)
+
+        # 17) Persona nueva: se guarda con el promedio de sus caras y no con el primer
+        #     frame, así un frame bueno posterior la reconoce mejor que 0.6.
+        cara_beto = vec(509, 512)
+        charla(mem7, [(con_sim(cara_beto, 0.6, 510), 40), (cara_beto, 40)])
+        beto = mem7.reconocer(cara_beto)
+        check('persona nueva: una sola fila', mem7.total_personas() == 3,
+              f'({mem7.total_personas()} personas)')
+        check('persona nueva: guardada con el promedio de sus caras',
+              beto is not None and beto[2] > 0.9, f'-> {beto}')
+
+        # 18) Al cerrar pasa otra persona conocida (Abdair) frente a la cámara: no es
+        #     la cara de la charla y no cuenta. No se le asigna la charla y la nueva
+        #     se guarda con su propia cara.
+        cara_caro = vec(511, 512)
+        charla(mem7, [(cara_caro, 20), (cara_dueno, 45)])
+        caro = mem7.reconocer(cara_caro)
+        check('otra persona al cerrar: no se le asigna la charla', len(mem7.episodios(1)) == 0)
+        check('otra persona al cerrar: la nueva se guarda con su cara',
+              caro is not None and caro[0] != 1 and caro[2] > 0.99, f'-> {caro}')
+
+        # 19) Se fue antes de cerrar (sin cara en los frames nuevos): como antes, se
+        #     guarda con la cara de la charla.
+        cara_dora = vec(512, 512)
+        charla(mem7, [(cara_dora, 33), (None, None)])
+        dora = mem7.reconocer(cara_dora)
+        check('se fue al cerrar: se guarda con la cara de la charla',
+              dora is not None and dora[2] > 0.99, f'-> {dora}')
+
+        # 20) La que reconoce al cerrar no tenía nombre y en la charla dijo "me llamo
+        #     Eva": se completa el nombre, sin otra fila.
+        cara_eva = vec(513, 512)
+        eva = mem7.registrar(None, cara_eva)
+        n = mem7.total_personas()
+        malo_eva = con_sim(cara_eva, 0.35, 514)
+        charla(mem7, [(malo_eva, 28), (entre(malo_eva, cara_eva), 28)], 'Bob, me llamo Eva')
+        check('sin nombre + "me llamo Eva": completa el nombre sin otra fila',
+              mem7.total_personas() == n and mem7.persona(eva)[1] == 'Eva',
+              f'({mem7.total_personas()} personas, nombre {mem7.persona(eva)[1]})')
+        mem7.cerrar()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

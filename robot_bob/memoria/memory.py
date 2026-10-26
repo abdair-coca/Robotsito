@@ -9,7 +9,9 @@ Tres tablas:
               origen 'pasivo'|'explicito'), hasta MAX_VOCES por persona.
 
 Identidad por CARA: reconocer(embedding) compara el embedding contra los guardados
-por similitud coseno (= producto punto, porque están L2-normalizados).
+por similitud coseno (= producto punto, porque están L2-normalizados). Antes de
+guardar a alguien como nuevo, segunda_mirada() vuelve a buscar con frames
+posteriores de la misma persona; si no aparece, da el promedio de sus caras.
 Identidad por VOZ: verificar_voz(pid, embedding) compara contra el promedio de las
 muestras de esa persona (verificación de UNA persona, no búsqueda entre todas).
 
@@ -93,6 +95,22 @@ class Memoria:
             if mejor is None or score > mejor[2]:
                 mejor = (pid, nombre, score)
         return mejor
+
+    def segunda_mirada(self, cara, nuevas, umbral: float = _SIM_THR):
+        """Antes de guardar como nueva a una persona que no se reconoció con `cara`
+        (el primer frame con cara de la charla: puede salir movido o de costado).
+        `nuevas` son embeddings de frames posteriores (None donde no había cara).
+        Solo cuentan los de la MISMA persona que `cara` (≥ umbral entre sí): otra
+        persona que pasa por delante no se mezcla. Devuelve (persona, None) con la
+        mejor coincidencia si alguno es de alguien de la base, o (None, promedio
+        L2-normalizado de sus caras) para registrarla con algo más estable que un
+        solo frame."""
+        mismas = [e for e in nuevas if e is not None and float(np.dot(e, cara)) >= umbral]
+        hallados = [m for m in (self.reconocer(e, umbral) for e in mismas) if m]
+        if hallados:
+            return max(hallados, key=lambda m: m[2]), None
+        prom = np.mean(np.stack([cara, *mismas]), axis=0)
+        return None, (prom / np.linalg.norm(prom)).astype(np.float32)
 
     # ── Altas / actualizaciones ─────────────────────────────────────────────
     def registrar(self, nombre, embedding, edad=None) -> int:
