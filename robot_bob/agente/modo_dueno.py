@@ -285,9 +285,14 @@ _RE_NOTICIAS_TECH = re.compile(
     r'(?:tecnolog[ií]a|tech|tecnol[oó]gic[ao]s)\b'
     r'|\bqu[eé]\s+hay\s+de\s+nuevo\s+en\s+(?:la\s+)?tecnolog[ií]a\b'
     r'|\binforme\s+del\s+d[ií]a\b', re.IGNORECASE)
+# Salir: el verbo en cualquier forma ("sal", "salí", "salir", "salgas", "deja", "apagá"…),
+# o "modo normal" solo. Con "no" a dos palabras o menos antes, no es comando (ver detectar).
 _RE_ING_SALIR = re.compile(
-    r'\b(?:sal[ií]?(?:r)?|desactiva(?:r)?|apaga(?:r)?|termina(?:r)?|quita(?:r)?)\s+'
+    r'\b(?:sal(?:ir|[ií]|g(?:a|as|an|amos))?|dej(?:ar|a|á|as|e|en|emos)'
+    r'|desactiv(?:ar|a|á|as|e|en|emos)|apag(?:ar|a|á|ues|ue|uen|uemos)'
+    r'|termin(?:ar|a|á|es|e|en|emos)|quit(?:ar|a|á|es|e|en|emos))\s+'
     r'(?:del?\s+|el\s+)?modo\s+ingenier[oa]\b|\bmodo\s+normal\b', re.IGNORECASE)
+_RE_NEGADO = re.compile(r'\bno\s+(?:\S+\s+){0,2}$', re.IGNORECASE)
 # Entrar pide un verbo ("activa el modo ingeniero") o la orden sola ("Bob, modo
 # ingeniero"): así "¿qué es el modo ingeniero?" no lo activa.
 # E-B: conjugado como se habla ("te pongas el modo ingeniero", "entra en modo…").
@@ -335,7 +340,8 @@ _RE_NO_WEB = re.compile(r'\b(?:archivo|fichero|carpeta|c[oó]digo|script|comando
 def detectar(texto: str, navegador: bool = False) -> Optional[Tuple[str, dict]]:
     """(comando, argumentos) si el texto es un comando de dueño, o None.
     navegador: el agente web ya tiene el navegador abierto (ver _RE_WEB_SEGUIR)."""
-    if _RE_ING_SALIR.search(texto or ''):
+    salida = _RE_ING_SALIR.search(texto or '')
+    if salida and not _RE_NEGADO.search((texto or '')[:salida.start()]):
         return 'salir_ingeniero', {}
     if _RE_WEB.search(texto or ''):
         return 'web', {'tarea': _RE_BOB_INICIO.sub('', texto).strip()}

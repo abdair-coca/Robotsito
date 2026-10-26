@@ -177,6 +177,12 @@ def probar_claude() -> None:
         md.atender(v, 'sal del modo ingeniero', (None, 0.0))
         check('claude: salir cierra la sesión', s is not None and s.cerrada and v._sesion_ing is None)
 
+        # El caso del log: pedido en subjuntivo dentro del modo ingeniero → sale, no va a Claude
+        v5 = construir()
+        v5._modo_ingeniero, v5._ing_visto, v5._ing_web = True, {}, set()
+        md.atender(v5, 'quiero que salgas del modo ingeniero', (None, 0.0))
+        check('salir con subjuntivo: sale del modo', not v5._modo_ingeniero)
+
         # Memoria corta compartida: cada sesión recibe lo que no vio, recortado
         v4 = construir()
         v4._modo_ingeniero, v4._ing_visto, v4._ing_web = True, {}, {1}
@@ -227,9 +233,11 @@ def main() -> None:
               'entra en modo ingeniero', 'ponte en modo ingeniera'):
         check(f'entrar: "{t}"', md.detectar(t) == ('ingeniero', {}), f'-> {md.detectar(t)}')
     for t in ('sal del modo ingeniero', 'desactiva el modo ingeniero', 'modo normal',
-              'salí del modo ingeniero'):
+              'salí del modo ingeniero', 'quiero que salgas del modo ingeniero',
+              'salga del modo ingeniero', 'deja el modo ingeniero', 'apagá el modo ingeniero'):
         check(f'salir: "{t}"', md.detectar(t) == ('salir_ingeniero', {}), f'-> {md.detectar(t)}')
-    for t in ('¿qué es el modo ingeniero?', 'el modo ingeniero es genial', 'soy ingeniero'):
+    for t in ('¿qué es el modo ingeniero?', 'el modo ingeniero es genial', 'soy ingeniero',
+              'no salgas del modo ingeniero', 'no quiero que salgas del modo ingeniero'):
         check(f'no es comando: "{t}"', md.detectar(t) is None, f'-> {md.detectar(t)}')
 
     # 2) Otra voz no entra
