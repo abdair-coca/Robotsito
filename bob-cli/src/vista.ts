@@ -43,6 +43,7 @@ export function partesEstado(e: EstadoBob): Parte[] {
   const partes: Parte[] = [];
   if (e.fsm) partes.push({ texto: FASES[e.fsm] ?? e.fsm.toLowerCase(), color: colorFase(e.fsm) });
   if (e.emocion) partes.push({ texto: `cara ${e.emocion.toLowerCase()}` });
+  if (e.cabeza) partes.push({ texto: `cabeza pan ${e.cabeza.pan}° tilt ${e.cabeza.tilt}°` });
   if (e.mic === false) partes.push({ texto: 'micrófono silenciado', color: 'red' });
   if (e.musica) partes.push({ texto: e.baile ? '♪ bailando' : '♪ música', color: 'magenta' });
   if (e.ingeniero) partes.push({ texto: 'modo ingeniero', color: 'yellow' });

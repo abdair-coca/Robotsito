@@ -22,6 +22,7 @@ la raíz del repo:
 ```bash
 bob                 # Bob completo dentro del CLI — Q para salir
 bob --falso         # Bob de mentira, sin placas, para probar el CLI
+bob --alone         # Bob de verdad sin ESP32: webcam y micro de la laptop
 ```
 
 Primera vez: `cp .env.example .env` y poner la `GROQ_API_KEY`

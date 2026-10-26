@@ -1,7 +1,7 @@
 """
 estado_cli.py — Estado de Bob para la barra del CLI (bob-cli).
 
-Cada 200 ms toma una foto del estado (FSM, emoción del OLED, micrófono, música, baile,
+Cada 200 ms toma una foto del estado (FSM, emoción del OLED, cabeza simulada, micrófono, música, baile,
 modo ingeniero) y emite {"t": "estado", ...} solo con lo que cambió; la primera foto va
 entera. Una foto en vez de avisar en cada cambio: `bailando` y `musica_sonando` se
 prenden y apagan en muchos lugares.
@@ -31,6 +31,10 @@ def foto(sm, voice, serial) -> Dict[str, object]:
     emocion = getattr(serial, '_ultimo_estado', '')
     if emocion:
         f['emocion'] = emocion
+    # Cabeza simulada (bob --alone). Con el ESP32 el serial no tiene posición: no aparece.
+    pos = getattr(serial, 'posicion', None)
+    if pos:
+        f['cabeza'] = {'pan': pos[0], 'tilt': pos[1]}
     return f
 
 

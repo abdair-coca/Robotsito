@@ -201,6 +201,40 @@ class LectorStream:
 
 # ── DetectorFacial (MediaPipe en hilo background) ─────────────────────────────
 
+class LectorWebcam:
+    """Mismo contrato que LectorStream, con la webcam de la laptop (bob --alone)."""
+    def __init__(self, indice: int = 0):
+        self.ok       = False
+        self._lock    = threading.Lock()
+        self._frame   = None
+        self._detener = False
+        self._cap     = cv2.VideoCapture(indice, cv2.CAP_DSHOW)
+        self._hilo = threading.Thread(target=self._loop, daemon=True, name='webcam-reader')
+        self._hilo.start()
+
+    def _loop(self):
+        if not self._cap.isOpened():
+            errores.error('CÁMARA', 'No pude abrir la webcam de la laptop. ¿La está usando otra app?')
+            return
+        while not self._detener:
+            ok, img = self._cap.read()
+            self.ok = ok
+            if ok:
+                with self._lock:
+                    self._frame = img
+            else:
+                time.sleep(0.05)
+        self._cap.release()
+
+    def leer(self):
+        with self._lock:
+            return None if self._frame is None else self._frame.copy()
+
+    def cerrar(self):
+        self._detener = True
+        time.sleep(0.1)
+
+
 class DetectorFacial:
     # Predictor de velocidad: proyecta la cara LOOKAHEAD_S hacia adelante
     # para compensar el lag detección + serial + servo.
@@ -328,11 +362,13 @@ class FacialTracker:
     pueda cambiarlos en tiempo de ejecución según el estado del robot.
     """
 
-    def __init__(self, url_stream: str, modelo_tflite: str, serial_mgr, state_machine):
+    def __init__(self, url_stream: str, modelo_tflite: str, serial_mgr, state_machine,
+                 webcam: int | None = None):
         self._serial  = serial_mgr
         self._sm      = state_machine
 
-        self._stream  = LectorStream(url_stream)
+        self._webcam  = webcam
+        self._stream  = LectorWebcam(webcam) if webcam is not None else LectorStream(url_stream)
 
         # Esperar primer frame (máx 10 s)
         self.w = self.h = None
@@ -455,8 +491,11 @@ class FacialTracker:
                 self._camera_ready.set()
                 return
             time.sleep(0.05)
-        errores.error('CÁMARA', 'No llega video de la ESP32-CAM. Revisa que esté encendida y en '
-                      'la misma red.')
+        if self._webcam is not None:
+            errores.error('CÁMARA', 'No llega video de la webcam de la laptop.')
+        else:
+            errores.error('CÁMARA', 'No llega video de la ESP32-CAM. Revisa que esté encendida y en '
+                          'la misma red.')
 
     def _iniciar_detector(self):
         base_options = mp_python.BaseOptions(model_asset_path=self._modelo)

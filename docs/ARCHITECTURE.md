@@ -205,6 +205,7 @@ bob.cmd → bob-cli (Node, Ink) ──lanza──▶ robot_bob/main.py con BOB_C
   - Con la salida por pipe, Rich baja a 16 colores ("legacy windows"). En modo CLI se desactiva esa detección.
   - `signal.raise_signal(SIGINT)` despierta un `time.sleep` del hilo principal; `_thread.interrupt_main` no.
 - **Pruebas:**
-  - Python: `test_puente_cli`, `test_teclas_cli` y `test_estado_cli` (unit).
+  - Python: `test_puente_cli`, `test_teclas_cli`, `test_estado_cli`, `test_serial_simulado` y `test_lector_webcam` (unit).
   - CLI: `npm test` y `npm run typecheck` en `bob-cli/`.
   - Sin placas: `bob --falso` (modos `demo`, `rafaga [s]` y `caida`).
+  - Sin ESP32: `bob --alone`. Webcam y micro de la laptop; la cabeza y la cara van a la barra del CLI (`SerialSimulado`).

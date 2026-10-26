@@ -3,6 +3,7 @@ rem bob.cmd - Arranca a Bob con su CLI (bob-cli\): todo lo que Bob escribe, con 
 rem barra de estado y los atajos. Desde scripts\:
 rem   bob                  Bob de verdad (robot_bob\main.py)
 rem   bob --falso [modo]   Bob de mentira, sin placas: demo, rafaga [s] o caida
+rem   bob --alone          Bob de verdad sin ESP32: webcam y micro de la laptop
 rem Modo clasico, sin CLI:  cd robot_bob  y  python main.py
 setlocal
 cd /d "%~dp0bob-cli" || exit /b 1

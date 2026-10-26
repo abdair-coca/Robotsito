@@ -82,6 +82,9 @@ export function clasificar(linea: string): Clasif {
   if (LIBRERIAS.some((r) => r.test(t))) return { tipo: 'libreria' };
   if (t.startsWith('Robot Bob activo.')) return { tipo: 'activo' };
 
+  if ((m = /^\[serial\] (Simulado.*)$/.exec(t))) {
+    return { tipo: 'paso', clave: 'serial', partes: [m[1]] };
+  }
   if ((m = /^\[serial\] Conectado (.+)$/.exec(t))) {
     return { tipo: 'paso', clave: 'serial', partes: [m[1]] };
   }

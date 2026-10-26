@@ -133,3 +133,8 @@ test('líneas que no son del arranque siguen como log', () => {
 test('quitarAnsi saca los colores de Rich', () => {
   assert.equal(quitarAnsi('\x1b[1;31m✖ CÁMARA\x1b[0m'), '✖ CÁMARA');
 });
+
+test('panel: sin ESP32 (bob --alone) el serial no queda esperando', () => {
+  const a = correr(['[serial] Simulado (sin ESP32)']);
+  assert.deepEqual(a.datos.serial, ['Simulado (sin ESP32)']);
+});

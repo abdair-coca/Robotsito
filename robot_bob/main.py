@@ -9,6 +9,9 @@ Orden de arranque:
   5. BehaviorEngine → movimiento natural en hilo daemon
   6. Loop principal → display OpenCV + HUD + tecla Q para salir
 
+Con --alone (bob --alone): sin ESP32. Webcam y micro de la laptop; servos y OLED no
+existen, así que la cabeza y la cara se muestran en la barra del CLI.
+
 Presionar Q cierra todo limpiamente.
 """
 
@@ -46,6 +49,9 @@ from config import (
     TARGET_FPS,
 )
 
+# bob --alone: sin ESP32. Servos y OLED no existen; su estado va a la barra del CLI.
+ALONE = '--alone' in sys.argv[1:]
+
 # Colores HUD (BGR)
 COLOR_OK    = (0, 255, 0)
 COLOR_WARN  = (0, 200, 255)
@@ -63,6 +69,7 @@ COLOR_STATE = {
 import errores
 import rutas
 from hardware.serial_manager import SerialManager
+from hardware.serial_simulado import SerialSimulado
 from nucleo.state_machine  import StateMachine, RobotState
 from vision.facial_tracker import FacialTracker, PAN_HOME, TILT_HOME, ZONA_MUERTA_X, ZONA_MUERTA_Y
 from voz.pipeline import VoicePipeline
@@ -102,7 +109,11 @@ def main() -> None:
     print('═' * 60)
 
     # ── 1. SerialManager ───────────────────────────────────────────────────────
-    serial_mgr = SerialManager(PUERTO_SERIAL, BAUD_RATE)
+    if ALONE:
+        serial_mgr = SerialSimulado()
+        print('[serial] Simulado (sin ESP32)')
+    else:
+        serial_mgr = SerialManager(PUERTO_SERIAL, BAUD_RATE)
     serial_mgr.cmd_estado('ESPERANDO')
 
     # ── 2. StateMachine ────────────────────────────────────────────────────────
@@ -116,13 +127,18 @@ def main() -> None:
     )
 
     # ── 3. FacialTracker ───────────────────────────────────────────────────────
-    print('Conectando al stream de la cámara...')
-    tracker = FacialTracker(URL_STREAM, MODELO_TFLITE, serial_mgr, sm)
+    if ALONE:
+        print('Abriendo la webcam de la laptop...')
+        tracker = FacialTracker(URL_STREAM, MODELO_TFLITE, serial_mgr, sm, webcam=0)
+    else:
+        print('Conectando al stream de la cámara...')
+        tracker = FacialTracker(URL_STREAM, MODELO_TFLITE, serial_mgr, sm)
 
     print('Esperando primer frame (máx 15 s)...')
     if not tracker.camera_ready.wait(timeout=15.0):
-        errores.error('CÁMARA', 'No llega video en 15 s: Bob no arranca. Revisa que la ESP32-CAM '
-                      'esté encendida y corre python -m hardware.discovery.')
+        pista = ('Revisa que la webcam esté libre.' if ALONE else
+                 'Revisa que la ESP32-CAM esté encendida y corre python -m hardware.discovery.')
+        errores.error('CÁMARA', f'No llega video en 15 s: Bob no arranca. {pista}')
         serial_mgr.cerrar()
         return
 
@@ -131,7 +147,8 @@ def main() -> None:
 
     # ── 4. VoicePipeline (con AudioIO opcional al ESP32) ───────────────────────
     audio_io = None
-    if USE_ROBOT_MIC or USE_ROBOT_SPEAKER:
+    # Con --alone no hay DevKit: el audio es el micro y el parlante de la laptop.
+    if (USE_ROBOT_MIC or USE_ROBOT_SPEAKER) and not ALONE:
         try:
             # Cargar AudioIO desde shared/voicechatLap
             sys.path.append(rutas.VOICECHAT_DIR)

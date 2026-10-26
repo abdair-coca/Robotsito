@@ -54,3 +54,10 @@ test('carácter UTF-8 partido entre chunks', () => {
   assert.deepEqual(l.agregar(bytes.slice(1, 5)), []);
   assert.deepEqual(l.agregar(bytes.slice(5)), ['✖ cámara']);
 });
+
+test('estado: cabeza solo con pan y tilt numéricos', () => {
+  assert.deepEqual(parsearLinea('{"t":"estado","cabeza":{"pan":92,"tilt":81}}', 'stdout'),
+    { t: 'estado', cambios: { cabeza: { pan: 92, tilt: 81 } } });
+  assert.deepEqual(parsearLinea('{"t":"estado","cabeza":{"pan":"92"}}', 'stdout'),
+    { t: 'estado', cambios: {} });
+});

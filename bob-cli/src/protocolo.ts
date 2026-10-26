@@ -10,6 +10,7 @@ export type Turno = 'usuario' | 'bob';
 export interface CambiosEstado {
   fsm?: string;
   emocion?: string;
+  cabeza?: { pan: number; tilt: number };
   mic?: boolean;
   musica?: boolean;
   baile?: boolean;
@@ -27,6 +28,10 @@ const TURNOS: readonly string[] = ['usuario', 'bob'];
 function estadoValido(e: Record<string, unknown>): CambiosEstado {
   const c: CambiosEstado = {};
   for (const k of ['fsm', 'emocion'] as const) if (typeof e[k] === 'string') c[k] = e[k] as string;
+  const cabeza = e.cabeza as { pan?: unknown; tilt?: unknown } | null | undefined;
+  if (cabeza && typeof cabeza.pan === 'number' && typeof cabeza.tilt === 'number') {
+    c.cabeza = { pan: cabeza.pan, tilt: cabeza.tilt };
+  }
   for (const k of ['mic', 'musica', 'baile', 'ingeniero'] as const) {
     if (typeof e[k] === 'boolean') c[k] = e[k] as boolean;
   }

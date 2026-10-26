@@ -1,6 +1,7 @@
 // bob-cli: lanza a Bob (robot_bob/main.py) y muestra todo lo que escribe.
 //   npm start              → Bob de verdad
 //   npm run falso [modo]   → Bob de mentira (dev/bob_falso.py): demo | rafaga [s] | caida
+//   npm run alone          → Bob de verdad sin ESP32 (main.py --alone)
 
 import React from 'react';
 import path from 'node:path';
@@ -18,7 +19,9 @@ function lanzamiento(argv: string[]): Lanzamiento {
   if (i >= 0) {
     return { script: path.resolve(AQUI, '..', 'dev', 'bob_falso.py'), args: argv.slice(i + 1), columnas };
   }
-  return { script: 'main.py', columnas };
+  // --alone: Bob real sin ESP32. main.py lo lee de sys.argv.
+  const args = argv.includes('--alone') ? ['--alone'] : [];
+  return { script: 'main.py', args, columnas };
 }
 
 let bob: Bob | null = null;
