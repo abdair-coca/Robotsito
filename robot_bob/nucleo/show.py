@@ -29,6 +29,7 @@ import time
 
 from asistente.assistant import hora_actual, obtener_clima
 from config import MUSICA_ENABLED
+from nucleo import puente_cli
 
 # Canción del cierre (query de búsqueda en Spotify). Editable en config.py.
 try:
@@ -49,6 +50,19 @@ def es_comando_show(texto: str) -> bool:
     return bool(_RE_SHOW.search(texto or ""))
 
 
+def voz_visible(vp):
+    """vp._hablar que además muestra la frase como turno de Bob (en el CLI y la
+    consola), igual que en una charla. La usan el show, la foto y los modos."""
+    from rich.markup import escape
+    from voz.pipeline.consola import console   # acá: voz.pipeline importa este módulo
+
+    def hablar(texto, emo=None):
+        with puente_cli.turno('bob'):
+            console.print(f'[bold green]Bob[/] [dim]({emo})[/]: {escape(texto)}')
+        vp._hablar(texto, emo)
+    return hablar
+
+
 # ── Show ────────────────────────────────────────────────────────────────────────
 
 class _Cortado(Exception):
@@ -59,7 +73,7 @@ def run_show(vp) -> bool:
     """Corre el show completo. Devuelve True si cerró con música + baile
     (la charla debe terminar ahí para dejar a Bob bailando con wake activo)."""
     sm, serial = vp._sm, vp._serial
-    hablar = vp._hablar
+    hablar = voz_visible(vp)
     cortado = getattr(vp, '_cortado', lambda: False)
 
     def seguir():
@@ -281,7 +295,7 @@ def _cierre_musical(vp, decir, ojos, cabeza) -> bool:
           'muy feliz.', 'AMOR', cabeza.mirar_abajo)
     decir('Y ahora sí... ¡lo que más me gusta en el mundo: bailar! '
           '¡DJ, dale play!', 'EMOCIONADO', cabeza.asentir)
-    hablar = vp._hablar
+    hablar = voz_visible(vp)
     if not MUSICA_ENABLED:
         hablar('Hoy vine sin mi Spotify... pero decime «Bob» y charlamos '
                'igual. ¡Gracias!', 'FELIZ')

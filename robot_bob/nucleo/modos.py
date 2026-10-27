@@ -13,7 +13,7 @@ run_modo(vp, nombre) recibe el VoicePipeline en curso, como show.run_show.
 import threading
 
 from nucleo.foto import _home
-from nucleo.show import _Cabeza
+from nucleo.show import _Cabeza, voz_visible
 
 # Cada paso: (frase, cara, gesto de _Cabeza o None). El orden es el de las teclas 1 a 4.
 MODOS = {
@@ -56,7 +56,7 @@ def run_modo(vp, nombre: str) -> bool:
     pasos = MODOS.get(nombre)
     if pasos is None:
         return False
-    sm, serial, hablar = vp._sm, vp._serial, vp._hablar
+    sm, serial, hablar = vp._sm, vp._serial, voz_visible(vp)
     cortado = getattr(vp, '_cortado', lambda: False)
 
     sm.show_activo.set()     # congela BehaviorEngine: la cabeza es del modo

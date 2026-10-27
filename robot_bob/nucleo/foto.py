@@ -17,7 +17,7 @@ import re
 import time
 from typing import Optional
 
-from nucleo.show import _Cabeza
+from nucleo.show import _Cabeza, voz_visible
 
 try:
     from config import FOTO_SEGUNDOS
@@ -124,7 +124,7 @@ def _home() -> tuple:
 def run_foto(vp, cara: str = CARA_POR_DEFECTO) -> None:
     """Cuenta, posa con `cara` y la sostiene FOTO_SEGUNDOS con la cabeza quieta.
     Las teclas D/J (vp._cortado) cortan la pose antes."""
-    sm, serial, hablar = vp._sm, vp._serial, vp._hablar
+    sm, serial, hablar = vp._sm, vp._serial, voz_visible(vp)
     if cara not in _POSES:
         cara = CARA_POR_DEFECTO
 
