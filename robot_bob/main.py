@@ -74,6 +74,7 @@ from nucleo.state_machine  import StateMachine, RobotState
 from vision.facial_tracker import FacialTracker, PAN_HOME, TILT_HOME, ZONA_MUERTA_X, ZONA_MUERTA_Y
 from voz.pipeline import VoicePipeline
 from nucleo.behavior       import BehaviorEngine
+from nucleo.modos          import TECLAS as TECLAS_MODO
 try:
     from config import MEMORIA_ENABLED
 except Exception:
@@ -332,6 +333,8 @@ def main() -> None:
                 voice.presentar_manual()         # el show de "preséntate", sin pedirlo
             elif tecla in (ord('t'), ord('T')):
                 voice.foto_manual()              # pose de foto, sin pedirla
+            elif 0 <= tecla < 256 and chr(tecla) in TECLAS_MODO:
+                voice.modo_manual(chr(tecla))    # modo expresivo (coqueto, miedoso…)
             elif tecla == ord('e') and memoria is not None and face_id is not None:
                 # Enrolado manual (tecla E) en hilo: el video sigue corriendo
                 # mientras se escribe el nombre. Frame LIMPIO del tracker (el

@@ -267,6 +267,7 @@ from nucleo.show import es_comando_show, run_show     # modo presentación ("pre
 # Tecla P: el pedido vale este rato; si no arrancó (Bob ocupado), no salta después.
 SHOW_MANUAL_VIGENCIA_S = 30.0
 from nucleo.foto import CARA_POR_DEFECTO, cara_foto, es_comando_foto, run_foto   # "ponte para la foto"
+from nucleo.modos import MODOS, TECLAS as TECLAS_MODO, run_modo     # teclas 1 a 4
 from agente import modo_dueno                               # V5: comandos solo para la voz del dueño
 from voz import stt                                      # R1: filtros de alucinación de Whisper
 from llm.llm_router import RouterLLM, Backend       # R1: rotación de LLM por cupo
@@ -587,6 +588,15 @@ class VoicePipeline:
         durante una pose (o el show), T la corta. True si quedó pedida."""
         return self._pedir_manual('foto', 'T', 'pose para la foto')
 
+    def modo_manual(self, tecla: str) -> bool:
+        """Teclas 1 a 4: Bob actúa un modo expresivo (modos.py). Igual que P y T: en
+        reposo arranca ya, en una charla va en el próximo turno y durante un modo (o
+        el show, o una pose) lo corta. True si quedó pedido."""
+        nombre = TECLAS_MODO.get(tecla)
+        if nombre is None:
+            return False
+        return self._pedir_manual(nombre, tecla, f'modo {nombre}')
+
     def _pedir_manual(self, accion: str, tecla: str, que: str) -> bool:
         etiqueta = f'[{accion}] {tecla}'
         if self._sm.show_activo.is_set():
@@ -608,9 +618,9 @@ class VoicePipeline:
         return True
 
     def _tomar_manual(self) -> Optional[str]:
-        """¿Apretaron P o T hace poco? 'show', 'foto' o None. Lo consume: una tecla,
-        una vez. Va al inicio de cada turno, antes de escuchar: así la escucha
-        siguiente no sale cancelada."""
+        """¿Apretaron P, T o 1 a 4 hace poco? 'show', 'foto', el modo o None. Lo
+        consume: una tecla, una vez. Va al inicio de cada turno, antes de escuchar:
+        así la escucha siguiente no sale cancelada."""
         if not self._detener.is_set():
             self._cancelar_escucha.clear()
         t, self._show_manual_t = getattr(self, '_show_manual_t', 0.0), 0.0
@@ -1068,13 +1078,20 @@ class VoicePipeline:
                 if not self._corte_escuchar:
                     console.print('[dim][corte] fin de conversación[/]')
                     break
-            # Tecla P/T: el show o la pose va en lugar de este turno, sin escuchar ni JEV.
+            # Tecla P/T/1-4: el show, la pose o el modo va en lugar de este turno, sin escuchar ni JEV.
             manual = self._tomar_manual()
             if manual == 'foto':
                 console.print('[bold magenta][foto][/] ¡Pose para la foto (tecla T)!')
                 pending_text = pending_audio = None
                 self._sm.iniciar_hablando()
                 run_foto(self, CARA_POR_DEFECTO)
+                es_primer_turno = False
+                continue
+            if manual in MODOS:
+                console.print(f'[bold magenta][modo][/] ¡Modo {manual}!')
+                pending_text = pending_audio = None
+                self._sm.iniciar_hablando()
+                run_modo(self, manual)
                 es_primer_turno = False
                 continue
             if manual == 'show':

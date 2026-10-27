@@ -47,6 +47,8 @@ MODOS = {
     ),
 }
 
+TECLAS = {str(i): nombre for i, nombre in enumerate(MODOS, 1)}    # '1' → 'coqueto'…
+
 
 def run_modo(vp, nombre: str) -> bool:
     """Actúa el modo `nombre` y deja la cabeza donde mira a las caras.

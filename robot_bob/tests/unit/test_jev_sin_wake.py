@@ -357,5 +357,19 @@ try:
 finally:
     vp.run_foto = foto_gate
 
+# ── J7: teclas 1 a 4 → modo expresivo en lugar del turno ──────────────────────
+modo_gate = vp.run_modo
+actuados = []
+try:
+    vp.run_modo = lambda v, nombre: actuados.append(nombre)
+    v = construir()
+    v._accion_manual, v._show_manual_t = 'miedoso', vp.time.monotonic()   # lo que deja la tecla 2
+    hablados, llm, ident = conversacion(v, [])
+    check("J7: tecla 2 -> modo miedoso, sin escuchar ni LLM ni buscar la cara",
+          actuados == ['miedoso'] and not llm and not ident,
+          f"-> modos={actuados} llm={llm} ident={len(ident)}")
+finally:
+    vp.run_modo = modo_gate
+
 print(f"\nRESULTADO: {'TODO OK' if fallos == 0 else f'{fallos} FALLA(S)'}", flush=True)
 sys.exit(0 if fallos == 0 else 1)

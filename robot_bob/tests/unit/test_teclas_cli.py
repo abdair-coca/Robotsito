@@ -35,7 +35,7 @@ teclas_cli.registrar()
 check('registra tecla y salir', puente_cli._comandos.get('tecla') is teclas_cli._tecla
       and puente_cli._comandos.get('salir') is teclas_cli._salir)
 check('sin teclas: SIN_TECLA', teclas_cli.siguiente() == (teclas_cli.SIN_TECLA, None))
-for letra in ('s', 'd', 'j', 'p', 't', 'S', 'P', 'T'):
+for letra in ('s', 'd', 'j', 'p', 't', '1', '4', 'S', 'P', 'T'):
     teclas_cli._tecla({'cmd': 'tecla', 'tecla': letra})
     check(f'tecla {letra}: código de la minúscula', teclas_cli.siguiente() == (ord(letra.lower()), None))
 teclas_cli._tecla({'cmd': 'tecla', 'tecla': 'e', 'nombre': '  Abdair '})
@@ -181,6 +181,27 @@ v.cortar_respuesta = lambda escuchar: cortes.append(escuchar)
 v._sm.show_activo.set()
 check('T durante una pose: la corta y no pide otra',
       v.foto_manual() is False and cortes == [True] and v._tomar_manual() is None)
+v._sm.show_activo.clear()
+del v.cortar_respuesta
+
+# ── 4d. Teclas 1 a 4: modos expresivos ──────────────────────────────────────────
+v._sm.wakes = []
+check('1 a 4: un modo por tecla, en orden',
+      [vp.TECLAS_MODO[t] for t in '1234'] == ['coqueto', 'miedoso', 'gruñon', 'dramatico'])
+check('2 en reposo: arranca la charla sin girar a buscar',
+      v.modo_manual('2') is True and v._sm.wakes == [None] and v._sm.buscar is False)
+check('2: el turno toma el modo una sola vez', v._tomar_manual() == 'miedoso'
+      and v._tomar_manual() is None)
+v._sm.en_conversacion = True
+check('4 en una charla: queda para el próximo turno',
+      v.modo_manual('4') is True and v._sm.wakes == [None] and v._tomar_manual() == 'dramatico')
+v._sm.en_conversacion = False
+check('tecla sin modo: nada', v.modo_manual('9') is False and v._tomar_manual() is None)
+cortes = []
+v.cortar_respuesta = lambda escuchar: cortes.append(escuchar)
+v._sm.show_activo.set()
+check('1 durante un modo: lo corta y no pide otro',
+      v.modo_manual('1') is False and cortes == [True] and v._tomar_manual() is None)
 v._sm.show_activo.clear()
 del v.cortar_respuesta
 
