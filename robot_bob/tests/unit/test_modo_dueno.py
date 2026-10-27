@@ -318,13 +318,14 @@ def main() -> None:
         mem6.cerrar()
 
         # 16) Segunda mirada al cerrar. Ana ya está en la base; el primer frame de la
-        #     charla sale malo (0.35 contra su cara guardada: no la reconoce) y los
+        #     charla sale muy malo (0.20 contra su cara guardada: no la reconoce y, por
+        #     debajo de MIRADA_INICIO_MIN, no vuelve a mirar al empezar) y los
         #     siguientes son buenos → la charla queda en Ana, sin fila nueva.
         mem7 = Memoria(os.path.join(tmp, 'm7.db'))
         mem7.registrar('Abdair', cara_dueno)
         cara_ana = vec(507, 512)
         ana = mem7.registrar('Ana', cara_ana)
-        malo = con_sim(cara_ana, 0.35, 508)
+        malo = con_sim(cara_ana, 0.20, 508)
         charla(mem7, [(malo, 30), (entre(malo, cara_ana), 30)])
         check('segunda mirada: no duplica a Ana', mem7.total_personas() == 2,
               f'({mem7.total_personas()} personas)')
@@ -363,7 +364,7 @@ def main() -> None:
         cara_eva = vec(513, 512)
         eva = mem7.registrar(None, cara_eva)
         n = mem7.total_personas()
-        malo_eva = con_sim(cara_eva, 0.35, 514)
+        malo_eva = con_sim(cara_eva, 0.20, 514)
         charla(mem7, [(malo_eva, 28), (entre(malo_eva, cara_eva), 28)], 'Bob, me llamo Eva')
         check('sin nombre + "me llamo Eva": completa el nombre sin otra fila',
               mem7.total_personas() == n and mem7.persona(eva)[1] == 'Eva',
@@ -375,7 +376,7 @@ def main() -> None:
         cara_fede = vec(515, 512)
         fede = mem7.registrar('Fede', cara_fede)
         n = mem7.total_personas()
-        malo_fede = con_sim(cara_fede, 0.35, 516)
+        malo_fede = con_sim(cara_fede, 0.20, 516)
         v = charla(mem7, [(malo_fede, 35), (entre(malo_fede, cara_fede), 35)],
                    'me llamo Fede', saludo=True)
         check('"me llamo" + segunda mirada: no duplica a Fede', mem7.total_personas() == n,
@@ -398,12 +399,51 @@ def main() -> None:
         cara_ale = vec(519, 512)
         ale = mem7.registrar('Halle', cara_ale)
         n = mem7.total_personas()
-        malo_ale = con_sim(cara_ale, 0.35, 520)
+        malo_ale = con_sim(cara_ale, 0.20, 520)
         charla(mem7, [(malo_ale, 27), (entre(malo_ale, cara_ale), 27)], 'me llamo Ale',
                saludo=True)
         check('"me llamo" con otro nombre guardado: toma el que dice ahora, sin otra fila',
               mem7.total_personas() == n and mem7.persona(ale)[1] == 'Ale',
               f'({mem7.total_personas()} personas, nombre {mem7.persona(ale)[1]})')
+
+        # 24) Al empezar, el primer frame queda cerca (0.30 contra Ivo, sobre
+        #     MIRADA_INICIO_MIN): vuelve a mirar ahí mismo y charla con él como conocido.
+        cara_ivo = vec(521, 512)
+        ivo = mem7.registrar('Ivo', cara_ivo)
+        n = mem7.total_personas()
+        malo_ivo = con_sim(cara_ivo, 0.30, 522)
+        v = charla(mem7, [(malo_ivo, 31), (entre(malo_ivo, cara_ivo), 31)])
+        check('al empezar, cerca: lo reconoce al volver a mirar',
+              v._convo_persona == ivo and 'ya conocés a esta persona' in v._system_prompt_actual)
+        check('al empezar, cerca: sin fila nueva y el recuerdo en Ivo',
+              mem7.total_personas() == n and len(mem7.episodios(ivo)) == 1,
+              f'({mem7.total_personas()} personas)')
+
+        # 25) Un visitante nuevo: su primer frame no se parece a nadie (bajo
+        #     MIRADA_INICIO_MIN). No vuelve a mirar: un solo análisis, sin demorar el saludo.
+        face25 = FakeFaceSecuencia([(vec(523, 512), 20)])
+        analisis = []
+        analizar25 = face25.analizar
+        face25.analizar = lambda frame: analisis.append(frame) or analizar25(frame)
+        v = construir(mem7, face25)
+        v._identificar()
+        check('al empezar, nuevo: no vuelve a mirar',
+              len(analisis) == 1 and v._convo_persona is None, f'({len(analisis)} análisis)')
+
+        # 26) Se parece a Kiko sin serlo y los frames nuevos tampoco llegan: sigue como
+        #     desconocida y la charla se queda con el promedio de sus caras, que es lo
+        #     que se guardará al cerrar.
+        cara_kiko = vec(524, 512)
+        mem7.registrar('Kiko', cara_kiko)
+        primero = con_sim(cara_kiko, 0.30, 525)
+        despues = con_sim(primero, 0.8, 526)    # la misma persona, que no es Kiko
+        v = construir(mem7, FakeFaceSecuencia([(primero, 40), (despues, 40)]))
+        v._identificar()
+        check('al empezar, cerca pero no es: sigue como desconocida',
+              v._convo_persona is None and 'No conocés a esta persona' in v._system_prompt_actual)
+        sim26 = float(np.dot(v._convo_emb, despues))
+        check('al empezar, cerca pero no es: se queda con el promedio de sus caras',
+              sim26 > 0.9, f'({sim26:.2f})')
         mem7.cerrar()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

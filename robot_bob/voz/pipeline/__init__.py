@@ -97,9 +97,12 @@ except Exception:
     MEMORIA_ENABLED = False
 # Segunda mirada (P1): antes de guardar como nueva a una persona que no reconoció
 # (al decir "me llamo X" o al cerrar la charla), Bob toma MIRADA_FRAMES frames más,
-# cada MIRADA_PAUSA_S, y vuelve a buscar.
-MIRADA_FRAMES  = 3
-MIRADA_PAUSA_S = 0.2
+# cada MIRADA_PAUSA_S, y vuelve a buscar. Al empezar la charla también, pero solo si
+# el primer frame se parece al menos MIRADA_INICIO_MIN a alguien de la base: así no
+# demora el saludo de un visitante claramente nuevo.
+MIRADA_FRAMES     = 3
+MIRADA_PAUSA_S    = 0.2
+MIRADA_INICIO_MIN = 0.25
 # Registro por turno (perfil feria). Apagado si un config viejo no lo define.
 try:
     from config import REGISTRO_TURNOS
@@ -755,16 +758,28 @@ class VoicePipeline:
         if emb is None:
             return
         m = self._memoria.reconocer(emb)
+        cerca = None if m else self._memoria.mas_parecida(emb)
+        otra_vez = ''
+        if cerca and cerca[2] >= MIRADA_INICIO_MIN:
+            # Se parece a alguien sin llegar al umbral: el primer frame pudo salir
+            # movido o de costado (Bob todavía girando). Vuelve a mirar antes de
+            # tratarla como desconocida.
+            m, cara = self._memoria.segunda_mirada(emb, self._frames_nuevos())
+            if m:
+                otra_vez = ' al volver a mirar'
+            else:
+                self._convo_emb = cara
+                cerca = self._memoria.mas_parecida(cara)
         if m:
             pid, nombre, score = m
             self._convo_persona  = pid
             self._convo_face_score = score
             self._persona_nombre = nombre
             self._memoria.marcar_visto(pid)
-            console.print(f'[bold magenta][memoria][/] reconocido: {nombre} (score {score:.2f})')
+            console.print(f'[bold magenta][memoria][/] reconocido{otra_vez}: {nombre} '
+                          f'(score {score:.2f})')
             self._system_prompt_actual = self._prompt_conocido(pid)
         else:
-            cerca = self._memoria.mas_parecida(emb)
             falta = (f' (más parecida: id={cerca[0]} {cerca[1] or "sin nombre"}, '
                      f'score {cerca[2]:.2f})' if cerca else '')
             console.print(f'[bold magenta][memoria][/] persona desconocida{falta}')
@@ -867,7 +882,8 @@ class VoicePipeline:
 
     def _frames_nuevos(self) -> list:
         """Embeddings de MIRADA_FRAMES frames nuevos de la cámara (None donde no
-        hay cara), para la segunda mirada antes de guardar a alguien como nuevo."""
+        hay cara), para la segunda mirada: al empezar, si la cara quedó cerca de
+        alguien, y antes de guardar a alguien como nuevo."""
         caras = []
         for i in range(MIRADA_FRAMES):
             if self._detener.is_set():
