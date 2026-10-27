@@ -55,6 +55,8 @@ RUTAS = {
                    "estoy detrás de ti, gira",
     "presentacion": "Quiere que Bob haga su presentación o muestre lo que sabe hacer: "
                     "preséntate, qué sabes hacer, muéstrame lo que sabes",
+    "foto": "Quiere que Bob pose para una foto, con o sin una cara: ponte para la foto, "
+            "ponte feliz para la foto, haz una pose de enojado",
     "despedida": "Quiere que Bob se vaya, se calle o termine: adiós, me voy, vete, "
                  "no me hables, déjame en paz",
     "ajeno": "Claramente no es para Bob: ruido o gente hablando entre sí sin nombrarlo. "

@@ -264,6 +264,7 @@ from asistente.music import (parse_music_command, ejecutar as ejecutar_musica,  
 # E-B: respuesta de "no" a "¿qué canción quieres que ponga?"
 _RE_NO_MUSICA = re.compile(r'\b(?:no|cancela|cancelalo|olvidalo|olvídalo|mejor no)\b', re.IGNORECASE)
 from nucleo.show import es_comando_show, run_show     # modo presentación ("presentate")
+from nucleo.foto import cara_foto, es_comando_foto, run_foto   # "ponte para la foto"
 from agente import modo_dueno                               # V5: comandos solo para la voz del dueño
 from voz import stt                                      # R1: filtros de alucinación de Whisper
 from llm.llm_router import RouterLLM, Backend       # R1: rotación de LLM por cupo
@@ -325,6 +326,7 @@ def _hay_comando(texto: str) -> bool:
         return bool(_intent_giro(texto)
                     or (RECORDATORIOS_ENABLED and parse_recordatorio(texto))
                     or es_comando_show(texto)
+                    or es_comando_foto(texto)
                     or (MUSICA_ENABLED and parse_music_command(texto))
                     or _is_exit(texto) or _is_goodbye(texto))
     except Exception:
@@ -1260,6 +1262,15 @@ class VoicePipeline:
                     self._hablar(ack, 'FELIZ')
                     es_primer_turno = False
                     continue
+
+            # ── FOTO: "ponte (feliz) para la foto" → pose con esa cara ──────────
+            cara = cara_foto(texto, ruta)
+            if cara:
+                console.print(f'[bold magenta][foto][/] pose {cara}')
+                self._sm.iniciar_hablando()
+                run_foto(self, cara)
+                es_primer_turno = False
+                continue
 
             # ── SHOW de presentación: "presentate / qué sabés hacer" ───────────
             # J5: la presentación la decide JEV; sin respuesta, palabras clave.
