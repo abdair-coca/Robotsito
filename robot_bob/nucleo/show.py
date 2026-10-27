@@ -208,6 +208,18 @@ class _Cabeza:
     def mirar_abajo(self):      # vergüenza o tristeza
         self._ida_vuelta(-6, 10, pausa=1.2)
 
+    def _vaiven(self, d_pan, veces, dt):
+        base = self.pos
+        for d in (d_pan, -d_pan) * veces:
+            self.ir((base[0] + d, base[1]), paso=1.0, dt=dt)
+        self.ir(base, paso=1.0, dt=dt)
+
+    def negar(self):            # "no", gruñón
+        self._vaiven(8, veces=2, dt=0.04)
+
+    def temblar(self):          # miedo: tiritón chiquito (uno fuerte baja el voltaje)
+        self._vaiven(3, veces=4, dt=0.03)
+
 
 def _wiggle_cuerpo(serial) -> None:
     """Giro corto a un lado y al otro. No hace nada si los motores están off."""
