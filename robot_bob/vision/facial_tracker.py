@@ -242,6 +242,13 @@ class DetectorFacial:
     MAX_PRED_PX = 35
     VEL_SMOOTH  = 0.6   # 0..1, más alto = más smoothing (más lag pero menos jitter)
 
+    # Persona fija: con varias caras delante (multitud en la feria) sigue a UNA,
+    # la más cercana a la que venía siguiendo, en vez de saltar a la más grande.
+    FIJA_PERDIDA_S = 0.5   # sin ver a la suya este tiempo → pasa a la más grande
+    FIJA_RADIO     = 1.5   # anchos de cara que se mueve entre detecciones y sigue siendo la suya
+    FIJA_RIVAL     = 2.0   # otra cara con este múltiplo de área (bastante más cerca)...
+    FIJA_RIVAL_S   = 1.0   # ...durante este tiempo → cambia a esa
+
     def __init__(self, detector_mp, w_orig: int, h_orig: int):
         self._detector  = detector_mp
         self._escala_x  = w_orig / DET_W
@@ -259,6 +266,10 @@ class DetectorFacial:
         self._last_t  = None
         self._vx      = 0.0
         self._vy      = 0.0
+        # Persona fija (ver _elegir)
+        self._fija    = None   # (cx, cy, w) de la cara que sigue
+        self._fija_t  = 0.0
+        self._rival_t = None
         self._hilo = threading.Thread(target=self._loop, daemon=True, name='detector-facial')
         self._hilo.start()
 
@@ -312,28 +323,13 @@ class DetectorFacial:
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         res = self._detector.detect(mp_image)
 
-        if not res.detections:
+        now  = time.monotonic()
+        cara = self._elegir([self._a_cara(d) for d in res.detections or []], now)
+        if cara is None:
             return None
-
-        det = max(res.detections, key=lambda d: d.bounding_box.width * d.bounding_box.height)
-        bb  = det.bounding_box
-        x   = int(bb.origin_x * self._escala_x)
-        y   = int(bb.origin_y * self._escala_y)
-        w   = int(bb.width    * self._escala_x)
-        h   = int(bb.height   * self._escala_y)
-
-        # Mejora: usar keypoint nariz (índice 2 en BlazeFace) en vez de bbox center.
-        # El bbox center cae cerca del cuello; la nariz cae entre los ojos → más natural.
-        cx = x + w // 2
-        cy = y + h // 2
-        kps = getattr(det, 'keypoints', None)
-        if kps and len(kps) >= 3:
-            nose = kps[2]
-            cx = int(nose.x * DET_W * self._escala_x)
-            cy = int(nose.y * DET_H * self._escala_y)
+        cx, cy, x, y, w, h = cara
 
         # Predictor de velocidad: actualiza estimación y proyecta LOOKAHEAD_S adelante.
-        now = time.monotonic()
         if self._last_t is not None:
             dt = now - self._last_t
             if 0.01 < dt < 0.3:
@@ -352,6 +348,57 @@ class DetectorFacial:
         cy_proy = cy + int(dy_pred)
 
         return (cx_proy, cy_proy, x, y, w, h)
+
+    def _a_cara(self, det):
+        """Detección de MediaPipe → (cx, cy, x, y, w, h) en píxeles del frame original."""
+        bb = det.bounding_box
+        x  = int(bb.origin_x * self._escala_x)
+        y  = int(bb.origin_y * self._escala_y)
+        w  = int(bb.width    * self._escala_x)
+        h  = int(bb.height   * self._escala_y)
+
+        # Mejora: usar keypoint nariz (índice 2 en BlazeFace) en vez de bbox center.
+        # El bbox center cae cerca del cuello; la nariz cae entre los ojos → más natural.
+        cx = x + w // 2
+        cy = y + h // 2
+        kps = getattr(det, 'keypoints', None)
+        if kps and len(kps) >= 3:
+            nose = kps[2]
+            cx = int(nose.x * DET_W * self._escala_x)
+            cy = int(nose.y * DET_H * self._escala_y)
+        return cx, cy, x, y, w, h
+
+    def _elegir(self, caras, now):
+        """A quién seguir entre las caras del frame. La suya, mientras aparezca cerca
+        de donde estaba; si no la ve devuelve None (la cabeza espera quieta) y tras
+        FIJA_PERDIDA_S pasa a la más grande. Otra cara le quita el lugar solo si es
+        FIJA_RIVAL veces más grande durante FIJA_RIVAL_S: alguien que se acercó."""
+        mayor = max(caras, key=_area, default=None)
+        if self._fija is None or now - self._fija_t > self.FIJA_PERDIDA_S:
+            return self._fijar(mayor, now)
+        fx, fy, fw = self._fija
+        suya = min(caras, key=lambda c: np.hypot(c[0] - fx, c[1] - fy), default=None)
+        if suya is None or np.hypot(suya[0] - fx, suya[1] - fy) > self.FIJA_RADIO * fw:
+            return None
+        if mayor is not suya and _area(mayor) >= self.FIJA_RIVAL * _area(suya):
+            if self._rival_t is None:
+                self._rival_t = now
+            if now - self._rival_t >= self.FIJA_RIVAL_S:
+                return self._fijar(mayor, now)
+        else:
+            self._rival_t = None
+        self._fija, self._fija_t = (suya[0], suya[1], suya[4]), now
+        return suya
+
+    def _fijar(self, cara, now):
+        """Pasa a seguir a `cara` (None = a nadie) y reinicia el predictor: la
+        velocidad de la persona anterior no sirve para la nueva."""
+        self._rival_t = None
+        self._vx = self._vy = 0.0
+        self._last_t = None
+        self._fija = None if cara is None else (cara[0], cara[1], cara[4])
+        self._fija_t = now
+        return cara
 
 
 # ── FacialTracker — clase principal ───────────────────────────────────────────
@@ -509,3 +556,7 @@ class FacialTracker:
 
 def _clamp(v: float, lo: float, hi: float) -> float:
     return lo if v < lo else hi if v > hi else v
+
+
+def _area(cara) -> int:
+    return cara[4] * cara[5]
