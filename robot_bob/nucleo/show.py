@@ -14,6 +14,7 @@ Coreografía FIJA de ~95 s que muestra todas las habilidades en orden:
  10. Cierre: arranca música en Spotify y se queda bailando
 
 Guion fijo (sin LLM): confiable para demo, timing exacto frase-acción.
+Las teclas D, J y P (vp._cortado) lo cortan en la próxima frase o movimiento.
 Cada paso degrada con gracia si su subsistema no está disponible.
 Los gestos de cabeza van mientras Bob habla, chicos y lentos: con movimientos fuertes
 la fuente actual hace caer el voltaje (y se reinicia la cámara).
@@ -50,11 +51,20 @@ def es_comando_show(texto: str) -> bool:
 
 # ── Show ────────────────────────────────────────────────────────────────────────
 
+class _Cortado(Exception):
+    """Teclas D/J/P durante el show: se deja de actuar ahí mismo."""
+
+
 def run_show(vp) -> bool:
     """Corre el show completo. Devuelve True si cerró con música + baile
     (la charla debe terminar ahí para dejar a Bob bailando con wake activo)."""
     sm, serial = vp._sm, vp._serial
     hablar = vp._hablar
+    cortado = getattr(vp, '_cortado', lambda: False)
+
+    def seguir():
+        if cortado():
+            raise _Cortado
 
     sm.show_activo.set()     # congela BehaviorEngine: los servos son del show
     sm.oled_ocupar()         # sin muecas pisando las caras del guion
@@ -66,6 +76,7 @@ def run_show(vp) -> bool:
 
     def decir(frase, estado, gesto=None):
         """Cara + frase; el gesto de cabeza va mientras habla (no antes ni después)."""
+        seguir()
         ojos(estado)
         hilo = threading.Thread(target=gesto, daemon=True, name='show-gesto') if gesto else None
         if hilo:
@@ -73,6 +84,7 @@ def run_show(vp) -> bool:
         hablar(frase, estado)
         if hilo:
             hilo.join(timeout=5.0)
+        seguir()
 
     con_baile = False
     try:
@@ -103,12 +115,14 @@ def run_show(vp) -> bool:
         decir('Mi cabecita se mueve solita, despacito, y te sigue '
               'a donde vayas.', 'CURIOSO')
         for destino in ((55, 85), (125, 85), (90, 70), (90, 95), (90, 85)):
+            seguir()
             cabeza.ir(destino)
             time.sleep(0.15)
 
         # ── 4. CUERPO ───────────────────────────────────────────────────────
         decir('Y si te me escondés... ¡giro con todo mi cuerpito '
               'para encontrarte!', 'TRAVIESO')
+        seguir()
         _wiggle_cuerpo(serial)
 
         # ── 5. RECONOCIMIENTO FACIAL + MEMORIA ──────────────────────────────
@@ -134,6 +148,9 @@ def run_show(vp) -> bool:
 
         # ── 10. CIERRE MUSICAL ──────────────────────────────────────────────
         con_baile = _cierre_musical(vp, decir, ojos, cabeza)
+    except _Cortado:
+        serial.cmd_motor(0, 0)       # por si cortó girando
+        con_baile = False
     finally:
         sm.oled_liberar()
         sm.show_activo.clear()

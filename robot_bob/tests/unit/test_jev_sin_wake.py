@@ -343,5 +343,19 @@ try:
 finally:
     vp.run_show = show_gate
 
+# ── J6: tecla T → pose para la foto en lugar del turno ────────────────────────
+foto_gate = vp.run_foto
+poses = []
+try:
+    vp.run_foto = lambda v, cara: poses.append(cara)
+    v = construir()
+    v._accion_manual, v._show_manual_t = 'foto', vp.time.monotonic()   # lo que deja T (ver test_teclas_cli)
+    hablados, llm, ident = conversacion(v, [])
+    check("J6: tecla T -> pose por defecto, sin escuchar ni LLM ni buscar la cara",
+          poses == [vp.CARA_POR_DEFECTO] and not llm and not ident,
+          f"-> poses={poses} llm={llm} ident={len(ident)}")
+finally:
+    vp.run_foto = foto_gate
+
 print(f"\nRESULTADO: {'TODO OK' if fallos == 0 else f'{fallos} FALLA(S)'}", flush=True)
 sys.exit(0 if fallos == 0 else 1)

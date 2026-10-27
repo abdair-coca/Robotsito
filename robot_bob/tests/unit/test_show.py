@@ -119,6 +119,16 @@ def main() -> None:
         check('duración con todo: menos de 2 minutos', palabras / 2.6 <= 120,
               f'-> ~{palabras / 2.6:.0f} s ({palabras} palabras)')
 
+        # 1c) Teclas D/J/P: el show se corta en la próxima frase y suelta todo
+        vp = VP()
+        vp._cortado = lambda: len(vp.dichas) >= 3
+        con_baile = show.run_show(vp)
+        check('corte: deja de hablar ahí mismo', len(vp.dichas) == 3, f'-> {len(vp.dichas)} frases')
+        check('corte: sin baile y motores parados', con_baile is False
+              and (not vp._serial.motores or vp._serial.motores[-1] == (0, 0)))
+        check('corte: libera OLED y BehaviorEngine',
+              vp._sm.oled == 0 and not vp._sm.show_activo.is_set())
+
         # 2) Con música: arranca el baile
         show.MUSICA_ENABLED = True
         from asistente import music

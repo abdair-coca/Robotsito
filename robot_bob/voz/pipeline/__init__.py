@@ -264,7 +264,9 @@ from asistente.music import (parse_music_command, ejecutar as ejecutar_musica,  
 # E-B: respuesta de "no" a "¿qué canción quieres que ponga?"
 _RE_NO_MUSICA = re.compile(r'\b(?:no|cancela|cancelalo|olvidalo|olvídalo|mejor no)\b', re.IGNORECASE)
 from nucleo.show import es_comando_show, run_show     # modo presentación ("presentate")
-from nucleo.foto import cara_foto, es_comando_foto, run_foto   # "ponte para la foto"
+# Tecla P: el pedido vale este rato; si no arrancó (Bob ocupado), no salta después.
+SHOW_MANUAL_VIGENCIA_S = 30.0
+from nucleo.foto import CARA_POR_DEFECTO, cara_foto, es_comando_foto, run_foto   # "ponte para la foto"
 from agente import modo_dueno                               # V5: comandos solo para la voz del dueño
 from voz import stt                                      # R1: filtros de alucinación de Whisper
 from llm.llm_router import RouterLLM, Backend       # R1: rotación de LLM por cupo
@@ -450,6 +452,7 @@ class VoicePipeline:
         self._mic = None                       # R2: micrófono continuo (perezoso)
         self._mic_silenciado = False           # tecla S en la ventana de video
         self._corte = threading.Event()        # teclas D/J: cortar lo que Bob está diciendo
+        self._cancelar_escucha = threading.Event()   # tecla P/T o cerrar: la escucha corta ya
         self._corte_escuchar = False           # D: tras el corte escucha ya; J: fin de charla
         self._audio_q = None                   # frases listas de la respuesta en curso
         self._mic_lock = threading.Lock()
@@ -504,6 +507,7 @@ class VoicePipeline:
 
     def cerrar(self) -> None:
         self._detener.set()
+        self._cancelar_escucha.set()
         self._sm.ev_escuchando.set()  # desbloquea el wait
         self._hilo.join(timeout=3.0)
         modo_dueno.fin_charla(self)   # V5: cierra Claude Code y el navegador si quedaron
@@ -568,6 +572,51 @@ class VoicePipeline:
                 pass                     # está reproduciendo: el corte lo para igual
         console.print('[bold yellow][corte] Bob se calla y te escucha (D)[/]' if escuchar
                       else '[bold yellow][corte] Bob se calla (J)[/]')
+
+    def presentar_manual(self) -> bool:
+        """Tecla P: Bob hace su presentación (el show de "preséntate") sin pedirla por voz.
+        En reposo arranca ya; en una charla va en el próximo turno (si Bob está hablando,
+        se calla primero; si está escuchando, al terminar la escucha). Hablando solo o con
+        música no hace nada. Durante el show (o una pose de foto), P lo corta.
+        True si quedó pedida."""
+        return self._pedir_manual('show', 'P', 'presentación manual')
+
+    def foto_manual(self) -> bool:
+        """Tecla T: Bob posa para la foto (cara por defecto) sin pedirlo por voz.
+        Igual que P: en reposo arranca ya, en una charla va en el próximo turno y
+        durante una pose (o el show), T la corta. True si quedó pedida."""
+        return self._pedir_manual('foto', 'T', 'pose para la foto')
+
+    def _pedir_manual(self, accion: str, tecla: str, que: str) -> bool:
+        etiqueta = f'[{accion}] {tecla}'
+        if self._sm.show_activo.is_set():
+            console.print(f'[bold yellow]{etiqueta}: corto lo que está haciendo[/]')
+            self.cortar_respuesta(escuchar=True)
+            return False
+        en_charla = self._sm.en_conversacion
+        if self._muted.is_set() and not en_charla:
+            console.print(f'[dim]{etiqueta}: Bob está hablando solo; probá en un momento[/]')
+            return False
+        self._accion_manual = accion
+        self._show_manual_t = time.monotonic()
+        self._cancelar_escucha.set()                # si está escuchando, deja de esperar
+        if en_charla:
+            self.cortar_respuesta(escuchar=True)    # si está hablando, se calla
+        else:
+            self._sm.notificar_wake_word(payload=None, saludar=False, buscar=False)
+        console.print(f'[bold magenta][{accion}][/] {tecla}: {que}')
+        return True
+
+    def _tomar_manual(self) -> Optional[str]:
+        """¿Apretaron P o T hace poco? 'show', 'foto' o None. Lo consume: una tecla,
+        una vez. Va al inicio de cada turno, antes de escuchar: así la escucha
+        siguiente no sale cancelada."""
+        if not self._detener.is_set():
+            self._cancelar_escucha.clear()
+        t, self._show_manual_t = getattr(self, '_show_manual_t', 0.0), 0.0
+        if t > 0 and time.monotonic() - t < SHOW_MANUAL_VIGENCIA_S:
+            return getattr(self, '_accion_manual', 'show')
+        return None
 
     def _cortado(self) -> bool:
         corte = getattr(self, '_corte', None)
@@ -966,7 +1015,8 @@ class VoicePipeline:
         # Activación por JEV sin saludo (pending_text sin greeting): la identidad se
         # resuelve recién antes de la primera respuesta del LLM. Así una orden
         # (música, recordatorio) no espera a buscar la cara.
-        identificado = greeting or not pending_text
+        # Tecla P/T: el show o la pose arranca ya; la cara se busca después, antes del primer LLM.
+        identificado = (greeting or not pending_text) and not getattr(self, '_show_manual_t', 0.0)
         if identificado:
             self._identificar()
         else:
@@ -1018,6 +1068,23 @@ class VoicePipeline:
                 if not self._corte_escuchar:
                     console.print('[dim][corte] fin de conversación[/]')
                     break
+            # Tecla P/T: el show o la pose va en lugar de este turno, sin escuchar ni JEV.
+            manual = self._tomar_manual()
+            if manual == 'foto':
+                console.print('[bold magenta][foto][/] ¡Pose para la foto (tecla T)!')
+                pending_text = pending_audio = None
+                self._sm.iniciar_hablando()
+                run_foto(self, CARA_POR_DEFECTO)
+                es_primer_turno = False
+                continue
+            if manual == 'show':
+                console.print('[bold magenta][show][/] ¡Modo presentación (tecla P)!')
+                pending_text = pending_audio = None
+                self._sm.iniciar_hablando()
+                if run_show(self):
+                    break     # cerró bailando con música → fin de charla
+                es_primer_turno = False
+                continue
             # ── 1. Obtener input del turno ─────────────────────────────────────
             texto: str = ''
             audio_turno: Optional[bytes] = None   # audio de la frase (Fase V)
@@ -1051,6 +1118,9 @@ class VoicePipeline:
                     self._tono_escucha()      # R4: "ya te escucho" (no tras un ruido)
                 self._hablo_desde_escucha = False
                 audio = self._grabar(initial_timeout=timeout, adelantar_stt=True, dictado=dictado)
+                if getattr(self, '_show_manual_t', 0.0):
+                    self._stt_listo = None
+                    continue      # tecla P/T durante la escucha: gana a lo grabado
                 if audio is None or not audio:
                     console.print('[dim][voice] Silencio prolongado, fin de conversación[/]')
                     break
@@ -1456,7 +1526,8 @@ class VoicePipeline:
                 transcribir=lambda wav, previo: self._stt_bruto(wav, True, previo or None)[0],
                 timeout_inicial=initial_timeout, max_s=DICTADO_MAX_S,
                 pausa_fin_ms=DICTADO_PAUSA_FIN_MS, nivel_min=NIVEL_MIN_CHARLA,
-                puede_tramo=lambda: self._cupo_stt.libre(reserva=4), cancelar=self._detener)
+                puede_tramo=lambda: self._cupo_stt.libre(reserva=4),
+                cancelar=self._cancelar_escucha)
             if frase is None:
                 return None
             wav = frase.wav()
@@ -1473,7 +1544,7 @@ class VoicePipeline:
             nivel_min=WAKE_MIN_LEVEL if reposo else NIVEL_MIN_CHARLA,
             al_pausa=al_pausa,
             invitar=(lambda: pulse_emotion(self._serial, self._sm, 'CURIOSO', 700)) if invitar else None,
-            cancelar=self._detener)
+            cancelar=self._detener if reposo else self._cancelar_escucha)   # P/T corta la de charla
         if frase is None:
             return None
         wav = frase.wav()

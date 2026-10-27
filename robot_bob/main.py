@@ -328,6 +328,10 @@ def main() -> None:
                 voice.cortar_respuesta(escuchar=True)    # se calla y te escucha ya
             elif tecla in (ord('j'), ord('J')):
                 voice.cortar_respuesta(escuchar=False)   # se calla y termina la charla
+            elif tecla in (ord('p'), ord('P')):
+                voice.presentar_manual()         # el show de "preséntate", sin pedirlo
+            elif tecla in (ord('t'), ord('T')):
+                voice.foto_manual()              # pose de foto, sin pedirla
             elif tecla == ord('e') and memoria is not None and face_id is not None:
                 # Enrolado manual (tecla E) en hilo: el video sigue corriendo
                 # mientras se escribe el nombre. Frame LIMPIO del tracker (el

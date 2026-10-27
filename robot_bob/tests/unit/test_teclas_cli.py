@@ -35,7 +35,7 @@ teclas_cli.registrar()
 check('registra tecla y salir', puente_cli._comandos.get('tecla') is teclas_cli._tecla
       and puente_cli._comandos.get('salir') is teclas_cli._salir)
 check('sin teclas: SIN_TECLA', teclas_cli.siguiente() == (teclas_cli.SIN_TECLA, None))
-for letra in ('s', 'd', 'j', 'S'):
+for letra in ('s', 'd', 'j', 'p', 't', 'S', 'P', 'T'):
     teclas_cli._tecla({'cmd': 'tecla', 'tecla': letra})
     check(f'tecla {letra}: código de la minúscula', teclas_cli.siguiente() == (ord(letra.lower()), None))
 teclas_cli._tecla({'cmd': 'tecla', 'tecla': 'e', 'nombre': '  Abdair '})
@@ -108,9 +108,11 @@ class FakeSM:
         self.ev_pensando = threading.Event()
         self.bailando = threading.Event()
         self.musica_sonando = threading.Event()
+        self.show_activo = threading.Event()
 
-    def notificar_wake_word(self, payload=None, saludar=True):
+    def notificar_wake_word(self, payload=None, saludar=True, buscar=True):
         self.wakes.append(payload)
+        self.buscar = buscar
 
     def __getattr__(self, n):
         return lambda *a, **k: None
@@ -133,6 +135,54 @@ v._sm.en_conversacion = False
 v._muted.set()
 check('turno mientras habla solo: nada', v.disparar_turno() is False and len(v._sm.wakes) == 1)
 v._muted.clear()
+
+# ── 4b. Tecla P: presentación manual ────────────────────────────────────────────
+v._sm.wakes = []
+check('P en reposo: arranca la charla del show sin girar a buscar',
+      v.presentar_manual() is True and v._sm.wakes == [None] and v._sm.buscar is False)
+check('P: corta la escucha en curso', v._cancelar_escucha.is_set())
+check('P: el turno la toma una sola vez', v._tomar_manual() == 'show'
+      and v._tomar_manual() is None)
+check('P tomada: la escucha siguiente no sale cancelada', not v._cancelar_escucha.is_set())
+v._sm.en_conversacion = True
+check('P en una charla: sin wake, queda para el próximo turno',
+      v.presentar_manual() is True and v._sm.wakes == [None] and v._tomar_manual() == 'show')
+v._sm.en_conversacion = False
+v._muted.set()
+check('P mientras habla solo: nada', v.presentar_manual() is False and v._tomar_manual() is None)
+v._muted.clear()
+v.presentar_manual()
+v._show_manual_t -= vp.SHOW_MANUAL_VIGENCIA_S + 1
+check('P vieja (Bob estaba ocupado): no salta después', v._tomar_manual() is None)
+cortes = []
+v.cortar_respuesta = lambda escuchar: cortes.append(escuchar)
+v._sm.show_activo.set()
+check('P durante el show: lo corta y no pide otro',
+      v.presentar_manual() is False and cortes == [True] and v._tomar_manual() is None)
+v._sm.show_activo.clear()
+del v.cortar_respuesta
+
+# ── 4c. Tecla T: pose para la foto ──────────────────────────────────────────────
+v._sm.wakes = []
+check('T en reposo: arranca la charla sin girar a buscar',
+      v.foto_manual() is True and v._sm.wakes == [None] and v._sm.buscar is False)
+check('T: corta la escucha en curso', v._cancelar_escucha.is_set())
+check('T: el turno toma la foto una sola vez', v._tomar_manual() == 'foto'
+      and v._tomar_manual() is None)
+v._sm.en_conversacion = True
+check('T en una charla: queda para el próximo turno',
+      v.foto_manual() is True and v._sm.wakes == [None] and v._tomar_manual() == 'foto')
+v._sm.en_conversacion = False
+v.foto_manual()
+v.presentar_manual()
+check('T y luego P: gana la última', v._tomar_manual() == 'show')
+cortes = []
+v.cortar_respuesta = lambda escuchar: cortes.append(escuchar)
+v._sm.show_activo.set()
+check('T durante una pose: la corta y no pide otra',
+      v.foto_manual() is False and cortes == [True] and v._tomar_manual() is None)
+v._sm.show_activo.clear()
+del v.cortar_respuesta
 
 # ── 5. Modo CLI: sin msvcrt ─────────────────────────────────────────────────────
 v._mic_continuo = lambda: None

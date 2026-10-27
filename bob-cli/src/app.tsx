@@ -147,7 +147,7 @@ export function App({ lanzamiento, registrar }: {
         {estado.fase === 'corriendo' && nombre === null && (
           <Box flexDirection="column">
             <BarraBob bob={estadoBob} giro={giro} />
-            <Text dimColor>Q salir · S micrófono · D corta y escucha · J corta · E enrola · ENTER turno</Text>
+            <Text dimColor>Q salir · S micrófono · D corta y escucha · J corta · P presenta · T foto · E enrola · ENTER turno</Text>
           </Box>
         )}
         {estado.fase === 'cerrando' && (

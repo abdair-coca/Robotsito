@@ -198,7 +198,7 @@ bob.cmd → bob-cli (Node, Ink) ──lanza──▶ robot_bob/main.py con BOB_C
   - `{"t":"estado",…}`: lo que cambió de la FSM, la emoción, el micrófono, la música, el baile o el modo ingeniero (`estado_cli`).
   - Lo que no es JSON y el stderr nativo se muestran crudos (en gris).
 - **Captura sin tocar los mensajes:** con `BOB_CLI=1`, `sys.stdout` y `sys.stderr` pasan a ser escritores de eventos. Rich busca `sys.stdout` al escribir, así que las consolas de Rich y los `print()` quedan capturados sin cambiarlos.
-- **Atajos:** Q, S, D, J, E y ENTER llegan como `{"cmd":"tecla"}` a una cola que el loop de `main.py` lee cuando `cv2.waitKey` no trae nada. Pasan por las mismas ramas que en la ventana de video. Q marca `teclas_cli.salida`, así que funciona aunque no llegue video. E trae el nombre escrito en el CLI.
+- **Atajos:** Q, S, D, J, P, T, E y ENTER llegan como `{"cmd":"tecla"}` a una cola que el loop de `main.py` lee cuando `cv2.waitKey` no trae nada. Pasan por las mismas ramas que en la ventana de video. Q marca `teclas_cli.salida`, así que funciona aunque no llegue video. E trae el nombre escrito en el CLI.
 - **Cierre:** si se cierra el stdin de Bob (el CLI terminó o se cayó), Bob cierra limpio: `salir` → el `finally` de `main.py`. Si el CLI cae, Bob no queda corriendo con COM3 tomado. Si Bob se cae, el CLI queda abierto con el código de salida.
 - **Trampas de Windows, ya resueltas:**
   - Un hilo bloqueado leyendo el pipe de stdin traba a cualquier otro que consulte ese handle, y la carga de la DLL de Fortran de scipy se colgaba. Por eso el lector usa una copia (`os.dup`) y fd 0 pasa a NUL.

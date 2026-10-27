@@ -1,6 +1,6 @@
 // Atajos del CLI → qué hacer. Función pura (sin Ink) para poder probarla.
 // Las mismas letras que en la ventana de video (robot_bob/main.py):
-//   Q salir · S micrófono · D cortar y escuchar · J cortar · E enrolar · ENTER turno
+//   Q salir · S micrófono · D cortar y escuchar · J cortar · P presentación · T foto · E enrolar · ENTER turno
 
 /** Lo que importa de una tecla de Ink (useInput). */
 export interface Tecla {
@@ -18,7 +18,7 @@ export type Accion =
   | { tipo: 'enviar'; tecla: string; nombre?: string }  // → {"cmd":"tecla",...}
   | { tipo: 'nombre'; texto: string | null };           // línea del nombre (null = cerrada)
 
-const LETRAS = ['s', 'd', 'j'];
+const LETRAS = ['s', 'd', 'j', 'p', 't'];
 
 /** nombre: lo escrito en la línea del nombre, o null si no está abierta. */
 export function interpretar(t: Tecla, nombre: string | null): Accion {

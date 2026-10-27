@@ -11,8 +11,8 @@ test('Q y Ctrl+C salen (mayúscula también)', () => {
   assert.deepEqual(interpretar(t('c', { ctrl: true }), null), { tipo: 'salir' });
 });
 
-test('S, D y J se mandan a Bob', () => {
-  for (const l of ['s', 'd', 'j', 'S', 'D', 'J']) {
+test('S, D, J y P se mandan a Bob', () => {
+  for (const l of ['s', 'd', 'j', 'p', 't', 'S', 'D', 'J', 'P', 'T']) {
     assert.deepEqual(interpretar(t(l), null), { tipo: 'enviar', tecla: l.toLowerCase() });
   }
 });
