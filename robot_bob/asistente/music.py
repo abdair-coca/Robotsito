@@ -62,6 +62,7 @@ class MusicIntent:
     accion: str                       # play | play_playlist | resume | pause | next | prev | vol_up | vol_down | vol_set
     query: Optional[str] = None       # tema (play) o nombre de playlist (play_playlist); None = genérico
     valor: Optional[int] = None       # volumen absoluto 0-100 (solo vol_set)
+    desde_s: int = 0                  # segundo en que arranca el tema (solo play)
 
 
 # Gatillos para reproducir algo específico ("pon X", "reproduce X"). El grupo (.+)
@@ -359,8 +360,9 @@ def _buscar_youtube(query: str) -> Optional[tuple[str, str, float]]:
     return f"https://www.youtube.com/watch?v={m.group(1)}", titulo, largo
 
 
-def _poner_en_youtube(query: str) -> str:
-    """Abre el tema en YouTube y estima hasta cuándo suena (para el baile)."""
+def _poner_en_youtube(query: str, desde_s: int = 0) -> str:
+    """Abre el tema en YouTube (desde el segundo `desde_s`) y estima hasta cuándo
+    suena (para el baile)."""
     global _yt_hasta
     hallado = _buscar_youtube(query)
     if hallado is None:
@@ -369,9 +371,11 @@ def _poner_en_youtube(query: str) -> str:
             return f"No pude ponerla directo; te abrí la búsqueda de «{query}» en YouTube."
         return "No pude abrir YouTube en el navegador."
     url, titulo, largo = hallado
+    if desde_s > 0:
+        url += f"&t={desde_s}s"
     if not webbrowser.open(url):
         return "Encontré la canción en YouTube pero no pude abrir el navegador."
-    _yt_hasta = time.monotonic() + largo
+    _yt_hasta = time.monotonic() + max(0.0, largo - desde_s)
     return f"¡Dale! Poniendo {titulo} en YouTube."
 
 
@@ -393,7 +397,7 @@ def _pausar_youtube() -> str:
 def _plan_b(intent: MusicIntent, motivo: str) -> str:
     """Spotify no pudo: si el pedido trae tema, lo pone en YouTube; si no, `motivo`."""
     if intent.accion in ("play", "play_playlist") and intent.query:
-        return _poner_en_youtube(intent.query)
+        return _poner_en_youtube(intent.query, intent.desde_s)
     return motivo
 
 
@@ -424,7 +428,7 @@ def ejecutar(intent: MusicIntent) -> str:
             nombre = track["name"]
             artista = track["artists"][0]["name"] if track.get("artists") else ""
             try:
-                sp.start_playback(uris=[uri])
+                sp.start_playback(uris=[uri], position_ms=intent.desde_s * 1000)
             except spotipy.SpotifyException:
                 return _plan_b(intent, "Encontré la canción pero no hay un Spotify activo "
                                        "donde reproducirla; abrilo.")

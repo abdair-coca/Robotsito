@@ -36,6 +36,10 @@ try:
     from config import SHOW_CANCION
 except Exception:
     SHOW_CANCION = "Daddy Cool Boney M"
+try:
+    from config import SHOW_CANCION_DESDE_S     # segundo en que arranca la canción
+except Exception:
+    SHOW_CANCION_DESDE_S = 0
 
 # ── Detección del comando ───────────────────────────────────────────────────────
 _RE_SHOW = re.compile(
@@ -311,7 +315,7 @@ def _bailar_con_musica(vp) -> bool:
     """Pone SHOW_CANCION y deja a Bob bailando (lo mueve BehaviorEngine al soltar
     show_activo). False si la música no arrancó."""
     from asistente.music import MusicIntent, ejecutar
-    ack = ejecutar(MusicIntent(accion='play', query=SHOW_CANCION))
+    ack = ejecutar(MusicIntent(accion='play', query=SHOW_CANCION, desde_s=SHOW_CANCION_DESDE_S))
     if 'Poniendo' not in ack:    # frase de éxito de music.ejecutar
         return False
     vp._serial.cmd_estado('MUY_FELIZ')

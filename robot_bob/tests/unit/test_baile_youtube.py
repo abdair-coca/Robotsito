@@ -111,6 +111,23 @@ check('youtube: pausa con la tecla multimedia', 'pausé' in msg and len(teclas) 
       and teclas[0][0] == 0xB3, repr(msg))
 check('youtube: tras pausar ya no suena', not M.esta_sonando())
 
+abiertas.clear()
+M.ejecutar(M.MusicIntent('play', query='despacito', desde_s=5))
+check('youtube: desde_s arranca en ese segundo',
+      abiertas == ['https://www.youtube.com/watch?v=kJQP7kiw5Fk&t=5s'], repr(abiertas))
+M._yt_hasta = 0.0
+
+reproducidos = []
+_cliente_bak = M._cliente
+M._cliente = lambda: types.SimpleNamespace(
+    search=lambda **k: {'tracks': {'items': [{'uri': 'spotify:track:x', 'name': 'Mambo No. 5',
+                                              'artists': [{'name': 'Lou Bega'}]}]}},
+    start_playback=lambda **k: reproducidos.append(k))
+msg = M.ejecutar(M.MusicIntent('play', query='mambo no 5', desde_s=5))
+M._cliente = _cliente_bak
+check('spotify: desde_s va como position_ms', 'Poniendo' in msg
+      and reproducidos == [{'uris': ['spotify:track:x'], 'position_ms': 5000}], repr(reproducidos))
+
 M._buscar_youtube = lambda q: None          # búsqueda falló (sin red)
 abiertas.clear()
 msg = M.ejecutar(M.MusicIntent('play', query='despacito'))
