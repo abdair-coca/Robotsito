@@ -35,7 +35,7 @@ teclas_cli.registrar()
 check('registra tecla y salir', puente_cli._comandos.get('tecla') is teclas_cli._tecla
       and puente_cli._comandos.get('salir') is teclas_cli._salir)
 check('sin teclas: SIN_TECLA', teclas_cli.siguiente() == (teclas_cli.SIN_TECLA, None))
-for letra in ('s', 'd', 'j', 'p', 't', '1', '4', 'S', 'P', 'T'):
+for letra in ('s', 'd', 'j', 'p', 't', '1', '4', 'm', 'S', 'P', 'T', 'M'):
     teclas_cli._tecla({'cmd': 'tecla', 'tecla': letra})
     check(f'tecla {letra}: código de la minúscula', teclas_cli.siguiente() == (ord(letra.lower()), None))
 teclas_cli._tecla({'cmd': 'tecla', 'tecla': 'e', 'nombre': '  Abdair '})
