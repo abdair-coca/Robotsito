@@ -138,6 +138,20 @@ def main() -> None:
             vp = VP()
             check('show con música: termina bailando', show.run_show(vp) is True
                   and vp._sm.bailando.is_set())
+
+            # 3) Tecla M: baila con la canción del show y suelta la cabeza
+            vp = VP()
+            check('M con música: queda bailando', show.run_baile(vp) is True
+                  and vp._sm.bailando.is_set() and vp._sm.musica_sonando.is_set())
+            check('M: libera OLED y BehaviorEngine',
+                  vp._sm.oled == 0 and not vp._sm.show_activo.is_set())
+            music.ejecutar = lambda intent: 'No pude poner música.'
+            vp = VP()
+            check('M sin DJ: baila con la cabeza y no queda bailando',
+                  show.run_baile(vp) is False and not vp._sm.bailando.is_set()
+                  and len(vp._serial.servos) > 10 and len(vp.dichas) == 2)
+            check('M sin DJ: libera OLED y BehaviorEngine',
+                  vp._sm.oled == 0 and not vp._sm.show_activo.is_set())
         finally:
             music.ejecutar = original
     finally:

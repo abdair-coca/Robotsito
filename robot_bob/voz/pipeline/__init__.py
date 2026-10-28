@@ -263,7 +263,7 @@ from asistente.music import (parse_music_command, ejecutar as ejecutar_musica,  
                    MusicIntent, tema_de)                              # E-B: "¿qué canción?"
 # E-B: respuesta de "no" a "¿qué canción quieres que ponga?"
 _RE_NO_MUSICA = re.compile(r'\b(?:no|cancela|cancelalo|olvidalo|olvídalo|mejor no)\b', re.IGNORECASE)
-from nucleo.show import es_comando_show, run_show     # modo presentación ("presentate")
+from nucleo.show import es_comando_show, run_baile, run_show     # presentación; tecla M baila
 # Tecla P: el pedido vale este rato; si no arrancó (Bob ocupado), no salta después.
 SHOW_MANUAL_VIGENCIA_S = 30.0
 from nucleo.foto import CARA_POR_DEFECTO, cara_foto, es_comando_foto, run_foto   # "ponte para la foto"
@@ -589,7 +589,7 @@ class VoicePipeline:
         return self._pedir_manual('foto', 'T', 'pose para la foto')
 
     def modo_manual(self, tecla: str) -> bool:
-        """Teclas 1 a 4: Bob actúa un modo expresivo (modos.py). Igual que P y T: en
+        """Teclas 1 a 4: Bob actúa un modo expresivo (modos.py); M, baila. Igual que P y T: en
         reposo arranca ya, en una charla va en el próximo turno y durante un modo (o
         el show, o una pose) lo corta. True si quedó pedido."""
         nombre = TECLAS_MODO.get(tecla)
@@ -1078,7 +1078,8 @@ class VoicePipeline:
                 if not self._corte_escuchar:
                     console.print('[dim][corte] fin de conversación[/]')
                     break
-            # Tecla P/T/1-4: el show, la pose o el modo va en lugar de este turno, sin escuchar ni JEV.
+            # Tecla P/T/1-4/M: el show, la pose, el modo o el baile va en lugar de este turno,
+            # sin escuchar ni JEV.
             manual = self._tomar_manual()
             if manual == 'foto':
                 console.print('[bold magenta][foto][/] ¡Pose para la foto (tecla T)!')
@@ -1092,6 +1093,14 @@ class VoicePipeline:
                 pending_text = pending_audio = None
                 self._sm.iniciar_hablando()
                 run_modo(self, manual)
+                es_primer_turno = False
+                continue
+            if manual == 'bailar':
+                console.print('[bold magenta][baile][/] ¡A bailar (tecla M)!')
+                pending_text = pending_audio = None
+                self._sm.iniciar_hablando()
+                if run_baile(self):
+                    break     # bailando con música → fin de charla, como tras el show
                 es_primer_turno = False
                 continue
             if manual == 'show':

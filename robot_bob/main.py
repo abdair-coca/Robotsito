@@ -334,7 +334,7 @@ def main() -> None:
             elif tecla in (ord('t'), ord('T')):
                 voice.foto_manual()              # pose de foto, sin pedirla
             elif 0 <= tecla < 256 and chr(tecla) in TECLAS_MODO:
-                voice.modo_manual(chr(tecla))    # modo expresivo (coqueto, miedoso…)
+                voice.modo_manual(chr(tecla))    # modo expresivo (coqueto, miedoso…) o M baila
             elif tecla == ord('e') and memoria is not None and face_id is not None:
                 # Enrolado manual (tecla E) en hilo: el video sigue corriendo
                 # mientras se escribe el nombre. Frame LIMPIO del tracker (el

@@ -300,15 +300,58 @@ def _cierre_musical(vp, decir, ojos, cabeza) -> bool:
         hablar('Hoy vine sin mi Spotify... pero decime «Bob» y charlamos '
                'igual. ¡Gracias!', 'FELIZ')
         return False
-    from asistente.music import MusicIntent, ejecutar
-    ack = ejecutar(MusicIntent(accion='play', query=SHOW_CANCION))
-    if 'Poniendo' in ack:        # frase de éxito de music.ejecutar
-        ojos('MUY_FELIZ')
-        vp._t_baile_inicio = time.monotonic()
-        vp._baile_hint = True
-        vp._sm.musica_sonando.set()
-        vp._sm.bailando.set()
+    if _bailar_con_musica(vp):
         return True
     hablar('Mi DJ no me responde ahora... ¡otro día les bailo! '
            'Decime «Bob» y charlamos. ¡Gracias!', 'PENSANDO')
     return False
+
+
+def _bailar_con_musica(vp) -> bool:
+    """Pone SHOW_CANCION y deja a Bob bailando (lo mueve BehaviorEngine al soltar
+    show_activo). False si la música no arrancó."""
+    from asistente.music import MusicIntent, ejecutar
+    ack = ejecutar(MusicIntent(accion='play', query=SHOW_CANCION))
+    if 'Poniendo' not in ack:    # frase de éxito de music.ejecutar
+        return False
+    vp._serial.cmd_estado('MUY_FELIZ')
+    vp._t_baile_inicio = time.monotonic()
+    vp._baile_hint = True
+    vp._sm.musica_sonando.set()
+    vp._sm.bailando.set()
+    return True
+
+
+def run_baile(vp) -> bool:
+    """Tecla M: Bob baila con SHOW_CANCION, como el cierre del show. True si quedó
+    bailando con música (la charla termina ahí, como tras el show). Sin música baila
+    un ratito solo con la cabeza."""
+    sm, serial = vp._sm, vp._serial
+    hablar = voz_visible(vp)
+    cortado = getattr(vp, '_cortado', lambda: False)
+
+    sm.show_activo.set()     # congela BehaviorEngine: la cabeza es del baile
+    sm.oled_ocupar()
+    try:
+        serial.cmd_estado('EMOCIONADO')
+        hablar('¡Uy, lo que más me gusta en el mundo: bailar! ¡DJ, dale play!', 'EMOCIONADO')
+        if cortado():
+            return False
+        if MUSICA_ENABLED and _bailar_con_musica(vp):
+            return True
+        hablar('Mi DJ no me responde... ¡pero yo bailo igual!', 'TRAVIESO')
+        from nucleo.foto import _home    # acá: foto importa este módulo
+        base = _home()
+        cabeza = _Cabeza(serial, base)
+        serial.cmd_estado('MUY_FELIZ')
+        serial.cmd_servo(*base)
+        for _ in range(3):
+            if cortado():
+                break
+            cabeza._vaiven(10, veces=2, dt=0.03)
+            cabeza.asentir()
+        cabeza.ir(base)
+        return False
+    finally:
+        sm.oled_liberar()
+        sm.show_activo.clear()

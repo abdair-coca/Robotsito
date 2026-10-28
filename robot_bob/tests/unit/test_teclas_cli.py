@@ -196,6 +196,9 @@ v._sm.en_conversacion = True
 check('4 en una charla: queda para el próximo turno',
       v.modo_manual('4') is True and v._sm.wakes == [None] and v._tomar_manual() == 'dramatico')
 v._sm.en_conversacion = False
+check('M: pide el baile (mayúscula o minúscula)',
+      v.modo_manual('M') is True and v._tomar_manual() == 'bailar'
+      and v.modo_manual('m') is True and v._tomar_manual() == 'bailar')
 check('tecla sin modo: nada', v.modo_manual('9') is False and v._tomar_manual() is None)
 cortes = []
 v.cortar_respuesta = lambda escuchar: cortes.append(escuchar)

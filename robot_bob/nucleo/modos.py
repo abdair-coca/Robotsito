@@ -48,6 +48,7 @@ MODOS = {
 }
 
 TECLAS = {str(i): nombre for i, nombre in enumerate(MODOS, 1)}    # '1' → 'coqueto'…
+TECLAS['m'] = TECLAS['M'] = 'bailar'    # con música: show.run_baile, no es una escena
 
 
 def run_modo(vp, nombre: str) -> bool:
