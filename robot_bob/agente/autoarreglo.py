@@ -139,12 +139,18 @@ def borrar_bytecode(rutas: Iterable[str]) -> None:
             pass
 
 
+# Con la salida capturada, Python escribe en cp1252 y un test que imprime "→" se cae
+# (medido: 7 de 8 "fallas" de la suite eran eso). Los tests corren con UTF-8.
+_ENTORNO_TESTS = {**os.environ, 'PYTHONIOENCODING': 'utf-8'}
+
+
 def correr_tests(tests: List[str], raiz: str = RAIZ) -> Dict[str, bool]:
     """Cada test es un script que sale con 0 si pasa. Un timeout cuenta como falla.
     Con -B: no deja .pyc que otra corrida pueda tomar por buenos (ver borrar_bytecode)."""
     def uno(ruta: str) -> bool:
         try:
             r = subprocess.run([sys.executable, '-B', ruta], cwd=raiz, capture_output=True,
+                               env=_ENTORNO_TESTS,
                                timeout=TIMEOUT_TEST_S)
             return r.returncode == 0
         except (subprocess.TimeoutExpired, OSError):
@@ -168,7 +174,8 @@ def compila_e_importa(editados: Iterable[str], raiz: str = RAIZ) -> Optional[str
             continue
         try:
             r = subprocess.run([sys.executable, '-B', '-c', f'import {mod}'], cwd=raiz,
-                               capture_output=True, text=True, timeout=TIMEOUT_TEST_S)
+                               capture_output=True, text=True, encoding='utf-8',
+                               errors='replace', env=_ENTORNO_TESTS, timeout=TIMEOUT_TEST_S)
         except subprocess.TimeoutExpired:
             return f'importar {mod} tardó más de {TIMEOUT_TEST_S:.0f} s'
         if r.returncode != 0:
