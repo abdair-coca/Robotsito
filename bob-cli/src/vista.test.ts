@@ -32,6 +32,12 @@ test('barra: micrófono, música, baile y modo ingeniero', () => {
   assert.deepEqual(partesEstado({ musica: false, baile: true }).map((p) => p.texto), []);
 });
 
+test('barra: sin internet', () => {
+  assert.deepEqual(partesEstado({ red: false, mic: false }).map((p) => p.texto),
+    ['sin internet: solo teclas', 'micrófono silenciado']);
+  assert.deepEqual(partesEstado({ red: true }), []);
+});
+
 test('barra: cabeza simulada (bob --alone)', () => {
   assert.deepEqual(partesEstado({ cabeza: { pan: 92, tilt: 81 } }).map((p) => p.texto), ['cabeza pan 92° tilt 81°']);
 });

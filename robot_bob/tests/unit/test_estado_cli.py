@@ -2,7 +2,7 @@
 test_estado_cli.py — Estado y turnos para el CLI (T4 del plan del CLI).
 
 Sin hardware, red ni CLI:
-  1. estado_cli.foto() lee FSM, emoción, micrófono, música, baile y modo ingeniero.
+  1. estado_cli.foto() lee FSM, emoción, micrófono, música, baile, modo ingeniero y red.
   2. El hilo emite la foto entera la primera vez y después solo lo que cambió.
   3. Sin modo CLI el hilo no arranca.
   4. El pipeline marca como turno las líneas «Usuario:» y las frases de Bob.
@@ -31,17 +31,19 @@ def check(nombre: str, ok: bool, detalle: str = "") -> None:
 
 
 sm = NS(estado=RobotState.IDLE, musica_sonando=threading.Event(), bailando=threading.Event())
-voice = NS(microfono_activo=True, _modo_ingeniero=False)
+voice = NS(microfono_activo=True, _modo_ingeniero=False, en_linea=True)
 serial = NS(_ultimo_estado='')
 
 # ── 1. foto() ──────────────────────────────────────────────────────────────────
 check('foto: sin emoción todavía no la informa', estado_cli.foto(sm, voice, serial) == {
-    'fsm': 'IDLE', 'mic': True, 'musica': False, 'baile': False, 'ingeniero': False})
+    'fsm': 'IDLE', 'mic': True, 'musica': False, 'baile': False, 'ingeniero': False, 'red': True})
 serial._ultimo_estado = 'FELIZ'
 sm.musica_sonando.set()
 voice._modo_ingeniero = True
-check('foto: emoción, música y modo ingeniero', estado_cli.foto(sm, voice, serial) == {
-    'fsm': 'IDLE', 'mic': True, 'musica': True, 'baile': False, 'ingeniero': True, 'emocion': 'FELIZ'})
+voice.en_linea = False
+check('foto: emoción, música, modo ingeniero y sin red', estado_cli.foto(sm, voice, serial) == {
+    'fsm': 'IDLE', 'mic': True, 'musica': True, 'baile': False, 'ingeniero': True, 'red': False,
+    'emocion': 'FELIZ'})
 check('cambios: solo lo distinto', estado_cli.cambios({'fsm': 'IDLE', 'mic': True},
                                                       {'fsm': 'THINKING', 'mic': True}) == {'fsm': 'THINKING'})
 
@@ -65,7 +67,7 @@ time.sleep(0.3)
 puente_cli.emitir, puente_cli.ACTIVO = emitir_original, activo_original
 check('hilo: primero la foto entera', emitidos and emitidos[0] == {
     't': 'estado', 'fsm': 'IDLE', 'mic': True, 'musica': True, 'baile': False, 'ingeniero': True,
-    'emocion': 'FELIZ'}, repr(emitidos[:1]))
+    'red': False, 'emocion': 'FELIZ'}, repr(emitidos[:1]))
 check('hilo: después solo lo que cambió, sin repetir', emitidos[1:] == [
     {'t': 'estado', 'fsm': 'THINKING', 'mic': False}, {'t': 'estado', 'baile': True}], repr(emitidos[1:]))
 

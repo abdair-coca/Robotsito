@@ -35,7 +35,7 @@ import edge_tts
 import imageio_ffmpeg
 import sounddevice as sd
 from scipy.signal import butter, sosfilt
-from groq import Groq
+from groq import Groq, APIConnectionError
 from rich.console import Console
 
 import rutas
@@ -270,6 +270,7 @@ from nucleo.foto import CARA_POR_DEFECTO, cara_foto, es_comando_foto, run_foto  
 from nucleo.modos import MODOS, TECLAS as TECLAS_MODO, run_modo     # teclas 1 a 4
 from agente import modo_dueno                               # V5: comandos solo para la voz del dueño
 from voz import stt                                      # R1: filtros de alucinación de Whisper
+from hardware.red import MonitorRed                      # O2: sin internet, Bob no escucha
 from llm.llm_router import RouterLLM, Backend       # R1: rotación de LLM por cupo
 from voz import audio_engine                             # R2: micrófono continuo + Silero VAD
 from asistente.reminders import parse_recordatorio, ReminderStore   # P9: recordatorios
@@ -458,7 +459,8 @@ class VoicePipeline:
         self._audio_q = None                   # frases listas de la respuesta en curso
         self._mic_lock = threading.Lock()
         self._cupo_stt = stt.CupoSTT()         # R2: transcripciones del último minuto
-        self._stt_listo = None                 # R2: (wav, Future) de la transcripción adelantada
+        self._red = MonitorRed(al_cambiar=self._al_cambiar_red)   # O2: arranca con el wake monitor
+        self._stt_listo = None                # R2: (wav, Future) de la transcripción adelantada
         self._convo: List[Dict[str, str]] = []
         self._detener = threading.Event()
         # Anti-eco: cuando Bob habla solo (soliloquio), el wake monitor NO debe
@@ -508,6 +510,7 @@ class VoicePipeline:
 
     def cerrar(self) -> None:
         self._detener.set()
+        self._red.cerrar()
         self._cancelar_escucha.set()
         self._sm.ev_escuchando.set()  # desbloquea el wait
         self._hilo.join(timeout=3.0)
@@ -554,6 +557,17 @@ class VoicePipeline:
     @property
     def microfono_activo(self) -> bool:
         return not getattr(self, '_mic_silenciado', False)
+
+    @property
+    def en_linea(self) -> bool:
+        """O2: False sin internet. Sin red Bob no escucha: solo teclas."""
+        red = getattr(self, '_red', None)
+        return red is None or red.en_linea
+
+    def _al_cambiar_red(self, en_linea: bool) -> None:
+        """O-D3: el cambio de red se avisa solo en la consola y el CLI; Bob no lo dice."""
+        console.print('[bold green][red] Volvió internet: Bob escucha otra vez[/]' if en_linea
+                      else '[bold red][red] SIN INTERNET: Bob no escucha; usa las teclas[/]')
 
     def cortar_respuesta(self, escuchar: bool) -> None:
         """Teclas D (escuchar=True) y J en la ventana de video: cortan lo que Bob está
@@ -1111,6 +1125,10 @@ class VoicePipeline:
                     break     # cerró bailando con música → fin de charla
                 es_primer_turno = False
                 continue
+            if not (pending_text or pending_audio or self.en_linea):
+                # O2: sin internet no hay a quién transcribir: tras la tecla, fin de charla.
+                console.print('[dim][red] sin internet: no escucho, fin de conversación[/]')
+                break
             # ── 1. Obtener input del turno ─────────────────────────────────────
             texto: str = ''
             audio_turno: Optional[bytes] = None   # audio de la frase (Fase V)
@@ -1815,6 +1833,8 @@ class VoicePipeline:
                 if attempt == MAX_RETRIES:
                     errores.error('ESCUCHA', f'No pude transcribir lo que dijiste tras {MAX_RETRIES} '
                                   'intentos (¿sin internet?).', e)
+                    if isinstance(e, APIConnectionError):
+                        self._red.marcar_caida()   # O2: sin esperar al próximo sondeo
                     return '', True, False, ''
                 time.sleep(0.5)
         return '', True, False, ''
@@ -2338,6 +2358,7 @@ class VoicePipeline:
         """
         # R2: abrir el micrófono continuo ya (Silero + stream ≈ 2 s), no en el 1er turno.
         threading.Thread(target=self._mic_continuo, daemon=True, name='mic-abrir').start()
+        self._red.iniciar()   # O2: también en modo tecla (el ENTER transcribe)
         if TRIGGER_MODE == "tecla":
             # En modo CLI, msvcrt le robaría las teclas a la consola del CLI.
             if not puente_cli.ACTIVO:
@@ -2554,6 +2575,10 @@ class VoicePipeline:
             # auto-dispararse como wake word).
             if self._muted.is_set():
                 time.sleep(0.2)
+                continue
+
+            if not self.en_linea:
+                time.sleep(0.5)   # O2: sin internet no se graba ni se llama a Groq
                 continue
 
             if escucha_libre:

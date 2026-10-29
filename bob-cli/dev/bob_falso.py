@@ -91,7 +91,7 @@ def demo() -> None:
     except KeyError:
         traceback.print_exc()
     console.print('[dim]Una línea larga para ver el corte: ' + 'palabra ' * 40 + '[/]')
-    estado(fsm='IDLE', mic=True, musica=False, baile=False, ingeniero=False)
+    estado(fsm='IDLE', mic=True, musica=False, baile=False, ingeniero=False, red=True)
     # Una charla de mentira cada 8 s: la barra pasa por cada fase y los turnos se resaltan.
     n = 0
     while not fin.wait(2.0):

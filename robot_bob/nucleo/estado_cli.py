@@ -26,6 +26,7 @@ def foto(sm, voice, serial) -> Dict[str, object]:
         'musica': sm.musica_sonando.is_set(),
         'baile': sm.bailando.is_set(),
         'ingeniero': bool(getattr(voice, '_modo_ingeniero', False)),
+        'red': bool(getattr(voice, 'en_linea', True)),
     }
     # Último estado OLED enviado ('' tras reconectar: todavía no se sabe).
     emocion = getattr(serial, '_ultimo_estado', '')

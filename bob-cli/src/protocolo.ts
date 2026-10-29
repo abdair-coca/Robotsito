@@ -15,6 +15,7 @@ export interface CambiosEstado {
   musica?: boolean;
   baile?: boolean;
   ingeniero?: boolean;
+  red?: boolean;
 }
 
 export type Evento =
@@ -32,7 +33,7 @@ function estadoValido(e: Record<string, unknown>): CambiosEstado {
   if (cabeza && typeof cabeza.pan === 'number' && typeof cabeza.tilt === 'number') {
     c.cabeza = { pan: cabeza.pan, tilt: cabeza.tilt };
   }
-  for (const k of ['mic', 'musica', 'baile', 'ingeniero'] as const) {
+  for (const k of ['mic', 'musica', 'baile', 'ingeniero', 'red'] as const) {
     if (typeof e[k] === 'boolean') c[k] = e[k] as boolean;
   }
   return c;
