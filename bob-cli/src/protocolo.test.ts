@@ -26,6 +26,13 @@ test('estado: solo los campos conocidos y con su tipo', () => {
     { t: 'estado', cambios: { fsm: 'THINKING', emocion: 'FELIZ', mic: false } });
 });
 
+test('estado: averias es una lista de textos o no va', () => {
+  assert.deepEqual(parsearLinea('{"t":"estado","averias":["cámara"]}', 'stdout'),
+    { t: 'estado', cambios: { averias: ['cámara'] } });
+  assert.deepEqual(parsearLinea('{"t":"estado","averias":[1]}', 'stdout'),
+    { t: 'estado', cambios: {} });
+});
+
 test('stdout que no es JSON va crudo', () => {
   assert.deepEqual(parsearLinea('INFO: Created TensorFlow Lite delegate', 'stdout'),
     { t: 'crudo', de: 'stdout', texto: 'INFO: Created TensorFlow Lite delegate' });

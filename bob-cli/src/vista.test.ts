@@ -38,6 +38,12 @@ test('barra: sin internet', () => {
   assert.deepEqual(partesEstado({ red: true }), []);
 });
 
+test('barra: partes caídas (vigilante)', () => {
+  assert.deepEqual(partesEstado({ averias: ['audio del DevKit', 'cámara'] }),
+    [{ texto: 'sin audio del DevKit, cámara', color: 'red' }]);
+  assert.deepEqual(partesEstado({ averias: [] }), []);
+});
+
 test('barra: cabeza simulada (bob --alone)', () => {
   assert.deepEqual(partesEstado({ cabeza: { pan: 92, tilt: 81 } }).map((p) => p.texto), ['cabeza pan 92° tilt 81°']);
 });

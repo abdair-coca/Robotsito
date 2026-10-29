@@ -2,7 +2,7 @@
 estado_cli.py — Estado de Bob para la barra del CLI (bob-cli).
 
 Cada 200 ms toma una foto del estado (FSM, emoción del OLED, cabeza simulada, micrófono, música, baile,
-modo ingeniero) y emite {"t": "estado", ...} solo con lo que cambió; la primera foto va
+modo ingeniero, partes caídas) y emite {"t": "estado", ...} solo con lo que cambió; la primera foto va
 entera. Una foto en vez de avisar en cada cambio: `bailando` y `musica_sonando` se
 prenden y apagan en muchos lugares.
 
@@ -14,11 +14,12 @@ import threading
 from typing import Dict
 
 from nucleo import puente_cli
+from nucleo.avisos_salud import etiqueta
 
 PERIODO_S = 0.2
 
 
-def foto(sm, voice, serial) -> Dict[str, object]:
+def foto(sm, voice, serial, vigilante=None) -> Dict[str, object]:
     """El estado de Bob ahora. Lo que no se pueda leer queda afuera."""
     f: Dict[str, object] = {
         'fsm': sm.estado.name,
@@ -36,6 +37,10 @@ def foto(sm, voice, serial) -> Dict[str, object]:
     pos = getattr(serial, 'posicion', None)
     if pos:
         f['cabeza'] = {'pan': pos[0], 'tilt': pos[1]}
+    # Fase S: partes caídas según el vigilante. La red ya tiene su campo.
+    if vigilante is not None:
+        f['averias'] = sorted(etiqueta(n) for n, r in vigilante.estado().items()
+                              if not r.ok and n != 'red')
     return f
 
 
@@ -43,20 +48,20 @@ def cambios(previa: Dict[str, object], actual: Dict[str, object]) -> Dict[str, o
     return {k: v for k, v in actual.items() if previa.get(k) != v}
 
 
-def iniciar(sm, voice, serial, detener: threading.Event) -> bool:
+def iniciar(sm, voice, serial, detener: threading.Event, vigilante=None) -> bool:
     """Arranca el hilo (solo con el CLI activo). True si arrancó."""
     if not puente_cli.ACTIVO:
         return False
-    threading.Thread(target=_bucle, args=(sm, voice, serial, detener), daemon=True,
+    threading.Thread(target=_bucle, args=(sm, voice, serial, detener, vigilante), daemon=True,
                      name='cli-estado').start()
     return True
 
 
-def _bucle(sm, voice, serial, detener: threading.Event) -> None:
+def _bucle(sm, voice, serial, detener: threading.Event, vigilante=None) -> None:
     previa: Dict[str, object] = {}
     while not detener.is_set():
         try:
-            actual = foto(sm, voice, serial)
+            actual = foto(sm, voice, serial, vigilante)
         except Exception:
             actual = previa          # un dato que no se pudo leer no corta la barra
         nuevo = cambios(previa, actual)

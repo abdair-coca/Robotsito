@@ -16,6 +16,7 @@ export interface CambiosEstado {
   baile?: boolean;
   ingeniero?: boolean;
   red?: boolean;
+  averias?: string[];
 }
 
 export type Evento =
@@ -35,6 +36,9 @@ function estadoValido(e: Record<string, unknown>): CambiosEstado {
   }
   for (const k of ['mic', 'musica', 'baile', 'ingeniero', 'red'] as const) {
     if (typeof e[k] === 'boolean') c[k] = e[k] as boolean;
+  }
+  if (Array.isArray(e.averias) && e.averias.every((a) => typeof a === 'string')) {
+    c.averias = e.averias as string[];
   }
   return c;
 }

@@ -45,6 +45,7 @@ export function partesEstado(e: EstadoBob): Parte[] {
   if (e.emocion) partes.push({ texto: `cara ${e.emocion.toLowerCase()}` });
   if (e.cabeza) partes.push({ texto: `cabeza pan ${e.cabeza.pan}° tilt ${e.cabeza.tilt}°` });
   if (e.red === false) partes.push({ texto: 'sin internet: solo teclas', color: 'red' });
+  if (e.averias?.length) partes.push({ texto: `sin ${e.averias.join(', ')}`, color: 'red' });
   if (e.mic === false) partes.push({ texto: 'micrófono silenciado', color: 'red' });
   if (e.musica) partes.push({ texto: e.baile ? '♪ bailando' : '♪ música', color: 'magenta' });
   if (e.ingeniero) partes.push({ texto: 'modo ingeniero', color: 'yellow' });

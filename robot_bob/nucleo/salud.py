@@ -69,10 +69,15 @@ class Vigilante:
                  periodo_s: float = PERIODO_S,
                  al_rendirse: Optional[Callable[[str, Resultado], None]] = None,
                  reloj: Callable[[], float] = time.monotonic,
-                 lanzar: Callable[[str, Callable[[], None]], None] = _en_hilo) -> None:
+                 lanzar: Callable[[str, Callable[[], None]], None] = _en_hilo,
+                 al_intentar: Optional[Callable[[str, int, Optional[Exception]], None]] = None
+                 ) -> None:
+        """al_intentar(nombre, intento, error) tras cada arreglo; error es None si no lanzó
+        (eso no quiere decir que la parte volvió: lo dice la próxima pasada)."""
         self._chequeos = {c.nombre: c for c in chequeos}
         self._al_cambiar = al_cambiar
         self._al_rendirse = al_rendirse
+        self._al_intentar = al_intentar
         self._periodo_s = periodo_s
         self._reloj = reloj
         self._lanzar = lanzar
@@ -140,14 +145,23 @@ class Vigilante:
             self._avisar(self._al_rendirse, nombre, r, 'de que me rendí con')
             return
 
+        intento = rep['intentos']
+
         def tarea() -> None:
+            error = None
             try:
                 chequeo.reparar()
             except Exception as e:
+                error = e
                 errores.aviso('SALUD', f'Falló el intento de reparar {nombre}.', e)
             finally:
                 with self._lock:
                     rep['en_curso'] = False
+            if self._al_intentar is not None:
+                try:
+                    self._al_intentar(nombre, intento, error)
+                except Exception as e:
+                    errores.aviso('SALUD', f'Falló el aviso del arreglo de {nombre}.', e)
 
         self._lanzar(nombre, tarea)
 

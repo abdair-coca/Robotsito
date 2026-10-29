@@ -75,7 +75,7 @@ from vision.facial_tracker import FacialTracker, PAN_HOME, TILT_HOME, ZONA_MUERT
 from voz.pipeline import VoicePipeline
 from nucleo.behavior       import BehaviorEngine
 from nucleo.modos          import TECLAS as TECLAS_MODO
-from nucleo import salud
+from nucleo import avisos_salud, salud
 try:
     from config import MEMORIA_ENABLED
 except Exception:
@@ -105,9 +105,20 @@ def _enrolar_async(frame, face_id, memoria, nombre=None) -> None:
         print(f'[enrolar] nuevo id={pid} → {nombre}')
 
 
-def _armar_vigilante(tracker, serial_mgr, audio_io, voice, memoria) -> salud.Vigilante:
-    """Fase S: un chequeo por parte, con su receta cuando la hay (S2). Se arma después
-    de arrancar los hilos de voz: solo vigila los que de verdad arrancaron."""
+def _armar_avisador(voice, sm) -> avisos_salud.Avisador:
+    """Bob dice los avisos cuando está libre, como los recordatorios y soliloquios: sin
+    charla, sin música ni baile y sin estar hablando ya."""
+    return avisos_salud.Avisador(
+        decir=voice.decir_soliloquio,
+        libre=lambda: not (sm.en_conversacion or voice._muted.is_set()
+                           or sm.bailando.is_set() or sm.musica_sonando.is_set()))
+
+
+def _armar_vigilante(tracker, serial_mgr, audio_io, voice, memoria,
+                     avisador: avisos_salud.Avisador) -> salud.Vigilante:
+    """Fase S: un chequeo por parte, con su receta cuando la hay (S2), y los avisos por
+    consola, bitácora y voz (S3). Se arma después de arrancar los hilos de voz: solo
+    vigila los que de verdad arrancaron."""
     lector = tracker._stream
     chequeos = [
         salud.chequeo_camara(lambda: lector._frame,
@@ -126,11 +137,8 @@ def _armar_vigilante(tracker, serial_mgr, audio_io, voice, memoria) -> salud.Vig
     vivos = {t.name for t in threading.enumerate()}
     chequeos += [salud.chequeo_hilo(n, loop) for n, loop in loops.items() if n in vivos]
 
-    def al_cambiar(nombre, r):
-        if nombre != 'red':   # la red ya la anuncia el pipeline (O2)
-            salud.avisar_consola(nombre, r)
-
-    return salud.Vigilante(chequeos, al_cambiar=al_cambiar, al_rendirse=salud.avisar_rendido)
+    return salud.Vigilante(chequeos, al_cambiar=avisador.al_cambiar,
+                           al_rendirse=avisador.al_rendirse, al_intentar=avisador.al_intentar)
 
 
 def main() -> None:
@@ -224,10 +232,12 @@ def main() -> None:
     voice.iniciar_soliloquio_monitor()   # Bob habla solo cuando está libre
     voice.iniciar_recordatorio_monitor() # P9: anuncia recordatorios al vencer
     voice.iniciar_baile_monitor()        # apaga el baile cuando la música para
-    fin_estado_cli = threading.Event()
-    estado_cli.iniciar(sm, voice, serial_mgr, fin_estado_cli)   # barra del CLI (solo modo CLI)
-    vigilante = _armar_vigilante(tracker, serial_mgr, audio_io, voice, memoria)
+    avisador = _armar_avisador(voice, sm)
+    vigilante = _armar_vigilante(tracker, serial_mgr, audio_io, voice, memoria, avisador)
+    avisador.iniciar()
     vigilante.iniciar()
+    fin_estado_cli = threading.Event()
+    estado_cli.iniciar(sm, voice, serial_mgr, fin_estado_cli, vigilante)   # barra del CLI (solo modo CLI)
 
     # ── 5. BehaviorEngine ──────────────────────────────────────────────────────
     behavior = BehaviorEngine(sm, tracker)
@@ -392,6 +402,7 @@ def main() -> None:
     finally:
         print('\nCerrando...')
         vigilante.cerrar()   # antes que voice: no relanzar sus hilos mientras cierran
+        avisador.cerrar()
         fin_estado_cli.set()
         behavior.cerrar()
         voice.cerrar()
