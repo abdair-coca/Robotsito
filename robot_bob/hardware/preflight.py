@@ -133,14 +133,19 @@ def check_piper() -> None:
         registrar("voz", False, f"error: {e}")
 
 
-def check_ollama() -> None:
+def estado_ollama() -> tuple[bool, str]:
+    """(ok, detalle) de Ollama local. También lo usa el vigilante (nucleo/salud.py)."""
     try:
         with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=TIMEOUT) as r:
             modelos = [m["name"] for m in json.load(r)["models"]]
         ok = config.OLLAMA_MODEL in modelos
-        registrar("ollama", ok, f"{config.OLLAMA_MODEL} {'instalado' if ok else 'NO instalado'}")
+        return ok, f"{config.OLLAMA_MODEL} {'instalado' if ok else 'NO instalado'}"
     except Exception as e:
-        registrar("ollama", False, f"no responde en localhost:11434 ({e.__class__.__name__})")
+        return False, f"no responde en localhost:11434 ({e.__class__.__name__})"
+
+
+def check_ollama() -> None:
+    registrar("ollama", *estado_ollama())
 
 
 def check_groq() -> None:
