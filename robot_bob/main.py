@@ -75,6 +75,7 @@ from vision.facial_tracker import FacialTracker, PAN_HOME, TILT_HOME, ZONA_MUERT
 from voz.pipeline import VoicePipeline
 from nucleo.behavior       import BehaviorEngine
 from nucleo.modos          import TECLAS as TECLAS_MODO
+from nucleo import salud
 try:
     from config import MEMORIA_ENABLED
 except Exception:
@@ -102,6 +103,34 @@ def _enrolar_async(frame, face_id, memoria, nombre=None) -> None:
     else:
         pid = memoria.registrar(nombre, emb, edad)
         print(f'[enrolar] nuevo id={pid} → {nombre}')
+
+
+def _armar_vigilante(tracker, serial_mgr, audio_io, voice, memoria) -> salud.Vigilante:
+    """Fase S: un chequeo por parte, con su receta cuando la hay (S2). Se arma después
+    de arrancar los hilos de voz: solo vigila los que de verdad arrancaron."""
+    lector = tracker._stream
+    chequeos = [
+        salud.chequeo_camara(lambda: lector._frame,
+                             reparar=None if ALONE else salud.reparar_camara(lector)),
+        salud.chequeo_serial(serial_mgr),
+        salud.chequeo_red(voice._red),
+        salud.chequeo_ollama(),
+    ]
+    if audio_io is not None:
+        chequeos.append(salud.chequeo_audio(audio_io, reparar=salud.reparar_audio(audio_io)))
+    if memoria is not None:
+        chequeos.append(salud.chequeo_memoria())
+    loops = {'voice-pipeline': voice._loop, 'wake-monitor': voice._wake_monitor_loop,
+             'soliloquio': voice._soliloquio_loop, 'recordatorios': voice._recordatorio_loop,
+             'baile-monitor': voice._baile_monitor_loop}
+    vivos = {t.name for t in threading.enumerate()}
+    chequeos += [salud.chequeo_hilo(n, loop) for n, loop in loops.items() if n in vivos]
+
+    def al_cambiar(nombre, r):
+        if nombre != 'red':   # la red ya la anuncia el pipeline (O2)
+            salud.avisar_consola(nombre, r)
+
+    return salud.Vigilante(chequeos, al_cambiar=al_cambiar, al_rendirse=salud.avisar_rendido)
 
 
 def main() -> None:
@@ -197,6 +226,8 @@ def main() -> None:
     voice.iniciar_baile_monitor()        # apaga el baile cuando la música para
     fin_estado_cli = threading.Event()
     estado_cli.iniciar(sm, voice, serial_mgr, fin_estado_cli)   # barra del CLI (solo modo CLI)
+    vigilante = _armar_vigilante(tracker, serial_mgr, audio_io, voice, memoria)
+    vigilante.iniciar()
 
     # ── 5. BehaviorEngine ──────────────────────────────────────────────────────
     behavior = BehaviorEngine(sm, tracker)
@@ -360,6 +391,7 @@ def main() -> None:
 
     finally:
         print('\nCerrando...')
+        vigilante.cerrar()   # antes que voice: no relanzar sus hilos mientras cierran
         fin_estado_cli.set()
         behavior.cerrar()
         voice.cerrar()

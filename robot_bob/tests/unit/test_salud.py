@@ -155,6 +155,104 @@ with tempfile.TemporaryDirectory() as tmp:
     check('base que no existe: caída', not r.ok, r.detalle)
     check('y no la crea', not os.path.exists(falta))
 
+# ── 9. Reparar: espera creciente, tope y rendirse (S2) ──────────────────────────
+t = [0.0]
+parte = {'ok': False}
+intentos, rendidos, cola = [], [], []
+
+
+def _arreglo_que_falla():
+    intentos.append(t[0])
+    raise OSError('sigue caída')
+
+
+v4 = Vigilante([Chequeo('cam', lambda: Resultado(parte['ok'], 'muda'), _arreglo_que_falla)],
+               al_rendirse=lambda n, r: rendidos.append(n), reloj=lambda: t[0],
+               lanzar=lambda n, tarea: cola.append(tarea))
+v4.revisar_todo()
+check('caída con receta: lanza un arreglo', len(cola) == 1 and intentos == [])
+v4.revisar_todo()
+check('mientras corre: no lanza otro', len(cola) == 1)
+cola.pop()()
+check('el arreglo que lanza no rompe nada', intentos == [0.0])
+v4.revisar_todo()
+check('antes de la espera: no reintenta', cola == [])
+for _ in range(salud.REPARAR_INTENTOS + 3):
+    t[0] += salud.REPARAR_ESPERA_MAX_S
+    v4.revisar_todo()
+    while cola:
+        cola.pop()()
+check(f'tope: {salud.REPARAR_INTENTOS} intentos', len(intentos) == salud.REPARAR_INTENTOS,
+      f'({len(intentos)})')
+check('se rinde una vez y queda rota', rendidos == ['cam'] and v4.rotas() == {'cam'})
+parte['ok'] = True
+v4.revisar_todo()
+check('vuelve sola: deja de estar rota', v4.rotas() == set())
+
+t[0], intentos[:] = 0.0, []
+parte['ok'] = False
+v5 = Vigilante([Chequeo('cam', lambda: Resultado(parte['ok']), _arreglo_que_falla)],
+               reloj=lambda: t[0], lanzar=lambda n, tarea: tarea())
+for _ in range(4):
+    v5.revisar_todo()
+    t[0] += 1.0
+espera1 = salud.REPARAR_ESPERA_S
+t[0] = espera1
+v5.revisar_todo()
+t[0] = espera1 + 2 * espera1 - 0.5
+v5.revisar_todo()
+check('la espera se duplica', intentos == [0.0, espera1], f'{intentos}')
+t[0] = espera1 + 2 * espera1
+v5.revisar_todo()
+check('pasada la espera doble: reintenta', len(intentos) == 3)
+parte['ok'] = True
+v5.revisar_todo()
+parte['ok'] = False
+n = len(intentos)
+v5.revisar_todo()
+check('caída nueva tras volver: cuenta desde cero', len(intentos) == n + 1)
+v6 = Vigilante([Chequeo('x', lambda: Resultado(False))], lanzar=lambda n, tarea: tarea())
+v6.revisar_todo()
+check('caída sin receta: nunca se rinde', v6.rotas() == set())
+
+# ── 10. Recetas ─────────────────────────────────────────────────────────────────
+class _Lector:
+    host = '192.168.0.10'
+
+
+lec = _Lector()
+salud.reparar_camara(lec, resolver=lambda: {'IP_ESPCAM': '192.168.0.10'})()
+check('cámara con la misma IP: no la toca', lec.host == '192.168.0.10')
+salud.reparar_camara(lec, resolver=lambda: {'IP_ESPCAM': '192.168.0.44'})()
+check('cámara con IP nueva: el lector apunta a la nueva', lec.host == '192.168.0.44')
+salud.reparar_camara(lec, resolver=lambda: {})()
+check('discovery sin cámara: no la toca', lec.host == '192.168.0.44')
+
+
+class _AudioIO:
+    def __init__(self):
+        self.ip, self.connected, self.pasos = '192.168.0.23', False, []
+
+    def close(self):
+        self.pasos.append('close')
+
+    def connect(self, timeout_s):
+        self.pasos.append(('connect', self.ip))
+        self.connected = True
+
+
+aud = _AudioIO()
+salud.reparar_audio(aud, resolver=lambda: {'ESP32_IP': '192.168.0.30'})()
+check('audio: cierra y reconecta a la IP nueva',
+      aud.pasos == ['close', ('connect', '192.168.0.30')] and aud.connected, f'{aud.pasos}')
+
+vueltas = []
+hilo = salud.chequeo_hilo('prueba-salud', lambda: vueltas.append(1))
+check('hilo que no corre: caído', not hilo.revisar().ok)
+hilo.reparar()
+time.sleep(0.1)
+check('reparar relanza su loop con el nombre', vueltas == [1])
+
 # ── 8. Hilo del vigilante ───────────────────────────────────────────────────────
 pasadas = []
 v3 = Vigilante([Chequeo('x', lambda: pasadas.append(1) or Resultado(True))], periodo_s=0.05)
