@@ -267,6 +267,7 @@ from nucleo.show import es_comando_show, run_baile, run_show     # presentación
 # Tecla P: el pedido vale este rato; si no arrancó (Bob ocupado), no salta después.
 SHOW_MANUAL_VIGENCIA_S = 30.0
 from nucleo.foto import CARA_POR_DEFECTO, cara_foto, es_comando_foto, run_foto   # "ponte para la foto"
+from nucleo.avisos_salud import es_comando_diagnostico, resumen as resumen_salud   # S4
 from nucleo.modos import ESCENAS, TECLAS as TECLAS_MODO, run_modo   # teclas 1 a 9
 from agente import modo_dueno                               # V5: comandos solo para la voz del dueño
 from voz import stt                                      # R1: filtros de alucinación de Whisper
@@ -331,6 +332,7 @@ def _hay_comando(texto: str) -> bool:
                     or (RECORDATORIOS_ENABLED and parse_recordatorio(texto))
                     or es_comando_show(texto)
                     or es_comando_foto(texto)
+                    or es_comando_diagnostico(texto)
                     or (MUSICA_ENABLED and parse_music_command(texto))
                     or _is_exit(texto) or _is_goodbye(texto))
     except Exception:
@@ -369,6 +371,7 @@ class VoicePipeline:
         self._get_frame = get_frame
         self._voice_id  = voice_id
         self._modo_ingeniero = False         # V5c: lo prende el dueño, dura la charla
+        self._vigilante = None               # S4: lo pone main.py (usar_vigilante)
         self._sesion_ing = None              # V5c: Claude Code del modo ingeniero
         self._sesion_web = None              # V5d: Claude Code + Playwright MCP
         self._sesion_esc = None              # B3: Claude Code con Edit y Write (solo turnos del dueño)
@@ -602,6 +605,26 @@ class VoicePipeline:
         Igual que P: en reposo arranca ya, en una charla va en el próximo turno y
         durante una pose (o el show), T la corta. True si quedó pedida."""
         return self._pedir_manual('foto', 'T', 'pose para la foto')
+
+    def diagnostico_manual(self) -> bool:
+        """Tecla V: Bob se revisa entero y dice qué parte no funciona (S4), como si le
+        dijeran "Bob, diagnostícate". Igual que P y T. True si quedó pedido."""
+        return self._pedir_manual('diagnostico', 'V', 'diagnóstico')
+
+    def usar_vigilante(self, vigilante) -> None:
+        """El Vigilante de salud (nucleo/salud.py) que usa el diagnóstico (S4)."""
+        self._vigilante = vigilante
+
+    def _diagnosticar(self) -> None:
+        """S4: corre todos los chequeos ahora y dice el resultado con su cara."""
+        if self._vigilante is None:
+            return
+        emo, texto = _extract_emo_tag(resumen_salud(self._vigilante.revisar_todo()))
+        with puente_cli.turno('bob'):
+            console.print(f'[bold green]Bob[/] [dim](diagnóstico)[/]: {texto}')
+        if emo:
+            self._serial.cmd_estado(emo)
+        self._hablar(texto, emo)
 
     def modo_manual(self, tecla: str) -> bool:
         """Teclas 1 a 4: modo expresivo; 5 a 9: frase suelta (modos.py); M, baila. Igual que P y T: en
@@ -1103,6 +1126,13 @@ class VoicePipeline:
                 run_foto(self, CARA_POR_DEFECTO)
                 es_primer_turno = False
                 continue
+            if manual == 'diagnostico':
+                console.print('[bold magenta][diagnóstico][/] Me reviso (tecla V)')
+                pending_text = pending_audio = None
+                self._sm.iniciar_hablando()
+                self._diagnosticar()
+                es_primer_turno = False
+                continue
             if manual in ESCENAS:
                 console.print(f'[bold magenta][modo][/] ¡Modo {manual}!')
                 pending_text = pending_audio = None
@@ -1384,6 +1414,15 @@ class VoicePipeline:
                 console.print(f'[bold magenta][foto][/] pose {cara}')
                 self._sm.iniciar_hablando()
                 run_foto(self, cara)
+                es_primer_turno = False
+                continue
+
+            # ── DIAGNÓSTICO: "Bob, diagnostícate" → se revisa y lo dice (S4) ───────
+            if (ruta in (None, 'charla') and self._vigilante is not None
+                    and es_comando_diagnostico(texto)):
+                console.print('[bold magenta][diagnóstico][/] me reviso')
+                self._sm.iniciar_hablando()
+                self._diagnosticar()
                 es_primer_turno = False
                 continue
 

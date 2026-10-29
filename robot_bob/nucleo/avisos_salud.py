@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 from typing import Callable, Optional
@@ -63,12 +64,33 @@ ETIQUETAS = {
     'hilo-baile-monitor': 'baile',
 }
 SIN_CONSOLA = {'red'}
+
+# S4: "Bob, diagnostícate" (o la tecla V). Borrador: los textos los corrige Abdair.
+DIAGNOSTICO_BIEN = '[EMO:ORGULLOSO] Me revisé entero: todo está funcionando.'
+DIAGNOSTICO_MAL = '[EMO:PENSANDO] Me revisé: no {verbo} {partes}. Lo demás está bien.'
+_RE_DIAGNOSTICO = re.compile(
+    r'\b(diagn[oó]st[ií]ca(?:te|rte)|aut[oó]diagn[oó]stic[oa]|(?:haz|hazte|hacete|hac[eé]) un '
+    r'diagn[oó]stico|rev[ií]sate|revisarte|chequ[eé]ate|chequearte)\b', re.I)
 RUTA_LOG = os.path.join(rutas.LOGS_DIR, 'salud.jsonl')
 ESPERA_S = 1.0   # cada cuánto mira si Bob está libre para decir una frase pendiente
 
 
 def etiqueta(nombre: str) -> str:
     return ETIQUETAS.get(nombre, nombre)
+
+
+def es_comando_diagnostico(texto: str) -> bool:
+    return bool(_RE_DIAGNOSTICO.search(texto or ''))
+
+
+def resumen(estado: dict) -> str:
+    """Lo que dice Bob tras revisarse: estado es Vigilante.estado() (nombre → Resultado)."""
+    caidas = [re.sub(r'\s*\(.*?\)', '', etiqueta(n)) for n, r in sorted(estado.items()) if not r.ok]
+    if not caidas:
+        return DIAGNOSTICO_BIEN
+    partes = caidas[0] if len(caidas) == 1 else ', '.join(caidas[:-1]) + ' y ' + caidas[-1]
+    return DIAGNOSTICO_MAL.format(verbo='funciona' if len(caidas) == 1 else 'funcionan',
+                                  partes=partes)
 
 
 def _frases(nombre: str) -> dict:

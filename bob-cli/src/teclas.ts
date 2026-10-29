@@ -1,6 +1,6 @@
 // Atajos del CLI → qué hacer. Función pura (sin Ink) para poder probarla.
 // Las mismas letras que en la ventana de video (robot_bob/main.py):
-//   Q salir · S micrófono · D cortar y escuchar · J cortar · P presentación · T foto · E enrolar · ENTER turno
+//   Q salir · S micrófono · D cortar y escuchar · J cortar · P presentación · T foto · V diagnóstico · E enrolar · ENTER turno
 //   1 coqueto · 2 miedoso · 3 gruñón · 4 dramático · M bailar (robot_bob/nucleo/modos.py)
 //   5 saludo · 6 gracias · 7 despedida · 8 sí · 9 no (frases sueltas, también sin internet)
 
@@ -20,7 +20,7 @@ export type Accion =
   | { tipo: 'enviar'; tecla: string; nombre?: string }  // → {"cmd":"tecla",...}
   | { tipo: 'nombre'; texto: string | null };           // línea del nombre (null = cerrada)
 
-const LETRAS = ['s', 'd', 'j', 'p', 't', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'm'];
+const LETRAS = ['s', 'd', 'j', 'p', 't', 'v', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'm'];
 
 /** nombre: lo escrito en la línea del nombre, o null si no está abierta. */
 export function interpretar(t: Tecla, nombre: string | null): Accion {

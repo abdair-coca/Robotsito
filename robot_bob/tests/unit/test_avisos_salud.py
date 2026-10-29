@@ -1,5 +1,5 @@
 """
-test_avisos_salud.py — Avisos del vigilante (nucleo/avisos_salud.py), S3 de la Fase S.
+test_avisos_salud.py — Avisos del vigilante (nucleo/avisos_salud.py), S3 y S4 de la Fase S.
 
 Sin hardware ni voz (decir y libre son de prueba; la bitácora va a una carpeta temporal):
   1. Cada caída, vuelta, rendición y arreglo deja su línea en la bitácora.
@@ -8,6 +8,8 @@ Sin hardware ni voz (decir y libre son de prueba; la bitácora va a una carpeta 
   4. La última noticia de una parte reemplaza a la vieja.
   5. Con el Vigilante: un arreglo que lanza queda en la bitácora.
   6. La barra del CLI recibe las partes caídas (sin la red).
+  7. "Bob, diagnostícate": el comando se reconoce, el resumen nombra lo caído y el
+     pipeline revisa todo, pone la cara y lo dice (S4).
 
   python tests/unit/test_avisos_salud.py
 """
@@ -122,6 +124,49 @@ v3.revisar_todo()
 f = estado_cli.foto(_SM(), _Voz(), object(), v3)
 check('barra: partes caídas sin la red', f.get('averias') == ['audio del DevKit'], f'{f.get("averias")}')
 check('barra sin vigilante: sin el campo', 'averias' not in estado_cli.foto(_SM(), _Voz(), object()))
+
+# ── 7. Diagnóstico (S4) ─────────────────────────────────────────────────────────
+for frase in ('Bob, diagnostícate', 'bob diagnosticate', 'hazte un diagnóstico', 'revísate',
+              'Bob, chequéate', 'haz un autodiagnóstico'):
+    check(f'comando: "{frase}"', avisos_salud.es_comando_diagnostico(frase))
+for frase in ('el diagnóstico del médico fue bueno', 'revisa la tarea', ''):
+    check(f'no es comando: "{frase}"', not avisos_salud.es_comando_diagnostico(frase))
+check('resumen: todo bien', avisos_salud.resumen({'serial': Resultado(True)})
+      == avisos_salud.DIAGNOSTICO_BIEN)
+r1 = avisos_salud.resumen({'serial': Resultado(False), 'red': Resultado(True)})
+check('resumen: una parte, en singular y sin paréntesis',
+      'no funciona cuerpo.' in r1 and '(' not in r1, r1)
+r2 = avisos_salud.resumen({'audio': Resultado(False), 'red': Resultado(False),
+                           'memoria': Resultado(True)})
+check('resumen: varias, en plural y con "y"',
+      'no funcionan audio del DevKit y internet.' in r2, r2)
+
+from voz.pipeline import VoicePipeline   # noqa: E402
+
+
+class _VozFalsa:
+    def __init__(self, vigilante):
+        self._vigilante, self.caras, self.dicho = vigilante, [], []
+        self._serial = self
+
+    def cmd_estado(self, emo):
+        self.caras.append(emo)
+
+    def _hablar(self, texto, emo=None):
+        self.dicho.append((texto, emo))
+
+
+pasadas = []
+v4 = Vigilante([Chequeo('audio', lambda: pasadas.append(1) or Resultado(False))])
+vf = _VozFalsa(v4)
+VoicePipeline._diagnosticar(vf)
+check('diagnosticar: revisa ahora', pasadas == [1])
+check('diagnosticar: pone la cara y lo dice sin el tag',
+      vf.caras == ['PENSANDO'] and vf.dicho and vf.dicho[0][1] == 'PENSANDO'
+      and vf.dicho[0][0].startswith('Me revisé: no funciona audio del DevKit'), f'{vf.dicho}')
+vf2 = _VozFalsa(None)
+VoicePipeline._diagnosticar(vf2)
+check('diagnosticar sin vigilante: no dice nada', vf2.dicho == [])
 
 print(f"\n{'TODO OK' if fallos == 0 else f'{fallos} FALLA(S)'}")
 sys.exit(1 if fallos else 0)

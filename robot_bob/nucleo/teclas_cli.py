@@ -21,7 +21,7 @@ from nucleo import puente_cli
 
 TURNO = -1               # código de "turno" (ENTER del CLI); no choca con ninguna tecla
 SIN_TECLA = 255          # lo que da cv2.waitKey(1) & 0xFF cuando no hay tecla
-_LETRAS = ('s', 'd', 'j', 'p', 't', 'e', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'm')   # 1 a 9 y M: modos.TECLAS
+_LETRAS = ('s', 'd', 'j', 'p', 't', 'v', 'e', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'm')   # 1 a 9 y M: modos.TECLAS
 
 en_loop = threading.Event()  # main lo marca al entrar al loop principal
 salida = threading.Event()   # Q del CLI: el loop termina en su próxima vuelta

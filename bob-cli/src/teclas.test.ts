@@ -12,7 +12,7 @@ test('Q y Ctrl+C salen (mayúscula también)', () => {
 });
 
 test('S, D, J, P, T, 1 a 9 y M se mandan a Bob', () => {
-  for (const l of ['s', 'd', 'j', 'p', 't', '1', '2', '3', '4', '5', '9', 'm', 'S', 'D', 'J', 'P', 'T', 'M']) {
+  for (const l of ['s', 'd', 'j', 'p', 't', 'v', '1', '2', '3', '4', '5', '9', 'm', 'S', 'D', 'J', 'P', 'T', 'V', 'M']) {
     assert.deepEqual(interpretar(t(l), null), { tipo: 'enviar', tecla: l.toLowerCase() });
   }
 });

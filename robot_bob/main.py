@@ -237,6 +237,7 @@ def main() -> None:
     vigilante = _armar_vigilante(serial_mgr, audio_io, voice, memoria, avisador)
     avisador.iniciar()
     vigilante.iniciar()
+    voice.usar_vigilante(vigilante)      # S4: "Bob, diagnostícate" y la tecla V
     # S6: un error de código en un hilo → Claude lo arregla (con el modo ingeniero) o
     # propone el arreglo; si lo aplica, Bob sale con REINICIAR y el supervisor lo relanza.
     autoarreglo = Autoarreglo(
@@ -382,6 +383,8 @@ def main() -> None:
                 voice.presentar_manual()         # el show de "preséntate", sin pedirlo
             elif tecla in (ord('t'), ord('T')):
                 voice.foto_manual()              # pose de foto, sin pedirla
+            elif tecla in (ord('v'), ord('V')):
+                voice.diagnostico_manual()       # S4: se revisa y dice qué no funciona
             elif 0 <= tecla < 256 and chr(tecla) in TECLAS_MODO:
                 voice.modo_manual(chr(tecla))    # modo expresivo (coqueto, miedoso…) o M baila
             elif tecla == ord('e') and memoria is not None and face_id is not None:
