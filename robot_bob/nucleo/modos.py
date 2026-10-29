@@ -1,5 +1,5 @@
 """
-modos.py — Modos expresivos de Bob para la feria (teclas 1 a 4).
+modos.py — Modos expresivos de Bob para la feria (teclas 1 a 4) y frases sueltas (5 a 9).
 
 Escenas FIJAS de 10–20 s, sin LLM ni STT: cada paso es cara OLED + frase + gesto de
 cabeza. En la feria el ruido no deja charlar con Bob, así que el dueño las dispara con
@@ -47,14 +47,25 @@ MODOS = {
     ),
 }
 
-TECLAS = {str(i): nombre for i, nombre in enumerate(MODOS, 1)}    # '1' → 'coqueto'…
+# O3: frases sueltas (teclas 5 a 9): un solo paso, corto. Sirven también sin internet,
+# cuando Bob no escucha y el dueño responde por él.
+FRASES = {
+    'saludo': (('¡Hola, hola! Soy Bob. ¡Qué bueno que viniste a verme!', 'FELIZ', 'asentir'),),
+    'gracias': (('¡Muchas gracias! Me alegraste los circuitos.', 'MUY_FELIZ', 'asentir'),),
+    'despedida': (('¡Chau, chau! Vuelve pronto, ¿sí?', 'FELIZ', 'ladito'),),
+    'si': (('¡Sí, claro que sí!', 'FELIZ', 'asentir'),),
+    'no': (('Mmm... no, eso no.', 'SOSPECHANDO', 'negar'),),
+}
+ESCENAS = {**MODOS, **FRASES}
+
+TECLAS = {str(i): nombre for i, nombre in enumerate(ESCENAS, 1)}  # '1' → 'coqueto'… '9' → 'no'
 TECLAS['m'] = TECLAS['M'] = 'bailar'    # con música: show.run_baile, no es una escena
 
 
 def run_modo(vp, nombre: str) -> bool:
     """Actúa el modo `nombre` y deja la cabeza donde mira a las caras.
     False si el modo no existe."""
-    pasos = MODOS.get(nombre)
+    pasos = ESCENAS.get(nombre)
     if pasos is None:
         return False
     sm, serial, hablar = vp._sm, vp._serial, voz_visible(vp)

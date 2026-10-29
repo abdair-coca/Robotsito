@@ -97,6 +97,26 @@ def main() -> None:
             check(f'{nombre}: libera OLED y BehaviorEngine',
                   vp._sm.oled == 0 and not vp._sm.show_activo.is_set())
 
+        # O3: frases sueltas, teclas 5 a 9
+        check('frases: teclas 5 a 9 en orden',
+              [modos.TECLAS[str(i)] for i in range(5, 10)] == list(modos.FRASES),
+              f'-> {[modos.TECLAS.get(str(i)) for i in range(5, 10)]}')
+        for nombre, pasos in modos.FRASES.items():
+            gestos = [g for _, _, g in pasos if g]
+            check(f'{nombre}: un solo paso y gesto existente',
+                  len(pasos) == 1 and all(hasattr(show._Cabeza, g) for g in gestos))
+            vp = VP()
+            check(f'{nombre}: corre y dice su frase',
+                  modos.run_modo(vp, nombre) is True and len(vp.dichas) == 1)
+            s = vp._serial
+            check(f'{nombre}: cara válida', set(s.estados) <= _VALID_EMOS,
+                  f'-> {set(s.estados) - _VALID_EMOS}')
+            check(f'{nombre}: servos en límites y vuelve a casa',
+                  all(20 <= p <= 160 and 40 <= t <= 130 for p, t in s.servos)
+                  and s.servos[-1] == CASA)
+            check(f'{nombre}: libera OLED y BehaviorEngine',
+                  vp._sm.oled == 0 and not vp._sm.show_activo.is_set())
+
         # Teclas D/J: se corta en el próximo paso y suelta todo
         vp = VP()
         vp._cortado = lambda: len(vp.dichas) >= 1

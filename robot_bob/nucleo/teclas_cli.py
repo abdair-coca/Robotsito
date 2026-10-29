@@ -2,7 +2,7 @@
 teclas_cli.py — Atajos del CLI (bob-cli) hacia el loop principal de main.py.
 
 El CLI manda {"cmd": "tecla", "tecla": "s"} (y "nombre" con la E). La tecla entra a una
-cola que el loop lee cuando cv2.waitKey no trae ninguna, así que S, D, J, P, T, 1 a 4 y E
+cola que el loop lee cuando cv2.waitKey no trae ninguna, así que S, D, J, P, T, 1 a 9, M y E
 hacen lo mismo en la ventana de video y en el CLI. ENTER llega como "turno" (modo tecla).
 Q (o "salir") no va por la cola: marca `salida`, que el loop mira al empezar cada
 vuelta, también cuando no llega video (ahí no se leen teclas).
@@ -21,7 +21,7 @@ from nucleo import puente_cli
 
 TURNO = -1               # código de "turno" (ENTER del CLI); no choca con ninguna tecla
 SIN_TECLA = 255          # lo que da cv2.waitKey(1) & 0xFF cuando no hay tecla
-_LETRAS = ('s', 'd', 'j', 'p', 't', 'e', '1', '2', '3', '4', 'm')   # 1 a 4 y M: modos.TECLAS
+_LETRAS = ('s', 'd', 'j', 'p', 't', 'e', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'm')   # 1 a 9 y M: modos.TECLAS
 
 en_loop = threading.Event()  # main lo marca al entrar al loop principal
 salida = threading.Event()   # Q del CLI: el loop termina en su próxima vuelta

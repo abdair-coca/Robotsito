@@ -267,7 +267,7 @@ from nucleo.show import es_comando_show, run_baile, run_show     # presentación
 # Tecla P: el pedido vale este rato; si no arrancó (Bob ocupado), no salta después.
 SHOW_MANUAL_VIGENCIA_S = 30.0
 from nucleo.foto import CARA_POR_DEFECTO, cara_foto, es_comando_foto, run_foto   # "ponte para la foto"
-from nucleo.modos import MODOS, TECLAS as TECLAS_MODO, run_modo     # teclas 1 a 4
+from nucleo.modos import ESCENAS, TECLAS as TECLAS_MODO, run_modo   # teclas 1 a 9
 from agente import modo_dueno                               # V5: comandos solo para la voz del dueño
 from voz import stt                                      # R1: filtros de alucinación de Whisper
 from hardware.red import MonitorRed                      # O2: sin internet, Bob no escucha
@@ -603,7 +603,7 @@ class VoicePipeline:
         return self._pedir_manual('foto', 'T', 'pose para la foto')
 
     def modo_manual(self, tecla: str) -> bool:
-        """Teclas 1 a 4: Bob actúa un modo expresivo (modos.py); M, baila. Igual que P y T: en
+        """Teclas 1 a 4: modo expresivo; 5 a 9: frase suelta (modos.py); M, baila. Igual que P y T: en
         reposo arranca ya, en una charla va en el próximo turno y durante un modo (o
         el show, o una pose) lo corta. True si quedó pedido."""
         nombre = TECLAS_MODO.get(tecla)
@@ -632,7 +632,7 @@ class VoicePipeline:
         return True
 
     def _tomar_manual(self) -> Optional[str]:
-        """¿Apretaron P, T o 1 a 4 hace poco? 'show', 'foto', el modo o None. Lo
+        """¿Apretaron P, T, 1 a 9 o M hace poco? 'show', 'foto', el modo o None. Lo
         consume: una tecla, una vez. Va al inicio de cada turno, antes de escuchar:
         así la escucha siguiente no sale cancelada."""
         if not self._detener.is_set():
@@ -1092,7 +1092,7 @@ class VoicePipeline:
                 if not self._corte_escuchar:
                     console.print('[dim][corte] fin de conversación[/]')
                     break
-            # Tecla P/T/1-4/M: el show, la pose, el modo o el baile va en lugar de este turno,
+            # Tecla P/T/1-9/M: el show, la pose, el modo o el baile va en lugar de este turno,
             # sin escuchar ni JEV.
             manual = self._tomar_manual()
             if manual == 'foto':
@@ -1102,7 +1102,7 @@ class VoicePipeline:
                 run_foto(self, CARA_POR_DEFECTO)
                 es_primer_turno = False
                 continue
-            if manual in MODOS:
+            if manual in ESCENAS:
                 console.print(f'[bold magenta][modo][/] ¡Modo {manual}!')
                 pending_text = pending_audio = None
                 self._sm.iniciar_hablando()

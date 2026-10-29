@@ -49,7 +49,7 @@ class FakeSM:
         self.show_activo = threading.Event()
         self.notificados = []
 
-    def notificar_wake_word(self, payload=None, saludar=True):
+    def notificar_wake_word(self, payload=None, saludar=True, buscar=True):
         self.notificados.append(payload)
 
     def __getattr__(self, n):
@@ -136,6 +136,22 @@ grabadas = contar_escucha(v, ['hola'])
 v._identificar = v._reset_identidad = lambda *a, **k: None
 v._run_conversation()
 check('sin red: la charla termina sin grabar', grabadas == [], f'-> {grabadas}')
+
+# O3: tecla 5 sin red → Bob dice la frase y no se queda escuchando
+v = construir()
+v._red.marcar_caida()
+grabadas = contar_escucha(v, ['hola'])
+v._identificar = v._reset_identidad = lambda *a, **k: None
+actuadas = []
+run_modo_original = vp.run_modo
+vp.run_modo = lambda vpl, nombre: actuadas.append(nombre) or True
+try:
+    v.modo_manual('5')
+    v._run_conversation()
+finally:
+    vp.run_modo = run_modo_original
+check('sin red: tecla 5 dice el saludo y no escucha', actuadas == ['saludo'] and grabadas == [],
+      f'-> {actuadas} {grabadas}')
 
 # ── 5. Barra del CLI ────────────────────────────────────────────────────────────
 class SMBarra:

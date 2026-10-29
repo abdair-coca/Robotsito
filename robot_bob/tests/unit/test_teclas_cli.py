@@ -35,7 +35,7 @@ teclas_cli.registrar()
 check('registra tecla y salir', puente_cli._comandos.get('tecla') is teclas_cli._tecla
       and puente_cli._comandos.get('salir') is teclas_cli._salir)
 check('sin teclas: SIN_TECLA', teclas_cli.siguiente() == (teclas_cli.SIN_TECLA, None))
-for letra in ('s', 'd', 'j', 'p', 't', '1', '4', 'm', 'S', 'P', 'T', 'M'):
+for letra in ('s', 'd', 'j', 'p', 't', '1', '4', '5', '9', 'm', 'S', 'P', 'T', 'M'):
     teclas_cli._tecla({'cmd': 'tecla', 'tecla': letra})
     check(f'tecla {letra}: código de la minúscula', teclas_cli.siguiente() == (ord(letra.lower()), None))
 teclas_cli._tecla({'cmd': 'tecla', 'tecla': 'e', 'nombre': '  Abdair '})
@@ -199,7 +199,8 @@ v._sm.en_conversacion = False
 check('M: pide el baile (mayúscula o minúscula)',
       v.modo_manual('M') is True and v._tomar_manual() == 'bailar'
       and v.modo_manual('m') is True and v._tomar_manual() == 'bailar')
-check('tecla sin modo: nada', v.modo_manual('9') is False and v._tomar_manual() is None)
+check('9: pide la frase "no"', v.modo_manual('9') is True and v._tomar_manual() == 'no')
+check('tecla sin modo: nada', v.modo_manual('0') is False and v._tomar_manual() is None)
 cortes = []
 v.cortar_respuesta = lambda escuchar: cortes.append(escuchar)
 v._sm.show_activo.set()
