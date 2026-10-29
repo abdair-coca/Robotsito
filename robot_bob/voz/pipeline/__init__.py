@@ -460,6 +460,7 @@ class VoicePipeline:
         self._mic_lock = threading.Lock()
         self._cupo_stt = stt.CupoSTT()         # R2: transcripciones del último minuto
         self._red = MonitorRed(al_cambiar=self._al_cambiar_red)   # O2: arranca con el wake monitor
+        self._escenas_audio: Dict[str, bytes] = {}   # frase de las teclas 1 a 9 → audio listo
         self._stt_listo = None                # R2: (wav, Future) de la transcripción adelantada
         self._convo: List[Dict[str, str]] = []
         self._detener = threading.Event()
@@ -2032,7 +2033,7 @@ class VoicePipeline:
     # ── TTS + Reproducción ────────────────────────────────────────────────────
 
     def _hablar(self, texto: str, emo: Optional[str] = None) -> None:
-        mp3 = _sintetizar(texto, emo)
+        mp3 = self._escenas_audio.get(texto) or _sintetizar(texto, emo)
         if not mp3:
             return
         self._reproducir(mp3)
@@ -2345,6 +2346,25 @@ class VoicePipeline:
             daemon=True,
         ).start()
 
+    def _precargar_escenas(self) -> None:
+        """Las frases de las teclas 1 a 9 son fijas: se sintetizan al arrancar para que
+        la tecla suene al instante (Piper tarda ~1–2 s por frase y ~7 s la primera,
+        medido). Primero las frases sueltas (un paso): son respuestas, van primero."""
+        for pasos in sorted(ESCENAS.values(), key=len):
+            for frase, cara, _ in pasos:
+                if self._detener.is_set():
+                    return
+                if frase in self._escenas_audio:
+                    continue
+                try:
+                    audio = _sintetizar(frase, cara)
+                except Exception as e:
+                    errores.aviso('VOZ', 'No pude preparar las frases de las teclas: se '
+                                  'sintetizan al decirlas (tardan un poco más).', e)
+                    return
+                if audio:
+                    self._escenas_audio[frase] = audio
+
     # ── Wake word monitor (siempre activo, corre en hilo separado) ────────────
 
     def iniciar_wake_monitor(self) -> None:
@@ -2359,6 +2379,7 @@ class VoicePipeline:
         # R2: abrir el micrófono continuo ya (Silero + stream ≈ 2 s), no en el 1er turno.
         threading.Thread(target=self._mic_continuo, daemon=True, name='mic-abrir').start()
         self._red.iniciar()   # O2: también en modo tecla (el ENTER transcribe)
+        threading.Thread(target=self._precargar_escenas, daemon=True, name='escenas-audio').start()
         if TRIGGER_MODE == "tecla":
             # En modo CLI, msvcrt le robaría las teclas a la consola del CLI.
             if not puente_cli.ACTIVO:
