@@ -57,6 +57,8 @@ quedan en la raíz, y también los datos de runtime (`memory.db`, `devices.json`
 | Archivo | Rol |
 |---|---|
 | `main.py` | Orquestador / entrada. |
+| `supervisor.py` | Lanza `main.py` y lo relanza si se cae (para tras 3 caídas en 5 min) o si sale con el código 3 (pide reiniciarse). Es lo que arranca el CLI. |
+| `nucleo/salud.py`, `nucleo/avisos_salud.py` | Vigilante de salud: chequea serial, audio, red, Ollama, memoria e hilos de voz, repara lo que tiene receta y lo cuenta por consola, voz, `logs/salud.jsonl` y la barra del CLI. La ESP32-CAM no se vigila. |
 | `config.py` | **TODA** la config modificable (hardware, IPs, audio, conversación, servos, LLM/TTS, prompt). Gitignoreado. |
 | `rutas.py` | Rutas de datos (`memory.db`, `devices.json`, `models/`, `logs/`) y de `shared/voicechatLap`. |
 | `nucleo/state_machine.py` | Máquina de estados central + mood drift emocional. |
@@ -152,7 +154,8 @@ Entorno: **Python 3.11**, venv en `robot_bob/venv311/`. Deps en
 ```bash
 # desde robot_bob/, con venv311 activo
 python -m hardware.discovery       # refresca IPs de los ESP32 (tras cambiar de WiFi)
-python main.py            # sistema completo (Q para salir)
+python supervisor.py      # sistema completo, relanzado si se cae (Q para salir)
+python main.py            # lo mismo, sin relanzar
 # o con el CLI, desde la raíz del repo: bob   (Bob de mentira sin placas: bob --falso)
 
 python tests/hardware/test_1_serial.py        # COM3 / OLED / servos / throttle

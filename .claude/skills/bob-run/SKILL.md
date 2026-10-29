@@ -23,9 +23,9 @@ Punto de entrada: `robot_bob/main.py`. Inicia los 6 componentes en orden y los c
 Dos arranques; el usuario elige. Si no lo dijo, pregúntale cuál quiere.
 
 - **Con el CLI** (salida ordenada, barra de estado y atajos): desde `scripts/`, `bob`. La primera vez instala sus dependencias con npm. Necesita Node 22 o superior.
-- **Clásico** (plan B, igual que siempre): desde `scripts/robot_bob/`, `python main.py`.
+- **Clásico** (plan B): desde `scripts/robot_bob/`, `python supervisor.py`. `python main.py` también arranca, pero sin relanzar a Bob si se cae.
 
-Los dos corren el mismo `main.py`. Detalle del CLI: `docs/ARCHITECTURE.md` §9.
+Los dos corren el mismo `main.py` a través de `supervisor.py`: si Bob se cae, lo relanza a los 2 s (tras 3 caídas en 5 min, para); si sale con el código 3, lo relanza enseguida. Cada relanzamiento resetea el DevKit (abre COM3). Detalle del CLI: `docs/ARCHITECTURE.md` §9.
 
 Terminado cuando: aparece `Robot Bob activo.` En el CLI, además, la barra muestra la fase de Bob (por ejemplo «en reposo»).
 

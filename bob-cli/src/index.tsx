@@ -1,4 +1,4 @@
-// bob-cli: lanza a Bob (robot_bob/main.py) y muestra todo lo que escribe.
+// bob-cli: lanza a Bob (robot_bob/main.py, por supervisor.py) y muestra todo lo que escribe.
 //   npm start              → Bob de verdad
 //   npm run falso [modo]   → Bob de mentira (dev/bob_falso.py): demo | rafaga [s] | caida
 //   npm run alone          → Bob de verdad sin ESP32 (main.py --alone)
@@ -19,9 +19,10 @@ function lanzamiento(argv: string[]): Lanzamiento {
   if (i >= 0) {
     return { script: path.resolve(AQUI, '..', 'dev', 'bob_falso.py'), args: argv.slice(i + 1), columnas };
   }
-  // --alone: Bob real sin ESP32. main.py lo lee de sys.argv.
+  // --alone: Bob real sin ESP32. El supervisor se lo pasa a main.py, que lo lee de sys.argv.
+  // El supervisor relanza a Bob si se cae o si pide reiniciarse (Fase S, S5).
   const args = argv.includes('--alone') ? ['--alone'] : [];
-  return { script: 'main.py', args, columnas };
+  return { script: 'supervisor.py', args, columnas };
 }
 
 let bob: Bob | null = null;
