@@ -59,6 +59,7 @@ quedan en la raíz, y también los datos de runtime (`memory.db`, `devices.json`
 | `main.py` | Orquestador / entrada. |
 | `supervisor.py` | Lanza `main.py` y lo relanza si se cae (para tras 3 caídas en 5 min) o si sale con el código 3 (pide reiniciarse). Es lo que arranca el CLI. |
 | `nucleo/salud.py`, `nucleo/avisos_salud.py` | Vigilante de salud: chequea serial, audio, red, Ollama, memoria e hilos de voz, repara lo que tiene receta y lo cuenta por consola, voz, `logs/salud.jsonl` y la barra del CLI. La ESP32-CAM no se vigila. |
+| `agente/autoarreglo.py` | Autoedición (S6): un error no atrapado en un hilo → Claude Code (Sonnet) lo arregla en `robot_bob/` con el modo ingeniero activo (copias, zonas prohibidas, compila, tests relacionados antes y después; si pasa, pide reiniciarse con el código 3) o, sin modo ingeniero, deja el arreglo propuesto. Informes en `logs/arreglos/`. |
 | `config.py` | **TODA** la config modificable (hardware, IPs, audio, conversación, servos, LLM/TTS, prompt). Gitignoreado. |
 | `rutas.py` | Rutas de datos (`memory.db`, `devices.json`, `models/`, `logs/`) y de `shared/voicechatLap`. |
 | `nucleo/state_machine.py` | Máquina de estados central + mood drift emocional. |

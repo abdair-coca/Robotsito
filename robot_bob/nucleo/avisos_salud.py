@@ -45,6 +45,13 @@ FRASES = {
         'volvio': '[EMO:FELIZ] Listo, ya estoy completo otra vez.',
         'rota':  '[EMO:TRISTE] Una parte de mi cabeza no arranca. Sigo como puedo.',
     },
+    # S6: Bob arregla su propio código (agente/autoarreglo.py).
+    'autoarreglo': {
+        'empiezo':   '[EMO:PENSANDO] Encontré un error en mi código. Voy a intentar arreglarlo.',
+        'listo':     '[EMO:ORGULLOSO] Me arreglé. Me reinicio un momento para aplicarlo.',
+        'revertido': '[EMO:AVERGONZADO] Mi arreglo no funcionó, así que lo deshice.',
+        'propuesta': '[EMO:PENSANDO] Encontré un error en mi código. Dejé anotado cómo arreglarlo.',
+    },
 }
 
 # Cómo se nombra cada parte en la barra del CLI.
@@ -101,6 +108,11 @@ class Avisador:
     def al_intentar(self, nombre: str, intento: int, error: Optional[Exception]) -> None:
         self._registrar(nombre, 'arreglo', '' if error is None else f'{error.__class__.__name__}: {error}',
                         intento=intento, lanzo=error is not None)
+
+    def avisar(self, nombre: str, evento: str) -> None:
+        """Una frase de FRASES[nombre][evento] que no viene del Vigilante (p. ej. el
+        autoarreglo). Solo a la voz: la consola y el registro los lleva quien avisa."""
+        self._pendiente(nombre, evento)
 
     def pendientes(self) -> list[str]:
         with self._lock:

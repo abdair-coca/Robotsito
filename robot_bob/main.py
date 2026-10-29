@@ -76,6 +76,8 @@ from voz.pipeline import VoicePipeline
 from nucleo.behavior       import BehaviorEngine
 from nucleo.modos          import TECLAS as TECLAS_MODO
 from nucleo import avisos_salud, salud
+from agente.autoarreglo import Autoarreglo
+from supervisor import REINICIAR
 try:
     from config import MEMORIA_ENABLED
 except Exception:
@@ -235,6 +237,13 @@ def main() -> None:
     vigilante = _armar_vigilante(serial_mgr, audio_io, voice, memoria, avisador)
     avisador.iniciar()
     vigilante.iniciar()
+    # S6: un error de código en un hilo → Claude lo arregla (con el modo ingeniero) o
+    # propone el arreglo; si lo aplica, Bob sale con REINICIAR y el supervisor lo relanza.
+    autoarreglo = Autoarreglo(
+        en_ingeniero=lambda: bool(getattr(voice, '_modo_ingeniero', False)),
+        avisar=lambda evento: avisador.avisar('autoarreglo', evento),
+        pedir_reinicio=teclas_cli.salida.set)
+    autoarreglo.instalar()
     fin_estado_cli = threading.Event()
     estado_cli.iniciar(sm, voice, serial_mgr, fin_estado_cli, vigilante)   # barra del CLI (solo modo CLI)
 
@@ -423,7 +432,8 @@ def main() -> None:
         time.sleep(0.1)
         serial_mgr.cerrar()
         print('Robot Bob detenido.')
+    return REINICIAR if autoarreglo.reinicio_pedido else 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

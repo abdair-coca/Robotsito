@@ -9,9 +9,12 @@ Sin Bob de verdad (lanzar devuelve códigos de prueba), salvo el punto 6:
   5. Reinicios en bucle: para.
   6. Un proceso real que sale con 3 y después con 0 se lanza dos veces; recibe
      BOB_SUPERVISADO=1 y los argumentos.
+  7. Arreglo pendiente (S6): si Bob se cae enseguida, se revierte; si dura o se cierra
+     a propósito, queda; una marca rota no tumba al supervisor.
 
   python tests/unit/test_supervisor.py
 """
+import json
 import os
 import subprocess
 import sys
@@ -32,7 +35,7 @@ def check(nombre: str, ok: bool, detalle: str = "") -> None:
     print(f"[{'OK' if ok else 'FALLA'}] {nombre} {detalle}", flush=True)
 
 
-def correr(codigos, pasos_reloj=0.0):
+def correr(codigos, pasos_reloj=0.0, pendiente=None):
     """Supervisa un Bob falso que sale con `codigos` en orden. Devuelve (código final,
     lanzamientos, esperas, avisos)."""
     t = [0.0]
@@ -45,7 +48,8 @@ def correr(codigos, pasos_reloj=0.0):
         return cola.pop(0)
 
     final = supervisor.supervisar(['--alone'], lanzar=lanzar, reloj=lambda: t[0],
-                                  dormir=esperas.append, avisar=avisos.append)
+                                  dormir=esperas.append, avisar=avisos.append,
+                                  pendiente=pendiente)
     return final, lanzados, esperas, avisos
 
 
@@ -102,6 +106,49 @@ check('proceso real: sale con 0', r.returncode == 0, f'(código {r.returncode}) 
 check('proceso real: lanzado dos veces', open(contador).read() == '2')
 check('main recibe BOB_SUPERVISADO=1 y los argumentos',
       salida.count("supervisado ['--alone']") == 2, f'{salida}')
+
+
+# ── 7. Arreglo pendiente ────────────────────────────────────────────────────────
+def con_arreglo():
+    d = tempfile.mkdtemp()
+    editado, nuevo = os.path.join(d, 'modulo.py'), os.path.join(d, 'nuevo.py')
+    copia = os.path.join(d, 'copia-modulo.py')
+    for ruta, texto in ((editado, 'arreglado'), (nuevo, 'nuevo'), (copia, 'original')):
+        with open(ruta, 'w') as f:
+            f.write(texto)
+    indice = os.path.join(d, 'copias.json')
+    with open(indice, 'w') as f:
+        json.dump({editado: copia, nuevo: None}, f)
+    pend = os.path.join(d, 'pendiente.json')
+    with open(pend, 'w') as f:
+        json.dump({'carpeta': d, 'copias': indice}, f)
+    return pend, editado, nuevo
+
+
+def leer(ruta):
+    with open(ruta) as f:
+        return f.read()
+
+
+pend, editado, nuevo = con_arreglo()
+final, lanzados, _, avisos = correr([3, 1, 0], pasos_reloj=5.0, pendiente=pend)
+check('se cae enseguida con el arreglo: revierte', leer(editado) == 'original'
+      and not os.path.exists(nuevo) and not os.path.exists(pend), f'{avisos}')
+check('y lo relanza como en una caída', final == 0 and len(lanzados) == 3
+      and any('deshice el arreglo (2 archivo(s))' in a for a in avisos))
+pend, editado, nuevo = con_arreglo()
+correr([3, 1, 0], pasos_reloj=supervisor.ESTABLE_S + 1, pendiente=pend)
+check('se cae después de ESTABLE_S: el arreglo queda', leer(editado) == 'arreglado'
+      and os.path.exists(nuevo) and not os.path.exists(pend))
+pend, editado, nuevo = con_arreglo()
+correr([3, 0], pasos_reloj=5.0, pendiente=pend)
+check('se cierra a propósito: el arreglo queda', leer(editado) == 'arreglado'
+      and not os.path.exists(pend))
+pend, editado, _ = con_arreglo()
+with open(pend) as f:
+    os.remove(json.load(f)['copias'])
+final, _, _, avisos = correr([1, 0], pendiente=pend)
+check('marca rota: avisa y no se cae', final == 0 and any('No pude revisar' in a for a in avisos))
 
 print(f"\n{'TODO OK' if fallos == 0 else f'{fallos} FALLA(S)'}")
 sys.exit(1 if fallos else 0)
