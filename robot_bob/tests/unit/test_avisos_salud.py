@@ -45,21 +45,21 @@ dichas = []
 libre = [False]
 av = avisos_salud.Avisador(decir=dichas.append, libre=lambda: libre[0], ruta_log=log,
                            reloj=lambda: 1000.0)
-CAM = avisos_salud.FRASES['camara']
+MEM = avisos_salud.FRASES['memoria']
 
 # ── 1 y 2. Bitácora y voz cuando está libre ─────────────────────────────────────
-av.al_cambiar('camara', Resultado(False, 'sin frames nuevos hace 6 s'))
+av.al_cambiar('memoria', Resultado(False, 'unable to open database file'))
 check('caída: línea en la bitácora',
-      lineas() == [{'t': 1000.0, 'parte': 'camara', 'evento': 'cayo',
-                    'detalle': 'sin frames nuevos hace 6 s'}], f'{lineas()}')
+      lineas() == [{'t': 1000.0, 'parte': 'memoria', 'evento': 'cayo',
+                    'detalle': 'unable to open database file'}], f'{lineas()}')
 check('ocupado: no dice nada todavía', not av.entregar() and dichas == [])
-check('la frase espera', av.pendientes() == [CAM['cayo']])
+check('la frase espera', av.pendientes() == [MEM['cayo']])
 libre[0] = True
-check('libre: dice la caída', av.entregar() and dichas == [CAM['cayo']])
+check('libre: dice la caída', av.entregar() and dichas == [MEM['cayo']])
 check('sin pendientes: no repite', not av.entregar() and len(dichas) == 1)
-av.al_cambiar('camara', Resultado(True))
+av.al_cambiar('memoria', Resultado(True))
 av.entregar()
-check('vuelve: lo dice', dichas[-1] == CAM['volvio'] and lineas()[-1]['evento'] == 'volvio')
+check('vuelve: lo dice', dichas[-1] == MEM['volvio'] and lineas()[-1]['evento'] == 'volvio')
 av.al_cambiar('red', Resultado(False, 'sin internet'))
 check('red: a la bitácora pero no por voz',
       lineas()[-1]['parte'] == 'red' and av.pendientes() == [])
@@ -88,7 +88,7 @@ def _falla():
     raise OSError('sin respuesta')
 
 
-v = Vigilante([Chequeo('camara', lambda: Resultado(False, 'muda'), _falla)],
+v = Vigilante([Chequeo('memoria', lambda: Resultado(False, 'muda'), _falla)],
               al_cambiar=av.al_cambiar, al_rendirse=av.al_rendirse, al_intentar=av.al_intentar,
               lanzar=lambda n, tarea: tarea())
 v.revisar_todo()
@@ -96,12 +96,12 @@ ultima = lineas()[-1]
 check('arreglo que lanza: en la bitácora',
       ultima['evento'] == 'arreglo' and ultima['intento'] == 1 and ultima['lanzo'] is True
       and 'OSError' in ultima['detalle'], f'{ultima}')
-v2 = Vigilante([Chequeo('camara', lambda: Resultado(False), lambda: None)],
+v2 = Vigilante([Chequeo('memoria', lambda: Resultado(False), lambda: None)],
                al_intentar=av.al_intentar, lanzar=lambda n, tarea: tarea())
 v2.revisar_todo()
 check('arreglo que no lanza: lanzo False', lineas()[-1]['lanzo'] is False)
 av_sin_log = avisos_salud.Avisador(ruta_log=None)
-av_sin_log.al_cambiar('camara', Resultado(False))
+av_sin_log.al_cambiar('memoria', Resultado(False))
 check('sin bitácora ni voz: no falla', av_sin_log.pendientes() == [])
 
 # ── 6. Barra del CLI ────────────────────────────────────────────────────────────
@@ -116,11 +116,11 @@ class _Voz:
     microfono_activo = True
 
 
-v3 = Vigilante([Chequeo('camara', lambda: Resultado(False)), Chequeo('red', lambda: Resultado(False)),
+v3 = Vigilante([Chequeo('audio', lambda: Resultado(False)), Chequeo('red', lambda: Resultado(False)),
                 Chequeo('serial', lambda: Resultado(True))])
 v3.revisar_todo()
 f = estado_cli.foto(_SM(), _Voz(), object(), v3)
-check('barra: partes caídas sin la red', f.get('averias') == ['cámara'], f'{f.get("averias")}')
+check('barra: partes caídas sin la red', f.get('averias') == ['audio del DevKit'], f'{f.get("averias")}')
 check('barra sin vigilante: sin el campo', 'averias' not in estado_cli.foto(_SM(), _Voz(), object()))
 
 print(f"\n{'TODO OK' if fallos == 0 else f'{fallos} FALLA(S)'}")

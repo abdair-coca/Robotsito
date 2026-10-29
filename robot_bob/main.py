@@ -114,15 +114,14 @@ def _armar_avisador(voice, sm) -> avisos_salud.Avisador:
                            or sm.bailando.is_set() or sm.musica_sonando.is_set()))
 
 
-def _armar_vigilante(tracker, serial_mgr, audio_io, voice, memoria,
+def _armar_vigilante(serial_mgr, audio_io, voice, memoria,
                      avisador: avisos_salud.Avisador) -> salud.Vigilante:
     """Fase S: un chequeo por parte, con su receta cuando la hay (S2), y los avisos por
     consola, bitácora y voz (S3). Se arma después de arrancar los hilos de voz: solo
     vigila los que de verdad arrancaron."""
-    lector = tracker._stream
+    # La ESP32-CAM no se vigila (decisión del usuario): en una sala real se corta y vuelve
+    # todo el tiempo, y LectorStream ya reconecta solo.
     chequeos = [
-        salud.chequeo_camara(lambda: lector._frame,
-                             reparar=None if ALONE else salud.reparar_camara(lector)),
         salud.chequeo_serial(serial_mgr),
         salud.chequeo_red(voice._red),
         salud.chequeo_ollama(),
@@ -233,7 +232,7 @@ def main() -> None:
     voice.iniciar_recordatorio_monitor() # P9: anuncia recordatorios al vencer
     voice.iniciar_baile_monitor()        # apaga el baile cuando la música para
     avisador = _armar_avisador(voice, sm)
-    vigilante = _armar_vigilante(tracker, serial_mgr, audio_io, voice, memoria, avisador)
+    vigilante = _armar_vigilante(serial_mgr, audio_io, voice, memoria, avisador)
     avisador.iniciar()
     vigilante.iniciar()
     fin_estado_cli = threading.Event()

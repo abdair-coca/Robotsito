@@ -31,7 +31,6 @@ from typing import Callable, Iterable, Optional
 import errores
 
 PERIODO_S = 10.0
-CAMARA_MAX_S = 5.0   # sin un frame nuevo en este tiempo, la cámara está caída
 HILOS_VOZ = ('voice-pipeline', 'wake-monitor', 'soliloquio', 'recordatorios', 'baile-monitor')
 REPARAR_ESPERA_S = 5.0
 REPARAR_ESPERA_MAX_S = 120.0
@@ -182,26 +181,6 @@ class Vigilante:
 
 # ── Fábricas de chequeos ────────────────────────────────────────────────────────
 
-def chequeo_camara(frame_actual: Callable[[], object], max_s: float = CAMARA_MAX_S,
-                   reloj: Callable[[], float] = time.monotonic,
-                   reparar: Optional[Callable[[], None]] = None) -> Chequeo:
-    """frame_actual devuelve el último frame recibido, sin copiarlo (p. ej.
-    `lambda: tracker._stream._frame`): el lector lo reemplaza por un objeto nuevo con
-    cada JPEG, así que el mismo objeto durante max_s significa video congelado."""
-    visto = {'frame': None, 't': reloj()}
-
-    def revisar() -> Resultado:
-        frame, ahora = frame_actual(), reloj()
-        if frame is not None and frame is not visto['frame']:
-            visto['frame'], visto['t'] = frame, ahora
-        edad = ahora - visto['t']
-        if edad > max_s:
-            return Resultado(False, f'sin frames nuevos hace {edad:.0f} s')
-        return Resultado(True)
-
-    return Chequeo('camara', revisar, reparar)
-
-
 def chequeo_serial(serial_mgr) -> Chequeo:
     """SerialManager deja _modo='none' mientras reconecta. El simulado no tiene _modo."""
     def revisar() -> Resultado:
@@ -299,18 +278,6 @@ def _ip_actual(clave: str, resolver: Optional[Callable[[], dict]]) -> Optional[s
         from hardware import discovery
         resolver = discovery.resolve
     return resolver().get(clave)
-
-
-def reparar_camara(lector, resolver: Optional[Callable[[], dict]] = None) -> Callable[[], None]:
-    """El LectorStream ya reconecta solo, pero siempre a la misma IP: si la CAM cambió de
-    IP (DHCP), le pone la nueva y su próximo reintento va ahí."""
-    def reparar() -> None:
-        ip = _ip_actual('IP_ESPCAM', resolver)
-        if ip and ip != lector.host:
-            errores.aviso('CÁMARA', f'Cambió de IP ({lector.host} → {ip}): me conecto a la nueva.')
-            lector.host = ip
-
-    return reparar
 
 
 def reparar_audio(audio_io, resolver: Optional[Callable[[], dict]] = None,

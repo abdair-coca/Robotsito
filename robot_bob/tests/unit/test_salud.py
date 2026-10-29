@@ -5,7 +5,6 @@ Sin hardware ni red (cada parte es un objeto de prueba):
   1. Vigilante: arranca optimista, avisa una vez por cambio y no repite.
   2. marcar_caida() baja una parte al instante; la pasada siguiente la devuelve.
   3. Un chequeo que lanza cuenta como caído; un aviso que lanza no rompe nada.
-  4. Cámara: frames nuevos bien; el mismo frame o ninguno más de max_s, caída.
   5. Serial, audio, red y Ollama según el estado del objeto.
   6. Hilos: falta uno, caído; todos, bien.
   7. Memoria: una base real abre; una ruta que no existe, caída (y no la crea).
@@ -81,23 +80,6 @@ r = Vigilante([Chequeo('x', lambda: True)]).revisar_todo()['x']
 check('chequeo que no devuelve Resultado: caído', not r.ok)
 v2 = Vigilante([Chequeo('x', lambda: Resultado(False))], al_cambiar=_aviso_roto)
 check('aviso que lanza: el estado cambia igual', not v2.revisar_todo()['x'].ok)
-
-# ── 4. Cámara ───────────────────────────────────────────────────────────────────
-reloj = [100.0]
-frame = [None]
-cam = salud.chequeo_camara(lambda: frame[0], max_s=5.0, reloj=lambda: reloj[0])
-check('cámara recién creada: bien', cam.revisar().ok)
-reloj[0] = 106.0
-r = cam.revisar()
-check('sin ningún frame más de max_s: caída', not r.ok, r.detalle)
-frame[0] = object()
-check('llega un frame: bien', cam.revisar().ok)
-reloj[0] = 110.0
-frame[0] = object()
-check('frames nuevos seguidos: bien', cam.revisar().ok)
-reloj[0] = 116.0
-r = cam.revisar()
-check('el mismo frame más de max_s: caída', not r.ok and '6 s' in r.detalle, r.detalle)
 
 # ── 5. Serial, audio, red, Ollama ───────────────────────────────────────────────
 class _Serial:
@@ -216,19 +198,6 @@ v6.revisar_todo()
 check('caída sin receta: nunca se rinde', v6.rotas() == set())
 
 # ── 10. Recetas ─────────────────────────────────────────────────────────────────
-class _Lector:
-    host = '192.168.0.10'
-
-
-lec = _Lector()
-salud.reparar_camara(lec, resolver=lambda: {'IP_ESPCAM': '192.168.0.10'})()
-check('cámara con la misma IP: no la toca', lec.host == '192.168.0.10')
-salud.reparar_camara(lec, resolver=lambda: {'IP_ESPCAM': '192.168.0.44'})()
-check('cámara con IP nueva: el lector apunta a la nueva', lec.host == '192.168.0.44')
-salud.reparar_camara(lec, resolver=lambda: {})()
-check('discovery sin cámara: no la toca', lec.host == '192.168.0.44')
-
-
 class _AudioIO:
     def __init__(self):
         self.ip, self.connected, self.pasos = '192.168.0.23', False, []

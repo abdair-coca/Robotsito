@@ -27,11 +27,6 @@ from nucleo import salud
 
 # Por parte: qué dice Bob cuando se cae, cuando vuelve y cuando se rinde.
 FRASES = {
-    'camara': {
-        'cayo':  '[EMO:CONFUNDIDO] Uy, se me apagaron los ojos. Dame un momento, estoy buscando mi cámara.',
-        'volvio': '[EMO:FELIZ] ¡Listo, ya te vuelvo a ver!',
-        'rota':  '[EMO:TRISTE] No logro arreglar mi cámara. Sigo, pero sin ver.',
-    },
     'audio': {
         'cayo':  '[EMO:CONFUNDIDO] Se me cortó el audio del cuerpo. Mientras lo arreglo, te hablo por la laptop.',
         'volvio': '[EMO:FELIZ] Ya recuperé mi voz y mi oído.',
@@ -54,7 +49,7 @@ FRASES = {
 
 # Cómo se nombra cada parte en la barra del CLI.
 ETIQUETAS = {
-    'camara': 'cámara', 'serial': 'cuerpo (DevKit)', 'audio': 'audio del DevKit',
+    'serial': 'cuerpo (DevKit)', 'audio': 'audio del DevKit',
     'red': 'internet', 'ollama': 'Ollama', 'memoria': 'memoria',
     'hilo-voice-pipeline': 'charla', 'hilo-wake-monitor': 'escucha de "Bob"',
     'hilo-soliloquio': 'soliloquio', 'hilo-recordatorios': 'recordatorios',
