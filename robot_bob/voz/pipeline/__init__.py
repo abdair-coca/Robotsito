@@ -274,6 +274,7 @@ from hardware.red import MonitorRed                      # O2: sin internet, Bob
 from llm.llm_router import RouterLLM, Backend       # R1: rotación de LLM por cupo
 from voz import audio_engine                             # R2: micrófono continuo + Silero VAD
 from asistente.reminders import parse_recordatorio, ReminderStore   # P9: recordatorios
+from asistente import juegos                                        # J1: adivinanzas y trivia
 from voz.jev_decision import decidir, EMOCION_RESPALDO   # J2: ruta del turno; J3: emoción
 from voz import registro_turnos   # registro por turno (perfil feria)
 from nucleo.expression_engine import (
@@ -1035,6 +1036,52 @@ class VoicePipeline:
         console.print(f'[dim][memoria] id={pid}: recuerdo guardado | '
                       f'amistad {d_amistad:+d}, confianza {d_confianza:+d}[/]')
 
+    # ── J1: adivinanzas y trivia ───────────────────────────────────────────────
+
+    def _llm_juego(self, prompt: str) -> str:
+        """J1: una respuesta del LLM de la charla, sin streaming (ver juegos.Juego)."""
+        resp = self._llm.chat.completions.create(
+            model=self._llm_model, messages=[{'role': 'user', 'content': prompt}],
+            temperature=0.9, max_tokens=300, **self._llm_extra)
+        return resp.choices[0].message.content or ''
+
+    def _atender_juego(self, texto: str) -> bool:
+        """J1: "juguemos a las adivinanzas / a la trivia" empieza un juego. Mientras dura,
+        cada turno es la respuesta y Bob sigue con otra pregunta. "Ya no quiero jugar" lo
+        termina con el puntaje; una salida o despedida lo cierra y sigue su camino.
+        True si el turno fue del juego."""
+        juego = getattr(self, '_juego', None)
+        tipo = juegos.pedido_de_juego(texto)
+        if juego is None and tipo is None:
+            return False
+        if juego is not None and tipo is None and not juegos.fin_de_juego(texto) \
+                and (_is_exit(texto) or _is_goodbye(texto)):
+            self._juego = None           # la salida la maneja la charla
+            return False
+        self._sm.iniciar_hablando()
+        if tipo is not None:             # empieza o cambia de juego
+            juego = juego or juegos.Juego(self._llm_juego)
+            pregunta = juego.proponer(tipo)
+            self._juego = juego if juego.actual else None
+            dicho, emo = (f'¡Va! {pregunta}', 'CURIOSO') if juego.actual else (pregunta, 'CONFUNDIDO')
+        elif juegos.fin_de_juego(texto):
+            self._juego = None
+            dicho, emo = f'¡Buen juego! Hiciste {juego.puntos} punto(s).', 'FELIZ'
+        else:                            # la respuesta: resultado y otra pregunta
+            puntos_antes = juego.puntos
+            resultado = juego.responder(texto)
+            pregunta = juego.proponer(juego.tipo)
+            if juego.actual:
+                dicho = f'{resultado} Va otra: {pregunta}'
+            else:                        # el LLM no dio otra: termina aquí
+                self._juego = None
+                dicho = f'{resultado} {pregunta}'
+            emo = 'FELIZ' if juego.puntos > puntos_antes else 'TRAVIESO'
+        with puente_cli.turno('bob'):
+            console.print(f'[bold green]Bob[/] [dim](juego)[/]: {dicho}')
+        self._hablar(dicho, emo)
+        return True
+
     def _run_conversation(self, pending_audio: Optional[bytes] = None,
                           pending_text: Optional[str] = None,
                           greeting: bool = False,
@@ -1057,6 +1104,7 @@ class VoicePipeline:
         n_turnos = 0  # contador de turnos para el bonus de mood (charla fluye)
         ruido_seguido = 0  # R1: frases descartadas como ruido, seguidas
         self._espera_cancion = False   # E-B: la espera de "¿qué canción?" no sobrevive la charla
+        self._juego = None             # J1: el juego tampoco
 
         # ── Identidad (memoria P1): reconocer la cara y personalizar ──────────
         # Activación por JEV sin saludo (pending_text sin greeting): la identidad se
@@ -1351,6 +1399,12 @@ class VoicePipeline:
                     identificado = identificado or self._convo_persona is not None
                     es_primer_turno = False
                     continue
+
+            # ── J1: adivinanzas y trivia. Antes de JEV y del LLM adelantado: la
+            # respuesta ("Júpiter") no es charla ajena ni gasta cupo de la charla.
+            if self._atender_juego(texto):
+                es_primer_turno = False
+                continue
 
             # ── R1: mientras JEV decide, identificar y adelantar el LLM ────────
             # Solo si las reglas no ven un comando; si JEV dice que lo era, se cancela.

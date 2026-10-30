@@ -5,7 +5,8 @@ Un turno de juego: Bob propone una pregunta, el dueño responde y Bob dice si ac
 con el puntaje. El LLM entra como una función `llm(prompt) -> str`, así el test corre
 sin red.
 
-Todavía no está conectado a la charla: el disparador por voz es una decisión aparte.
+En la charla lo atiende voz/pipeline (_atender_juego): "juguemos a la trivia" empieza,
+cada respuesta trae otra pregunta y "ya no quiero jugar" termina.
 """
 
 import re
@@ -21,6 +22,18 @@ _NUMEROS = {'0': 'cero', '1': 'uno', '2': 'dos', '3': 'tres', '4': 'cuatro', '5'
             '6': 'seis', '7': 'siete', '8': 'ocho', '9': 'nueve', '10': 'diez'}
 # Tolera las negritas o almohadillas que algunos modelos ponen alrededor de los campos.
 _CAMPO = re.compile(r'(?im)^[\s*_#]*(PREGUNTA|RESPUESTA)[*_\s]*:[*_\s]*(.+?)[*_\s]*$')
+# Empezar: "juguemos a las adivinanzas", "hagamos una trivia", "dime una adivinanza".
+# "dime" y compañía piden "una" u "otra": así "¿qué es una adivinanza?" no empieza nada.
+_RE_EMPEZAR = re.compile(
+    r'\b(?:jug(?:uemos|ar|amos)|juega(?:mos)?|hagamos)\b.*?\b(adivinanzas?|trivia)\b'
+    r'|\b(?:dime|cu[eé]ntame|hazme|ponme)\s+(?:una|otra)\s+(adivinanzas?|trivia)\b',
+    re.IGNORECASE)
+_RE_TERMINAR = re.compile(
+    r'\bno\s+quiero\s+jugar|\bya\s+no\s+juego\b|\bbasta\b|\bterminemos\b'
+    r'|\btermina(?:r)?\s+el\s+juego\b|\bdej(?:a|ar|emos|amos)\s+de\s+jugar\b'
+    r'|\bfin\s+del\s+juego\b|\bsal(?:ir|gamos)?\s+del\s+juego\b', re.IGNORECASE)
+# "no juguemos a la trivia": un "no" hasta dos palabras antes anula el pedido.
+_RE_NEGADO = re.compile(r'\bno\s+(?:\S+\s+){0,2}$', re.IGNORECASE)
 
 _INSTRUCCION = {
     'adivinanza': 'Inventa una adivinanza corta en español. No preguntes de sí o no, y escribe '
@@ -54,18 +67,34 @@ def _parsear(salida: str, tipo: str) -> Optional[Pregunta]:
     return Pregunta(tipo, campos['PREGUNTA'], campos['RESPUESTA'])
 
 
+def pedido_de_juego(texto: str) -> Optional[str]:
+    """'adivinanza' o 'trivia' si el texto pide jugar; None si no (o si lo niega)."""
+    texto = texto or ''
+    m = _RE_EMPEZAR.search(texto)
+    if not m or fin_de_juego(texto) or _RE_NEGADO.search(texto[:m.start()]):
+        return None
+    return 'trivia' if (m.group(1) or m.group(2)).lower() == 'trivia' else 'adivinanza'
+
+
+def fin_de_juego(texto: str) -> bool:
+    """True si el texto pide terminar el juego ("ya no quiero jugar", "basta")."""
+    return bool(_RE_TERMINAR.search(texto or ''))
+
+
 class Juego:
     """Adivinanzas o trivia con su puntaje. Una pregunta a la vez."""
 
     def __init__(self, llm: Callable[[str], str]) -> None:
         self._llm = llm
         self.puntos = 0
+        self.tipo = 'adivinanza'     # el de la última pregunta: la siguiente sigue igual
         self.actual: Optional[Pregunta] = None
 
     def proponer(self, tipo: str = 'adivinanza') -> str:
         """Pide una pregunta al LLM y la deja como la actual. Devuelve lo que dice Bob."""
         if tipo not in _INSTRUCCION:
             raise ValueError(f'tipo desconocido: {tipo}')
+        self.tipo = tipo
         try:
             salida = self._llm(_INSTRUCCION[tipo])
         except Exception:

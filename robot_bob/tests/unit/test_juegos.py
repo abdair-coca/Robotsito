@@ -14,6 +14,8 @@ Qué prueba (sin red, sin hardware):
   10. "no sé" no cuenta como acierto.
   11. "ocho" acierta contra la respuesta "8".
   12. El pedido al LLM prohíbe preguntas de sí o no.
+  13. pedido_de_juego() reconoce cómo se pide jugar y no se dispara con preguntas ni negaciones.
+  14. fin_de_juego() reconoce cómo se termina; el juego recuerda el tipo de la última pregunta.
 
 Ejecutar:
   cd robot_bob
@@ -137,6 +139,36 @@ def main() -> None:
     llm_p = LLMFalso(ADIVINANZA)
     J.Juego(llm_p).proponer('adivinanza')
     check('el pedido prohíbe preguntas de sí o no', 'sí o no' in llm_p.prompts[0])
+
+    # 13. Pedir jugar
+    pedidos = {
+        'Bob, juguemos a la trivia': 'trivia',
+        'juguemos a las adivinanzas': 'adivinanza',
+        'quiero jugar trivia': 'trivia',
+        'hagamos una adivinanza': 'adivinanza',
+        'dime una adivinanza': 'adivinanza',
+        'cuéntame otra trivia': 'trivia',
+        '¿qué es una adivinanza?': None,
+        'no juguemos a la trivia': None,
+        'ya no quiero jugar a la trivia': None,
+        'me gusta la trivia': None,
+        'hola Bob': None,
+    }
+    malos = {t: J.pedido_de_juego(t) for t, esperado in pedidos.items()
+             if J.pedido_de_juego(t) != esperado}
+    check('pedido_de_juego reconoce pedidos y descarta preguntas y negaciones', not malos,
+          f'-> {malos}')
+
+    # 14. Terminar, y el tipo se recuerda
+    terminar = ['ya no quiero jugar', 'basta', 'terminemos', 'dejemos de jugar',
+                'salir del juego', 'fin del juego']
+    no_terminar = ['Júpiter', 'el peine', 'no sé']
+    check('fin_de_juego reconoce cómo se termina',
+          all(J.fin_de_juego(t) for t in terminar) and not any(J.fin_de_juego(t) for t in no_terminar),
+          f'-> {[t for t in terminar if not J.fin_de_juego(t)] + [t for t in no_terminar if J.fin_de_juego(t)]}')
+    j10 = J.Juego(LLMFalso('PREGUNTA: ¿Planeta más grande?\nRESPUESTA: Júpiter'))
+    j10.proponer('trivia')
+    check('el juego recuerda el tipo de la última pregunta', j10.tipo == 'trivia', f'-> {j10.tipo}')
 
     # 7. Tipo desconocido
     try:
