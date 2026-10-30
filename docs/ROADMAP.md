@@ -44,7 +44,7 @@ CPU/visión/firmware pero siguen siendo 100% alcanzables con el alcance ya recor
 > (hora/fecha/clima) + recordatorios/temporizadores proactivos, vía **detección de
 > intención + inyección al system prompt** (no tool-calling nativo): funciona con
 > los 3 backends incluido el LLM local chico y respeta el TTS por frase. Audio del
-> speaker afinado (ver `genesis/decisions/ADR-001` para el salto I2S pendiente).
+> speaker afinado (el salto I2S pendiente quedó en el historial de git, ADR-001).
 > Siguiente prioridad: **P5 (Juegos)** — adivinanzas/trivia (LLM) +
 > piedra-papel-tijera (MediaPipe Hands).
 

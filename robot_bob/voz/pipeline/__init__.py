@@ -232,14 +232,13 @@ except Exception:
     STT_VOCAB_INGENIERO = ('ESP32, ESP32-CAM, MicroPython, Arduino, Raspberry Pi, servo MG996R, '
                            'PWM, I2C, UART, SPI, GPIO, MPU6050, giroscopio, acelerómetro, PID, '
                            'OLED, firmware, batería LiPo, regulador, protoboard, Python, ONNX, '
-                           'Groq, Claude, Whisper, Silero, Playwright, GitHub, API, LLM, '
-                           'Proyecto Génesis. Listo.')
+                           'Groq, Claude, Whisper, Silero, Playwright, GitHub, API, LLM.')
 try:
     from config import STT_VOCAB_DUENO
 except Exception:
     STT_VOCAB_DUENO = ('Bob, aprende mi voz. Bob, te presento a mi amiga. Noticias de '
                        'tecnología. Modo ingeniero, sal del modo ingeniero. Busca en '
-                       'internet. Abdair, Proyecto Génesis.')
+                       'internet. Abdair.')
 # Tope de frases por turno del guard. config.py está gitignoreado (por-máquina);
 # si un config viejo no lo define, default a 2.
 try:

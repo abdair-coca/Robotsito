@@ -6,7 +6,7 @@ una frase, que luego se compara contra los guardados para saber si habla Abdair
 (memory.py). Modelo: WeSpeaker ResNet34-LM en ONNX (VoxCeleb, 16 kHz,
 CC-BY-4.0), corrido con onnxruntime. Sin PyTorch: el fbank Kaldi está en numpy.
 
-Validado en EXP-1-001 (docs/genesis/experiments/EXP-1-001-voz-abdair.md):
+Validado en EXP-1-001 (experimento archivado fuera del repo):
 frases de 2 s o más; con 1 s el puntaje cae mucho.
 
 Carga en un hilo de fondo; `listo` indica cuándo está disponible.
