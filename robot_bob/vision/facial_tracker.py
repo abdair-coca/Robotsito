@@ -521,6 +521,14 @@ class FacialTracker:
     def cerrar(self) -> None:
         if self._detector:
             self._detector.cerrar()
+        if self._detector_mp is not None:
+            # Cerrarlo acá: si lo cierra su __del__ al salir de Python, mediapipe ya
+            # apagó sus hilos y tira "cannot schedule new futures after shutdown".
+            try:
+                self._detector_mp.close()
+            except Exception:
+                pass
+            self._detector_mp = None
         self._stream.cerrar()
 
     # ── Interno ────────────────────────────────────────────────────────────────
