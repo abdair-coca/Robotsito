@@ -84,7 +84,7 @@ _GIRO_DER = (1, -1)
 PAN_MIN,  PAN_MAX  = 20,  160
 TILT_MIN, TILT_MAX = 40,  130   # TILT_MIN bajo = mira más arriba (límite firmware = 40)
 PAN_HOME  = 90
-TILT_HOME = 90
+TILT_HOME = 55
 
 TICK_S = 0.05  # 20 Hz — más suave para los servos sin saturar CPU
 
@@ -98,11 +98,11 @@ except Exception:
     IDLE_TILT_CENTER, IDLE_TILT_SPREAD = 62.0, 16.0
 
 # Postura de sueño: cabeza baja (mentón al pecho)
-SLEEP_TILT  = TILT_HOME + 15.0   # 105° — dentro del rango TILT_MAX=130
+SLEEP_TILT  = TILT_HOME + 15.0   # 70° — dentro del rango TILT_MAX=130
 SLEEP_PAN   = float(PAN_HOME)    # alineada al centro
 
 # Despertar: el tilt sube desde SLEEP_TILT hasta este offset sobre HOME (mirar arriba con CURIOSO)
-WAKE_TILT_PEAK = TILT_HOME - 18.0  # 72° — mira hacia arriba mientras se despierta
+WAKE_TILT_PEAK = TILT_HOME - 18.0  # 37° — mira hacia arriba mientras se despierta
 
 
 class BehaviorEngine:

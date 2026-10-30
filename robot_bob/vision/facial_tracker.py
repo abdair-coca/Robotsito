@@ -40,7 +40,7 @@ DET_INTERVAL_S    = 0.07   # ~14 Hz
 PAN_MIN,  PAN_MAX  = 20,  160
 TILT_MIN, TILT_MAX = 40,  130   # TILT_MIN bajo = mira más arriba (límite firmware = 40)
 PAN_HOME  = 90
-TILT_HOME = 90
+TILT_HOME = 55
 
 GANANCIA_PAN  = 0.025   # más reactivo (era 0.018, calibrado para 60 Hz)
 GANANCIA_TILT = 0.025
