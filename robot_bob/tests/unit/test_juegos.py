@@ -9,6 +9,11 @@ Qué prueba (sin red, sin hardware):
   5. Una salida del LLM sin formato no deja pregunta a medias.
   6. Una coincidencia parcial de palabra ("sol" en "solar") no cuenta.
   7. Un tipo desconocido se rechaza.
+  8. Si el LLM cae, el turno no se tumba: Bob lo dice y sigue.
+  9. Una salida con negritas (**PREGUNTA:**) se parsea igual.
+  10. "no sé" no cuenta como acierto.
+  11. "ocho" acierta contra la respuesta "8".
+  12. El pedido al LLM prohíbe preguntas de sí o no.
 
 Ejecutar:
   cd robot_bob
@@ -96,6 +101,42 @@ def main() -> None:
     j5.proponer('trivia')
     j5.responder('estoy pensando en el solar')
     check('"sol" dentro de "solar" no cuenta', j5.puntos == 0, f'puntos={j5.puntos}')
+
+    # 8. El LLM cae: no tumba el turno
+    def llm_caido(prompt: str) -> str:
+        raise TimeoutError('sin red')
+
+    j6 = J.Juego(llm_caido)
+    try:
+        r = j6.proponer('adivinanza')
+        check('LLM caído no tumba el turno y avisa',
+              j6.actual is None and 'no puedo pensar' in r.lower(), f'-> {r!r}')
+    except Exception as e:
+        check('LLM caído no tumba el turno y avisa', False, f'(lanzó {type(e).__name__})')
+
+    # 9. Formato con negritas
+    j7 = J.Juego(LLMFalso('**PREGUNTA:** ¿Qué tiene dientes y no muerde?\n**RESPUESTA:** El peine'))
+    r = j7.proponer('adivinanza')
+    check('formato con negritas se parsea',
+          r == '¿Qué tiene dientes y no muerde?' and j7.actual is not None
+          and j7.actual.respuesta == 'El peine', f'-> {r!r}')
+
+    # 10. "no sé" no es acierto
+    j8 = J.Juego(LLMFalso('PREGUNTA: ¿Qué tiene dientes?\nRESPUESTA: El peine'))
+    j8.proponer('adivinanza')
+    r = j8.responder('no sé, creo que el peine')
+    check('"no sé" no cuenta como acierto', j8.puntos == 0 and 'No era' in r, f'puntos={j8.puntos}')
+
+    # 11. Cifras contra palabras
+    j9 = J.Juego(LLMFalso('PREGUNTA: ¿Cuántas patas tiene una araña?\nRESPUESTA: 8'))
+    j9.proponer('trivia')
+    j9.responder('ocho')
+    check('"ocho" acierta contra la respuesta "8"', j9.puntos == 1, f'puntos={j9.puntos}')
+
+    # 12. El pedido al LLM prohíbe sí/no
+    llm_p = LLMFalso(ADIVINANZA)
+    J.Juego(llm_p).proponer('adivinanza')
+    check('el pedido prohíbe preguntas de sí o no', 'sí o no' in llm_p.prompts[0])
 
     # 7. Tipo desconocido
     try:

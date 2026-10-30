@@ -14,21 +14,30 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 _ARTICULOS = {'el', 'la', 'los', 'las', 'un', 'una'}
-_CAMPO = re.compile(r'(?im)^\s*(PREGUNTA|RESPUESTA)\s*:\s*(.+?)\s*$')
+# Una negación en la respuesta del dueño ("no sé") anula el acierto, salvo que la
+# respuesta correcta también la tenga.
+_NEGACIONES = {'no', 'nunca', 'jamas', 'ni'}
+_NUMEROS = {'0': 'cero', '1': 'uno', '2': 'dos', '3': 'tres', '4': 'cuatro', '5': 'cinco',
+            '6': 'seis', '7': 'siete', '8': 'ocho', '9': 'nueve', '10': 'diez'}
+# Tolera las negritas o almohadillas que algunos modelos ponen alrededor de los campos.
+_CAMPO = re.compile(r'(?im)^[\s*_#]*(PREGUNTA|RESPUESTA)[*_\s]*:[*_\s]*(.+?)[*_\s]*$')
 
 _INSTRUCCION = {
-    'adivinanza': 'Inventa una adivinanza corta en español. Responde solo con dos líneas:\n'
+    'adivinanza': 'Inventa una adivinanza corta en español. No preguntes de sí o no, y escribe '
+                  'los números con letras. Responde solo con dos líneas:\n'
                   'PREGUNTA: <la adivinanza>\nRESPUESTA: <la respuesta, una o dos palabras>',
-    'trivia': 'Inventa una pregunta de trivia corta y fácil en español. Responde solo con dos líneas:\n'
+    'trivia': 'Inventa una pregunta de trivia corta y fácil en español. No preguntes de sí o no, '
+              'y escribe los números con letras. Responde solo con dos líneas:\n'
               'PREGUNTA: <la pregunta>\nRESPUESTA: <la respuesta, una o dos palabras>',
 }
 
 
 def _tokens(texto: str) -> list:
-    """Minúsculas, sin tildes ni puntuación y sin artículos."""
+    """Minúsculas, sin tildes ni puntuación, sin artículos y con cifras de 0 a 10 en palabras."""
     sin_tildes = ''.join(c for c in unicodedata.normalize('NFKD', texto.lower())
                          if not unicodedata.combining(c))
-    return [t for t in re.findall(r'[a-z0-9]+', sin_tildes) if t not in _ARTICULOS]
+    palabras = re.findall(r'[a-z0-9]+', sin_tildes)
+    return [_NUMEROS.get(t, t) for t in palabras if t not in _ARTICULOS]
 
 
 @dataclass
@@ -57,7 +66,13 @@ class Juego:
         """Pide una pregunta al LLM y la deja como la actual. Devuelve lo que dice Bob."""
         if tipo not in _INSTRUCCION:
             raise ValueError(f'tipo desconocido: {tipo}')
-        pregunta = _parsear(self._llm(_INSTRUCCION[tipo]), tipo)
+        try:
+            salida = self._llm(_INSTRUCCION[tipo])
+        except Exception:
+            # Sin red o con el LLM caído, Bob no tumba el turno: lo dice y sigue.
+            self.actual = None
+            return 'Ahora no puedo pensar en una. ¿Probamos más tarde?'
+        pregunta = _parsear(salida, tipo)
         self.actual = pregunta
         if pregunta is None:
             return 'Se me olvidó la pregunta. ¿Probamos otra vez?'
@@ -70,7 +85,9 @@ class Juego:
         esperada = self.actual.respuesta
         tokens_esperada = _tokens(esperada)
         tokens_dueno = set(_tokens(texto))
-        acerto = bool(tokens_esperada) and all(t in tokens_dueno for t in tokens_esperada)
+        niega = bool(_NEGACIONES & tokens_dueno) and not (_NEGACIONES & set(tokens_esperada))
+        acerto = (bool(tokens_esperada) and not niega
+                  and all(t in tokens_dueno for t in tokens_esperada))
         self.actual = None
         if acerto:
             self.puntos += 1
