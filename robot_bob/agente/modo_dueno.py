@@ -299,6 +299,9 @@ _RE_NEGADO = re.compile(r'\bno\s+(?:\S+\s+){0,2}$', re.IGNORECASE)
 _RE_ING_ENTRAR = re.compile(
     r'\b(?:activ\w*|entr\w*|pon\w*|pas\w*|cambi\w*)\s+'
     r'(?:en\s+|a\s+|al\s+)?(?:el\s+)?modo\s+ingenier[oa]\b', re.IGNORECASE)
+# Fábrica (fase F): "Bob, trabaja en tu lista" (o backlog, o plan), "Bob, prográmate".
+_RE_FABRICA = re.compile(
+    r'\btrabaj\w*\s+en\s+(?:tu|la)\s+(?:lista|backlog|plan)\b|\bprogr[aá]mate\b', re.IGNORECASE)
 _RE_LIMPIA = re.compile(r'[^\wáéíóúñ ]+')
 
 
@@ -351,6 +354,8 @@ def detectar(texto: str, navegador: bool = False) -> Optional[Tuple[str, dict]]:
         return 'web', {'tarea': _RE_BOB_INICIO.sub('', texto).strip()}
     if _RE_ING_ENTRAR.search(texto or '') or _es_orden_sola(texto, 'modo ingeniero'):
         return 'ingeniero', {}
+    if _RE_FABRICA.search(texto or ''):
+        return 'fabrica', {}
     m = _RE_PRESENTAR.search(texto or '')
     if m:
         from voz.pipeline import _NO_NOMBRE
@@ -436,7 +441,44 @@ def atender(vp, texto: str, analisis) -> bool:
         entrar_ingeniero(vp)
     elif nombre_cmd == 'web':
         web(vp, args['tarea'])
+    elif nombre_cmd == 'fabrica':
+        trabajar_en_lista(vp)
     return True
+
+
+# ── Fábrica (fase F): "Bob, trabaja en tu lista" ────────────────────────────────
+def trabajar_en_lista(vp) -> None:
+    """F6 por voz: elige la tarea en el mismo turno (y lo dice) y la trabaja en segundo
+    plano. Al terminar, Bob avisa cuando está libre, como los recordatorios."""
+    from fabrica.ciclo import Fabrica
+    from voz.pipeline import console
+    en_turno = [True]
+
+    def avisar(evento: str, texto: str) -> None:
+        console.print(f'[bold magenta][fábrica][/] {texto}')
+        if en_turno[0]:
+            _decir(vp, texto, 'ORGULLOSO' if evento == 'empiezo' else 'PENSANDO')
+        else:
+            emo = 'ORGULLOSO' if evento == 'listo' else 'PENSANDO'
+            _decir_cuando_libre(vp, f'[EMO:{emo}] {texto}')
+
+    fabrica = Fabrica(avisar=avisar)
+    r = fabrica.elegir()
+    en_turno[0] = False
+    if r.resultado == 'elegida':
+        threading.Thread(target=fabrica.trabajar, args=(r.tarea,), daemon=True,
+                         name='fabrica').start()
+
+
+def _decir_cuando_libre(vp, frase: str, espera_max_s: float = 1800.0) -> None:
+    """Dice la frase cuando no hay charla ni otra frase suelta (como el monitor de
+    recordatorios). Si no se libera en espera_max_s, queda solo en la consola."""
+    limite = time.monotonic() + espera_max_s
+    while time.monotonic() < limite and not vp._detener.is_set():
+        if not (vp._sm.en_conversacion or vp._muted.is_set()):
+            vp.decir_soliloquio(frase)
+            return
+        time.sleep(1.0)
 
 
 # ── Modo ingeniero ──────────────────────────────────────────────────────────────
