@@ -76,6 +76,14 @@ def main() -> None:
     check('sin automáticas, siguiente() devuelve None',
           B.siguiente(PLAN_SIN_AUTOMATICAS) is None)
 
+    x5 = next(t for t in B.leer(PLAN_JUGUETE) if t.id == 'X5')
+    check('la tarea guarda su detalle', x5.detalle == 'Esta sí.', f'-> {x5.detalle!r}')
+    sig = B.siguiente(PLAN_JUGUETE, saltar={'x5'})
+    check('saltar una tarea (ya tiene rama) pasa a la siguiente',
+          sig is not None and sig.id == 'X6', f'-> {sig}')
+    check('saltar todas las automáticas devuelve None',
+          B.siguiente(PLAN_JUGUETE, saltar={'X5', 'x6'}) is None)
+
     print('\n' + '═' * 60)
     print(f'  RESULTADO: {"TODO OK" if fallos == 0 else f"{fallos} FALLO(S)"}')
     print('═' * 60)

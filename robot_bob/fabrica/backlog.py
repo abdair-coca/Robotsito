@@ -10,7 +10,7 @@ Solo lee: no escribe ni cambia nada.
 
 import re
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Iterable, List, Optional
 
 _TAREA = re.compile(r'^- \[ \] \*\*(?P<id>[^.*]+?)\.\s*(?P<titulo>[^*]+?)\.?\*\*')
 _CRITERIO = re.compile(r'^\s+- Criterio:\s*(?P<texto>.+)$')
@@ -23,6 +23,7 @@ class Tarea:
     id: str
     titulo: str
     criterio: str
+    detalle: str = ''    # lo que sigue al título en la línea de la tarea
 
 
 def leer(texto: str) -> List[Tarea]:
@@ -32,7 +33,8 @@ def leer(texto: str) -> List[Tarea]:
     for linea in texto.splitlines():
         m = _TAREA.match(linea)
         if m:
-            actual = Tarea(m.group('id').strip(), m.group('titulo').strip(), '')
+            actual = Tarea(m.group('id').strip(), m.group('titulo').strip(), '',
+                           linea[m.end():].strip())
             tareas.append(actual)
             continue
         if linea.startswith('#') or linea.startswith('- '):
@@ -50,9 +52,11 @@ def automatica(tarea: Tarea) -> bool:
     return not any(palabra in criterio for palabra in _NO_AUTOMATICO)
 
 
-def siguiente(texto: str) -> Optional[Tarea]:
-    """La primera tarea pendiente y automática, en el orden del plan."""
+def siguiente(texto: str, saltar: Iterable[str] = ()) -> Optional[Tarea]:
+    """La primera tarea pendiente y automática, en el orden del plan. saltar: ids que no
+    se eligen (la fábrica pasa las que ya tienen rama: ya se intentaron)."""
+    saltar = {s.lower() for s in saltar}
     for tarea in leer(texto):
-        if automatica(tarea):
+        if automatica(tarea) and tarea.id.lower() not in saltar:
             return tarea
     return None
