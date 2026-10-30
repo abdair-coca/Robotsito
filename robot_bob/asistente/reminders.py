@@ -16,11 +16,14 @@ en SQLite es un paso futuro).
 from __future__ import annotations
 
 import re
+import sqlite3
 import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import List, Optional
+
+import rutas
 
 # ── Gatillos de creación ────────────────────────────────────────────────────────
 _TRIGGERS = ("recuérdame", "recuerdame", "recuérda me", "avísame", "avisame",
@@ -185,31 +188,61 @@ def parse_recordatorio(texto: str, ahora: Optional[datetime] = None) -> Optional
 
 
 class ReminderStore:
-    """Lista thread-safe de recordatorios pendientes."""
+    """Recordatorios pendientes, guardados en SQLite (reminders.db) para que
+    sobrevivan a un reinicio de Bob. ruta=':memory:' para pruebas.
 
-    def __init__(self) -> None:
-        self._items: List[Recordatorio] = []
+    Un vencido queda marcado como entregado al devolverlo. Si venció con Bob
+    apagado, sigue pendiente y se avisa al arrancar.
+    """
+
+    def __init__(self, ruta: str = rutas.DB_RECORDATORIOS) -> None:
         self._lock = threading.Lock()
+        self._con = sqlite3.connect(ruta, check_same_thread=False)
+        self._con.execute(
+            'CREATE TABLE IF NOT EXISTS recordatorios ('
+            ' id INTEGER PRIMARY KEY,'
+            ' due_ts REAL NOT NULL,'
+            ' que TEXT NOT NULL,'
+            ' cuando_str TEXT NOT NULL,'
+            ' entregado INTEGER NOT NULL DEFAULT 0)')
+        self._con.commit()
 
     def agregar(self, r: Recordatorio) -> None:
         with self._lock:
-            self._items.append(r)
+            self._con.execute(
+                'INSERT INTO recordatorios (due_ts, que, cuando_str) VALUES (?, ?, ?)',
+                (r.due_ts, r.que, r.cuando_str))
+            self._con.commit()
 
     def vencidos(self, now_ts: Optional[float] = None) -> List[Recordatorio]:
-        """Devuelve y QUITA los recordatorios cuyo due_ts ya pasó."""
+        """Devuelve y MARCA como entregados los recordatorios cuyo due_ts ya pasó."""
         now_ts = now_ts if now_ts is not None else time.time()
         with self._lock:
-            vencidos = [r for r in self._items if r.due_ts <= now_ts]
-            if vencidos:
-                self._items = [r for r in self._items if r.due_ts > now_ts]
-        return vencidos
+            filas = self._con.execute(
+                'SELECT id, due_ts, que, cuando_str FROM recordatorios'
+                ' WHERE entregado = 0 AND due_ts <= ? ORDER BY due_ts',
+                (now_ts,)).fetchall()
+            if filas:
+                self._con.executemany(
+                    'UPDATE recordatorios SET entregado = 1 WHERE id = ?',
+                    [(f[0],) for f in filas])
+                self._con.commit()
+        return [Recordatorio(due_ts=f[1], que=f[2], cuando_str=f[3]) for f in filas]
 
     def hay_vencidos(self, now_ts: Optional[float] = None) -> bool:
-        """Como vencidos() pero sin quitarlos."""
+        """Como vencidos() pero sin marcarlos."""
         now_ts = now_ts if now_ts is not None else time.time()
         with self._lock:
-            return any(r.due_ts <= now_ts for r in self._items)
+            fila = self._con.execute(
+                'SELECT 1 FROM recordatorios WHERE entregado = 0 AND due_ts <= ? LIMIT 1',
+                (now_ts,)).fetchone()
+        return fila is not None
 
     def pendientes(self) -> int:
         with self._lock:
-            return len(self._items)
+            return self._con.execute(
+                'SELECT COUNT(*) FROM recordatorios WHERE entregado = 0').fetchone()[0]
+
+    def cerrar(self) -> None:
+        with self._lock:
+            self._con.close()

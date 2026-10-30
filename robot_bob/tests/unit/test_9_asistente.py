@@ -155,7 +155,7 @@ def main() -> None:
             print('  [OK] "mañana a las 9" → día siguiente 09:00')
 
     # Store: vence lo que toca, conserva lo futuro
-    store = R.ReminderStore()
+    store = R.ReminderStore(':memory:')
     ahora = _t.time()
     store.agregar(R.Recordatorio(ahora - 1, "ya", "antes"))
     store.agregar(R.Recordatorio(ahora + 999, "luego", "después"))

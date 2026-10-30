@@ -11,6 +11,7 @@ RAIZ = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PY = os.path.join(RAIZ, "config.py")
 DEVICES_JSON = os.path.join(RAIZ, "devices.json")
 DB_MEMORIA = os.path.join(RAIZ, "memory.db")
+DB_RECORDATORIOS = os.path.join(RAIZ, "reminders.db")
 LOGS_DIR = os.path.join(RAIZ, "logs")
 MODELOS_DIR = os.path.join(RAIZ, "models")
 

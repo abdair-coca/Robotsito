@@ -7,6 +7,7 @@ __pycache__/
 *.pyc
 venv311
 memory.db
+reminders.db
 .insightface/
 devices.json
 ffmpeg-*.log
